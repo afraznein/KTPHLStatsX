@@ -299,7 +299,8 @@ sub buildEventInsertData
 			(
 				eventTime,
 				serverId,
-				map"
+				map,
+				match_id"
 				;
 		my $j = 0;
 		foreach $i (@{$colsref})
@@ -325,8 +326,14 @@ sub recordEvent
 	my $table = shift;
 	my $unused = shift;
 	my @coldata = @_;
-	
-	my $value = "(FROM_UNIXTIME($::ev_unixtime),".$g_servers{$s_addr}->{'id'}.",'".quoteSQL($g_servers{$s_addr}->get_map())."'";
+
+	# KTP: Get match_id from context if active for this server
+	my $ktp_match_id = "";
+	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		$ktp_match_id = $g_ktpMatchContext{$s_addr}{match_id};
+	}
+
+	my $value = "(FROM_UNIXTIME($::ev_unixtime),".$g_servers{$s_addr}->{'id'}.",'".quoteSQL($g_servers{$s_addr}->get_map())."','".quoteSQL($ktp_match_id)."'";
 	$j = 0;
 	for $i (@coldata) {
 		if ($g_eventtable_data{$table}{nullallowed} & (1 << $j) && (!defined($i) || $i eq "")) {
@@ -1959,6 +1966,10 @@ if ($g_global_chat == 1) {
 
 %g_servers = ();
 
+# KTP: Match context tracking for KTP Match Handler integration
+# Stores match_id per server address for tagging events
+%g_ktpMatchContext = ();
+
 &printEvent("HLSTATSX", "HLstatsX:CE is now running ($g_mode mode, debug level $g_debug)", 1);
 
 $start_time    = time();
@@ -3341,11 +3352,32 @@ while ($loop = &getLine()) {
 					$ev_obj_a
 				);
 			}
+		} elsif ($s_output =~ /^KTP_MATCH_START\s+(.*)$/) {
+			# KTP: Match start event from KTPMatchHandler
+			# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx")
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 600;  # KTP event type
+			$ev_status = &doEvent_KTPMatchStart(
+				$ev_properties{"matchid"},
+				$ev_properties{"map"},
+				$ev_properties{"half"}
+			);
+		} elsif ($s_output =~ /^KTP_MATCH_END\s+(.*)$/) {
+			# KTP: Match end event from KTPMatchHandler
+			# Prototype: KTP_MATCH_END (matchid "xxx") (map "xxx")
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 601;  # KTP event type
+			$ev_status = &doEvent_KTPMatchEnd(
+				$ev_properties{"matchid"},
+				$ev_properties{"map"}
+			);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
 		    # Mani-Admin-Plugin messages
-			
+
 			$ev_obj_a  = $1;
 			$ev_type = 500;
 			$ev_status = &doEvent_Admin(

@@ -3200,4 +3200,84 @@ sub doEvent_ApiReqestPlayerInfo
 	return $desc . $playerstr . " api_request playerinfo via HLStatsX API module";
 }
 
+##
+## KTP Match Handler Integration
+## These handlers process KTP_MATCH_START and KTP_MATCH_END events
+## to track match context for stats separation
+##
+
+#
+# void doEvent_KTPMatchStart (string matchId, string mapName, string half)
+#
+# Called when KTP Match Handler starts a match.
+# Sets the match context for this server so all subsequent events
+# will be tagged with the match_id.
+#
+sub doEvent_KTPMatchStart
+{
+	my ($matchId, $mapName, $half) = @_;
+	my $desc = "";
+
+	if (!defined($matchId) || $matchId eq "") {
+		return "(IGNORED) KTP_MATCH_START with empty matchId";
+	}
+
+	# Set the match context for this server
+	$g_ktpMatchContext{$s_addr} = {
+		match_id => $matchId,
+		map => $mapName,
+		half => $half,
+		start_time => time()
+	};
+
+	# Insert match record into database
+	my $serverId = $g_servers{$s_addr}->{'id'};
+	my $halfNum = ($half eq "2nd") ? 2 : 1;
+
+	&execNonQuery("
+		INSERT INTO ktp_matches (match_id, server_id, map_name, half, start_time)
+		VALUES ('" . &quoteSQL($matchId) . "', $serverId, '" . &quoteSQL($mapName) . "', $halfNum, NOW())
+		ON DUPLICATE KEY UPDATE start_time = NOW()
+	");
+
+	&printEvent("KTP", "Match started: $matchId (map: $mapName, half: $half)", 1);
+
+	$desc = "KTP_MATCH_START matchid=$matchId map=$mapName half=$half";
+	return $desc;
+}
+
+#
+# void doEvent_KTPMatchEnd (string matchId, string mapName)
+#
+# Called when KTP Match Handler ends a match.
+# Clears the match context for this server so subsequent events
+# will not be tagged with a match_id (warmup/practice stats).
+#
+sub doEvent_KTPMatchEnd
+{
+	my ($matchId, $mapName) = @_;
+	my $desc = "";
+
+	if (!defined($matchId) || $matchId eq "") {
+		return "(IGNORED) KTP_MATCH_END with empty matchId";
+	}
+
+	# Update match end time in database
+	&execNonQuery("
+		UPDATE ktp_matches
+		SET end_time = NOW()
+		WHERE match_id = '" . &quoteSQL($matchId) . "'
+	");
+
+	# Clear the match context for this server
+	if (defined($g_ktpMatchContext{$s_addr})) {
+		delete $g_ktpMatchContext{$s_addr};
+	}
+
+	&printEvent("KTP", "Match ended: $matchId (map: $mapName)", 1);
+
+	$desc = "KTP_MATCH_END matchid=$matchId map=$mapName";
+	return $desc;
+}
+
 1;
