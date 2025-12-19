@@ -50,6 +50,12 @@ When a match is active, all events (frags, weaponstats, etc.) will be tagged wit
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
+## Author
+
+**Nein_** ([@afraznein](https://github.com/afraznein))
+
+Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
+
 ## License
 
 GPL v2 (same as HLStatsX:CE)
