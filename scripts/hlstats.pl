@@ -327,13 +327,13 @@ sub recordEvent
 	my $unused = shift;
 	my @coldata = @_;
 
-	# KTP: Get match_id from context if active for this server
-	my $ktp_match_id = "";
+	# KTP: Get match_id from context if active for this server (NULL if no match)
+	my $ktp_match_id_sql = "NULL";
 	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
-		$ktp_match_id = $g_ktpMatchContext{$s_addr}{match_id};
+		$ktp_match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
 	}
 
-	my $value = "(FROM_UNIXTIME($::ev_unixtime),".$g_servers{$s_addr}->{'id'}.",'".quoteSQL($g_servers{$s_addr}->get_map())."','".quoteSQL($ktp_match_id)."'";
+	my $value = "(FROM_UNIXTIME($::ev_unixtime),".$g_servers{$s_addr}->{'id'}.",'".quoteSQL($g_servers{$s_addr}->get_map())."',".$ktp_match_id_sql;
 	$j = 0;
 	for $i (@coldata) {
 		if ($g_eventtable_data{$table}{nullallowed} & (1 << $j) && (!defined($i) || $i eq "")) {
@@ -3300,15 +3300,41 @@ while ($loop = &getLine()) {
 			# Prototype: Cmd:[SM] obj_a
 			# Matches:
 		    # Admin Mod messages
-			
+
 			my $ev_plugin = $1;
 			my $ev_adminmod = $2;
 			$ev_obj_a  = $3;
-			$ev_type = 500;
-			$ev_status = &doEvent_Admin(
-				(($ev_adminmod eq "smx")?"Sourcemod":"AMXX")." ($ev_plugin)",
-				substr($ev_obj_a, 0, 255)
-			);
+
+			# KTP: Check for KTP_MATCH events from KTPMatchHandler plugin
+			if ($ev_obj_a =~ /^KTP_MATCH_START\s+(.*)$/) {
+				# KTP: Match start event
+				# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx")
+				$ev_properties = $1;
+				%ev_properties = &getProperties($ev_properties);
+				$ev_type = 600;  # KTP event type
+				$ev_status = &doEvent_KTPMatchStart(
+					$ev_properties{"matchid"},
+					$ev_properties{"map"},
+					$ev_properties{"half"}
+				);
+			} elsif ($ev_obj_a =~ /^KTP_MATCH_END\s+(.*)$/) {
+				# KTP: Match end event
+				# Prototype: KTP_MATCH_END (matchid "xxx") (map "xxx")
+				$ev_properties = $1;
+				%ev_properties = &getProperties($ev_properties);
+				$ev_type = 601;  # KTP event type
+				$ev_status = &doEvent_KTPMatchEnd(
+					$ev_properties{"matchid"},
+					$ev_properties{"map"}
+				);
+			} else {
+				# Default: Treat as admin message
+				$ev_type = 500;
+				$ev_status = &doEvent_Admin(
+					(($ev_adminmod eq "smx")?"Sourcemod":"AMXX")." ($ev_plugin)",
+					substr($ev_obj_a, 0, 255)
+				);
+			}
 		} elsif ($s_output =~ /^([^"\(]+) "([^"]+)"(.*)$/) {
 			# Prototype: verb "obj_a"[properties]
 			# Matches:
@@ -3693,6 +3719,154 @@ if ($g_stdin) {
 	&flushAll(1);
 	&execNonQuery("UPDATE hlstats_Players SET last_event=UNIX_TIMESTAMP();");
 	&printEvent("IMPORT", "Import of log file complete. Scanned ".$import_logs_count." lines in ".($end_time-$start_time)." seconds", 1, 1);
+}
+
+#
+# KTP: Handle KTP_MATCH_START event
+# Sets match context for tagging events and creates match record in database
+#
+sub doEvent_KTPMatchStart
+{
+	my ($matchid, $map, $half) = @_;
+
+	return 0 if (!defined($matchid) || $matchid eq "");
+
+	# Store match context for this server (used by recordEvent to tag kills)
+	$g_ktpMatchContext{$s_addr} = {
+		match_id => $matchid,
+		map => $map,
+		half => $half || "1",
+		players_tracked => {}  # Track which players we've already recorded
+	};
+
+	# Get server ID
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	# Parse half number from string (e.g., "1st half" -> 1, "2nd half" -> 2, "OT1" -> 3)
+	my $half_num = 1;
+	if (defined($half)) {
+		if ($half =~ /^1/) { $half_num = 1; }
+		elsif ($half =~ /^2/) { $half_num = 2; }
+		elsif ($half =~ /^OT(\d+)/) { $half_num = 2 + $1; }
+	}
+
+	# Insert match record (or update if already exists for this half)
+	&execNonQuery("
+		INSERT INTO ktp_matches (match_id, server_id, map_name, half, start_time)
+		VALUES ('".quoteSQL($matchid)."', $server_id, '".quoteSQL($map)."', $half_num, NOW())
+		ON DUPLICATE KEY UPDATE start_time = NOW(), half = $half_num
+	");
+
+	&printEvent("KTP", "Match started: $matchid on $map (half: $half)", 1);
+
+	return 1;
+}
+
+#
+# KTP: Track a player participating in the current match
+# Called from doEvent_Frag for both killer and victim
+#
+sub ktpTrackMatchPlayer
+{
+	my ($player) = @_;
+
+	# Skip if no active match context
+	return 0 if (!defined($g_ktpMatchContext{$s_addr}) || $g_ktpMatchContext{$s_addr}{match_id} eq "");
+
+	# Skip if player not valid
+	return 0 if (!defined($player) || !defined($player->{playerid}));
+
+	my $match_id = $g_ktpMatchContext{$s_addr}{match_id};
+	my $player_id = $player->{playerid};
+	my $steam_id = $player->{uniqueid} || "";
+	my $player_name = $player->{name} || "";
+	my $team = 0;
+
+	# Map team name to number (1=Allies, 2=Axis for DoD)
+	if (defined($player->{team})) {
+		if ($player->{team} eq "Allies" || $player->{team} eq "allies") { $team = 1; }
+		elsif ($player->{team} eq "Axis" || $player->{team} eq "axis") { $team = 2; }
+	}
+
+	# Skip if already tracked this player in this match (in-memory check for performance)
+	my $track_key = "$player_id:$steam_id";
+	return 1 if (defined($g_ktpMatchContext{$s_addr}{players_tracked}{$track_key}));
+	$g_ktpMatchContext{$s_addr}{players_tracked}{$track_key} = 1;
+
+	# Insert player into match_players (ignore if already exists via unique constraint)
+	&execNonQuery("
+		INSERT IGNORE INTO ktp_match_players (match_id, player_id, steam_id, player_name, team, joined_at)
+		VALUES ('".quoteSQL($match_id)."', $player_id, '".quoteSQL($steam_id)."', '".quoteSQL($player_name)."', $team, NOW())
+	");
+
+	return 1;
+}
+
+#
+# KTP: Handle KTP_MATCH_END event
+# Aggregates stats from Events_Frags and updates match record
+#
+sub doEvent_KTPMatchEnd
+{
+	my ($matchid, $map) = @_;
+
+	return 0 if (!defined($matchid) || $matchid eq "");
+
+	# Get server ID
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	# Aggregate stats from hlstats_Events_Frags and insert into ktp_match_stats
+	# This query aggregates kills, deaths, and headshots per player for this match
+	&execNonQuery("
+		INSERT INTO ktp_match_stats (match_id, player_id, kills, deaths, headshots, team_kills, suicides)
+		SELECT
+			'".quoteSQL($matchid)."' as match_id,
+			p.playerId as player_id,
+			COALESCE(k.kills, 0) as kills,
+			COALESCE(d.deaths, 0) as deaths,
+			COALESCE(k.headshots, 0) as headshots,
+			0 as team_kills,
+			0 as suicides
+		FROM ktp_match_players mp
+		JOIN hlstats_Players p ON mp.player_id = p.playerId
+		LEFT JOIN (
+			SELECT killerId, COUNT(*) as kills, SUM(headshot) as headshots
+			FROM hlstats_Events_Frags
+			WHERE match_id = '".quoteSQL($matchid)."'
+			GROUP BY killerId
+		) k ON p.playerId = k.killerId
+		LEFT JOIN (
+			SELECT victimId, COUNT(*) as deaths
+			FROM hlstats_Events_Frags
+			WHERE match_id = '".quoteSQL($matchid)."'
+			GROUP BY victimId
+		) d ON p.playerId = d.victimId
+		WHERE mp.match_id = '".quoteSQL($matchid)."'
+		ON DUPLICATE KEY UPDATE
+			kills = VALUES(kills),
+			deaths = VALUES(deaths),
+			headshots = VALUES(headshots)
+	");
+
+	# Update match end time for most recent record with this match_id
+	&execNonQuery("
+		UPDATE ktp_matches
+		SET end_time = NOW()
+		WHERE match_id = '".quoteSQL($matchid)."'
+		AND server_id = $server_id
+		AND end_time IS NULL
+		ORDER BY start_time DESC
+		LIMIT 1
+	");
+
+	# Clear match context for this server
+	if (defined($g_ktpMatchContext{$s_addr})) {
+		delete $g_ktpMatchContext{$s_addr};
+	}
+
+	&printEvent("KTP", "Match ended: $matchid on $map (stats aggregated)", 1);
+
+	return 1;
 }
 
 sub INT_handler

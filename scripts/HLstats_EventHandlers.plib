@@ -1183,6 +1183,10 @@ sub doEvent_Frag
 						$vz
 					);
 
+					# KTP: Track players participating in match
+					&ktpTrackMatchPlayer($killer);
+					&ktpTrackMatchPlayer($victim);
+
 					if ($killer->{role} ne "") {
 						my $query = "
 							UPDATE
