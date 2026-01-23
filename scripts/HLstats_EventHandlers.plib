@@ -3236,7 +3236,7 @@ sub doEvent_KTPMatchStart
 
 	# Insert match record into database
 	my $serverId = $g_servers{$s_addr}->{'id'};
-	my $halfNum = ($half eq "2nd") ? 2 : 1;
+	my $halfNum = ($half =~ /^2/) ? 2 : 1;
 
 	&execNonQuery("
 		INSERT INTO ktp_matches (match_id, server_id, map_name, half, start_time)

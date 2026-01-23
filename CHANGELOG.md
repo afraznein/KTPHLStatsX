@@ -1,5 +1,22 @@
 # KTP HLStatsX Changelog
 
+## [0.2.1] - 2026-01-22
+
+### Fixed
+- Half number detection now uses regex (`/^2/`) instead of exact string match to handle different half format variations (e.g., "2nd", "2", "2nd_half")
+
+## [0.2.0] - 2026-01-16
+
+### Added
+- Track participating players in `ktp_match_players` table on each frag event
+- Aggregate player stats to `ktp_match_stats` table on match end
+- Auto-populate `ktp_matches` table on match start
+- Parse `KTP_MATCH_START`/`KTP_MATCH_END` events from plugin log lines
+
+### Changed
+- Use NULL instead of empty string for `match_id` when no match is active
+- Enhanced match context tracking per server
+
 ## [0.1.0] - 2025-12-17
 
 ### Added
