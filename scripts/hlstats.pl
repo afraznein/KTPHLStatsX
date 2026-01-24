@@ -2380,6 +2380,11 @@ while ($loop = &getLine()) {
 			next;
 		}
 		
+		# KTP DEBUG: Trace all lines containing KTP_MATCH
+		if ($s_output =~ /KTP_MATCH/) {
+			&printEvent("KTP_DEBUG", "RAW LINE RECEIVED: '$s_output'", 1);
+		}
+
 		if ($g_debug >= 4) {
 			print $s_addr.": \"".$s_output."\"\n";
 		}
@@ -3384,6 +3389,8 @@ while ($loop = &getLine()) {
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 600;  # KTP event type
+			# KTP DEBUG: Log parsed properties
+			&printEvent("KTP_DEBUG", "KTP_MATCH_START parsed: matchid='$ev_properties{\"matchid\"}' map='$ev_properties{\"map\"}' half='$ev_properties{\"half\"}'", 1);
 			$ev_status = &doEvent_KTPMatchStart(
 				$ev_properties{"matchid"},
 				$ev_properties{"map"},
@@ -3395,6 +3402,8 @@ while ($loop = &getLine()) {
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 601;  # KTP event type
+			# KTP DEBUG: Log parsed properties
+			&printEvent("KTP_DEBUG", "KTP_MATCH_END parsed: matchid='$ev_properties{\"matchid\"}' map='$ev_properties{\"map\"}'", 1);
 			$ev_status = &doEvent_KTPMatchEnd(
 				$ev_properties{"matchid"},
 				$ev_properties{"map"}
@@ -3729,6 +3738,9 @@ sub doEvent_KTPMatchStart
 {
 	my ($matchid, $map, $half) = @_;
 
+	# KTP DEBUG: Log function entry
+	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart CALLED: matchid='$matchid' map='$map' half='$half' server='$s_addr'", 1);
+
 	return 0 if (!defined($matchid) || $matchid eq "");
 
 	# Store match context for this server (used by recordEvent to tag kills)
@@ -3749,6 +3761,9 @@ sub doEvent_KTPMatchStart
 		elsif ($half =~ /^2/) { $half_num = 2; }
 		elsif ($half =~ /^OT(\d+)/) { $half_num = 2 + $1; }
 	}
+
+	# KTP DEBUG: Log parsed half number
+	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: half_num=$half_num server_id=$server_id", 1);
 
 	# Insert match record (or update if already exists for this half)
 	&execNonQuery("

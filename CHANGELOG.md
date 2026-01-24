@@ -1,5 +1,18 @@
 # KTP HLStatsX Changelog
 
+## [0.2.2] - 2026-01-23
+
+### Added
+- Debug logging for KTP_MATCH event tracing (`KTP_DEBUG` messages in journal)
+- Traces raw lines containing KTP_MATCH, parsed properties, and function entry
+
+### Changed
+- Removed dead code from `HLstats_EventHandlers.plib` (duplicate event handlers)
+- Added clarifying comment explaining authoritative handlers are in `hlstats.pl`
+
+### Fixed
+- Half detection now supports all formats: "1st", "2nd", OT halves (regex-based matching)
+
 ## [0.2.1] - 2026-01-22
 
 ### Fixed
