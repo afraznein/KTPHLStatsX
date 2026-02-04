@@ -1,5 +1,13 @@
 # KTP HLStatsX Changelog
 
+## [0.2.3] - 2026-02-03
+
+### Added
+- Debug logging for match context cleanup in `doEvent_KTPMatchEnd`
+  - Logs match_id being cleared when match ends for troubleshooting
+
+---
+
 ## [0.2.2] - 2026-01-23
 
 ### Added

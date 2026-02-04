@@ -1,6 +1,6 @@
 # KTP HLStatsX
 
-**Version 0.2.2** - Modified HLStatsX:CE Perl daemon with KTP Match Handler integration
+**Version 0.2.3** - Modified HLStatsX:CE Perl daemon with KTP Match Handler integration
 
 A specialized fork of [HLStatsX:CE](https://github.com/NomisCZ/hlstatsx-community-edition) that enables match-based statistics tracking for competitive play. Separates warmup/practice stats from official match stats by tagging events with match IDs from KTP Match Handler.
 
@@ -466,6 +466,13 @@ LIMIT 10;
 ---
 
 ## 📋 Version History
+
+### [0.2.3] - 2026-02-03
+
+**Added:**
+- Debug logging for match context cleanup in `doEvent_KTPMatchEnd`
+
+---
 
 ### [0.2.2] - 2026-01-23
 

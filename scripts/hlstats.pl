@@ -3876,6 +3876,7 @@ sub doEvent_KTPMatchEnd
 
 	# Clear match context for this server
 	if (defined($g_ktpMatchContext{$s_addr})) {
+		&printEvent("KTP_DEBUG", "doEvent_KTPMatchEnd: Clearing match context for $s_addr (was match_id='$g_ktpMatchContext{$s_addr}{match_id}')", 1);
 		delete $g_ktpMatchContext{$s_addr};
 	}
 
