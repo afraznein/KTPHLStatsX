@@ -3408,6 +3408,19 @@ while ($loop = &getLine()) {
 				$ev_properties{"matchid"},
 				$ev_properties{"map"}
 			);
+		} elsif ($s_output =~ /^KTP_HALF_END\s+(.*)$/) {
+			# KTP: Half end event from KTPMatchHandler (v0.10.69+)
+			# Fires at actual gameplay end (scoreboard), BEFORE map change/warmup
+			# Prototype: KTP_HALF_END (matchid "xxx") (map "xxx") (half "1st")
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 602;  # KTP event type
+			&printEvent("KTP_DEBUG", "KTP_HALF_END parsed: matchid='$ev_properties{\"matchid\"}' map='$ev_properties{\"map\"}' half='$ev_properties{\"half\"}'", 1);
+			$ev_status = &doEvent_KTPHalfEnd(
+				$ev_properties{"matchid"},
+				$ev_properties{"map"},
+				$ev_properties{"half"}
+			);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -3765,6 +3778,20 @@ sub doEvent_KTPMatchStart
 	# KTP DEBUG: Log parsed half number
 	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: half_num=$half_num server_id=$server_id", 1);
 
+	# If this is half 2 or later, close out the previous half's end_time
+	if ($half_num > 1) {
+		my $prev_half = $half_num - 1;
+		&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: Closing previous half ($prev_half) for match $matchid", 1);
+		&execNonQuery("
+			UPDATE ktp_matches
+			SET end_time = NOW()
+			WHERE match_id = '".quoteSQL($matchid)."'
+			AND server_id = $server_id
+			AND half = $prev_half
+			AND end_time IS NULL
+		");
+	}
+
 	# Insert match record (or update if already exists for this half)
 	&execNonQuery("
 		INSERT INTO ktp_matches (match_id, server_id, map_name, half, start_time)
@@ -3881,6 +3908,46 @@ sub doEvent_KTPMatchEnd
 	}
 
 	&printEvent("KTP", "Match ended: $matchid on $map (stats aggregated)", 1);
+
+	return 1;
+}
+
+#
+# KTP: Handle KTP_HALF_END event
+# Sets accurate end_time for the half at the moment gameplay ends (scoreboard appears)
+# This fires BEFORE map change/warmup, preventing warmup kills from being attributed to the half
+#
+sub doEvent_KTPHalfEnd
+{
+	my ($matchid, $map, $half) = @_;
+
+	return 0 if (!defined($matchid) || $matchid eq "");
+
+	# Get server ID
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	# Parse half number from string (e.g., "1st" -> 1, "2nd" -> 2)
+	my $half_num = 1;
+	if (defined($half)) {
+		if ($half =~ /^1/) { $half_num = 1; }
+		elsif ($half =~ /^2/) { $half_num = 2; }
+		elsif ($half =~ /^OT(\d+)/) { $half_num = 2 + $1; }
+	}
+
+	&printEvent("KTP_DEBUG", "doEvent_KTPHalfEnd: Setting end_time for half $half_num of match $matchid", 1);
+
+	# Set end_time for this specific half
+	# This captures the actual moment gameplay ended, before warmup starts
+	&execNonQuery("
+		UPDATE ktp_matches
+		SET end_time = NOW()
+		WHERE match_id = '".quoteSQL($matchid)."'
+		AND server_id = $server_id
+		AND half = $half_num
+		AND end_time IS NULL
+	");
+
+	&printEvent("KTP", "Half ended: $matchid half $half_num on $map (end_time set)", 1);
 
 	return 1;
 }

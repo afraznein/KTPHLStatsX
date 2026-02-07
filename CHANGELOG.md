@@ -1,5 +1,30 @@
 # KTP HLStatsX Changelog
 
+## [0.2.5] - 2026-02-05
+
+### Added
+- **KTP_HALF_END event handler** - Sets accurate `end_time` at actual gameplay end
+  - Fires when scoreboard appears, BEFORE map change/warmup
+  - Prevents warmup kills from being incorrectly attributed to the previous half
+  - Works with KTPMatchHandler v0.10.69+
+
+### Fixed
+- **Half end_time accuracy** - Previously set when next half started (after warmup)
+  - Now set at actual gameplay end via KTP_HALF_END event
+  - Eliminates ~1-2 minutes of warmup kills being counted in H1 stats
+
+---
+
+## [0.2.4] - 2026-02-04
+
+### Fixed
+- First half `end_time` now recorded in `ktp_matches` table when second half starts
+  - Previously only the final half had `end_time` set (via KTP_MATCH_END)
+  - Now each half's `end_time` is set when the next half begins
+  - **Note:** This was later improved in v0.2.5 to set end_time at actual gameplay end
+
+---
+
 ## [0.2.3] - 2026-02-03
 
 ### Added
