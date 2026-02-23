@@ -2745,7 +2745,41 @@ while ($loop = &getLine()) {
 					);
 				}
 			}
-		} elsif ($s_output =~ /^(?:\[STATSME\] )?"(.+?(?:<.+?>)*)" triggered "(weaponstats\d{0,1})"(.*)$/ ) {
+		} elsif ($s_output =~ /^"(.+?(?:<.+?>)*)" triggered "headshot_kill" against "(.+?(?:<.+?>)*)" with "([^"]*)"/) {
+		# KTP: Headshot kill marker from stats_logging.sma
+		# Fired immediately after the engine's kill log line for headshot kills.
+		# We flush the frag queue then UPDATE the most recent matching frag to headshot=1.
+		$ev_player = $1;
+		my $hs_victim = $2;
+		my $hs_weapon = $3;
+		$ev_type = 900;  # KTP headshot marker
+
+		my $killerinfo = &getPlayerInfo($ev_player, 0);
+		my $victiminfo = &getPlayerInfo($hs_victim, 0);
+
+		if ($killerinfo && $victiminfo) {
+			my $killerId = lookupPlayer($s_addr, $killerinfo->{"userid"}, $killerinfo->{"uniqueid"});
+			my $victimId = lookupPlayer($s_addr, $victiminfo->{"userid"}, $victiminfo->{"uniqueid"});
+
+			if ($killerId && $victimId) {
+				# Flush pending frags so the kill is in the DB
+				flushEventTable("hlstats_Events_Frags");
+
+				# Update the most recent frag by this killer against this victim on this server
+				&execNonQuery("
+					UPDATE hlstats_Events_Frags
+					SET headshot = 1
+					WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+					AND killerId = ".$killerId->{playerid}."
+					AND victimId = ".$victimId->{playerid}."
+					AND weapon = '".quoteSQL($hs_weapon)."'
+					ORDER BY id DESC
+					LIMIT 1
+				");
+				$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
+			}
+		}
+	} elsif ($s_output =~ /^(?:\[STATSME\] )?"(.+?(?:<.+?>)*)" triggered "(weaponstats\d{0,1})"(.*)$/ ) {
 			# Prototype: [STATSME] "player" triggered "weaponstats?"[properties]
 			# Matches:
 			# 501. Statsme weaponstats
@@ -3763,6 +3797,15 @@ sub doEvent_KTPMatchStart
 		half => $half || "1",
 		players_tracked => {}  # Track which players we've already recorded
 	};
+
+	# KTP: Also restore the server's map tracking variable.
+	# This ensures the map is correct even after a daemon restart where the
+	# "Started map" log event was missed. All frag events use get_map() which
+	# reads $g_servers{$s_addr}->{map}, so we must keep it in sync.
+	if (defined($map) && $map ne "" && defined($g_servers{$s_addr})) {
+		$g_servers{$s_addr}->{map} = $map;
+		&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: Restored server map to '$map'", 1);
+	}
 
 	# Get server ID
 	my $server_id = $g_servers{$s_addr}->{'id'};

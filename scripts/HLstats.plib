@@ -210,7 +210,15 @@ sub execCached {
 		$db_stmt_cache{$query_id} = $db_conn->prepare($query) or die("Unable to prepare query ($query_id):\n$query\n$DBI::errstr");
 		#&printEvent("HLSTATSX", "Prepared a statement ($query_id) for the first time.", 1);
 	} 
-	$db_stmt_cache{$query_id}->execute(@bind_args) or die ("Unable to execute query ($query_id):\n$query\n$DBI::errstr");
+	my $rv = $db_stmt_cache{$query_id}->execute(@bind_args);
+	if (!$rv) {
+		my $err = $DBI::errstr || "unknown error";
+		if ($err =~ /Incorrect string value/) {
+			&printEvent("WARNING", "execCached($query_id): Skipping due to encoding error: $err", 1);
+			return undef;
+		}
+		die("Unable to execute query ($query_id):\n$query\n$err");
+	}
 	return $db_stmt_cache{$query_id};
 }
 

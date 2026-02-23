@@ -1,5 +1,16 @@
 # KTP HLStatsX Changelog
 
+## [0.2.6] - 2026-02-19
+
+### Added
+- **Headshot kill tracking** - New `headshot_kill` triggered event handler parses log lines from stats_logging.sma's `client_death` forward. Flushes pending frags then UPDATEs the most recent matching frag row to `headshot=1`. Enables per-frag headshot data without double-counting kills.
+- **Map tracking restoration on match start** - `doEvent_KTPMatchStart` now sets `$g_servers{$s_addr}->{map}` from the match event's map property. Ensures correct map attribution after daemon restarts where the "Started map" log event was missed.
+
+### Fixed
+- **MySQL encoding crash resilience** - `execCached()` in `HLstats.plib` now catches "Incorrect string value" MySQL errors (from non-UTF8 player names) and logs a warning instead of dying. All other query errors still fatal.
+
+---
+
 ## [0.2.5] - 2026-02-05
 
 ### Added
