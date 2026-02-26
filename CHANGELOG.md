@@ -1,5 +1,19 @@
 # KTP HLStatsX Changelog
 
+## [0.2.7] - 2026-02-25
+
+### Fixed
+- **Headshot flush used wrong table key** - `flushEventTable("hlstats_Events_Frags")` was a no-op because event queue keys use short names (`"Frags"`). Headshot UPDATE ran before the frag was actually flushed to the database, silently losing headshot attribution. Changed to `flushEventTable("Frags")`.
+- **Duplicate players in match stats** - `ktp_match_players` had no unique constraint on `(match_id, player_id)`, so `INSERT IGNORE` never prevented duplicates. Players appearing in both halves got two rows, causing double-counted stats in the aggregation query. Added `UNIQUE KEY uk_match_player` to schema and changed to `ON DUPLICATE KEY UPDATE` to update team/name on re-appearance.
+- **Match start_time overwritten by duplicate UDP packets** - `doEvent_KTPMatchStart` used `ON DUPLICATE KEY UPDATE start_time = NOW()` which overwrote the original timestamp if a duplicate log line arrived. Changed to no-op (`id = id`) on duplicate.
+- **Team kills and suicides not aggregated** - `doEvent_KTPMatchEnd` hardcoded `team_kills = 0` and `suicides = 0` instead of querying `hlstats_Events_Teamkills` and `hlstats_Events_Suicides` tables. Added LEFT JOINs for both tables.
+
+### Schema
+- Added `UNIQUE KEY uk_match_player (match_id, player_id)` to `ktp_match_players` table
+- **Migration required:** `ALTER TABLE ktp_match_players ADD UNIQUE KEY uk_match_player (match_id, player_id);`
+
+---
+
 ## [0.2.6] - 2026-02-19
 
 ### Added

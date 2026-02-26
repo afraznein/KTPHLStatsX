@@ -2763,7 +2763,7 @@ while ($loop = &getLine()) {
 
 			if ($killerId && $victimId) {
 				# Flush pending frags so the kill is in the DB
-				flushEventTable("hlstats_Events_Frags");
+				flushEventTable("Frags");
 
 				# Update the most recent frag by this killer against this victim on this server
 				&execNonQuery("
@@ -3835,11 +3835,11 @@ sub doEvent_KTPMatchStart
 		");
 	}
 
-	# Insert match record (or update if already exists for this half)
+	# Insert match record (no-op if already exists for this half — don't overwrite start_time)
 	&execNonQuery("
 		INSERT INTO ktp_matches (match_id, server_id, map_name, half, start_time)
 		VALUES ('".quoteSQL($matchid)."', $server_id, '".quoteSQL($map)."', $half_num, NOW())
-		ON DUPLICATE KEY UPDATE start_time = NOW(), half = $half_num
+		ON DUPLICATE KEY UPDATE id = id
 	");
 
 	&printEvent("KTP", "Match started: $matchid on $map (half: $half)", 1);
@@ -3878,10 +3878,11 @@ sub ktpTrackMatchPlayer
 	return 1 if (defined($g_ktpMatchContext{$s_addr}{players_tracked}{$track_key}));
 	$g_ktpMatchContext{$s_addr}{players_tracked}{$track_key} = 1;
 
-	# Insert player into match_players (ignore if already exists via unique constraint)
+	# Insert player into match_players (update team/name if already exists from earlier half)
 	&execNonQuery("
-		INSERT IGNORE INTO ktp_match_players (match_id, player_id, steam_id, player_name, team, joined_at)
+		INSERT INTO ktp_match_players (match_id, player_id, steam_id, player_name, team, joined_at)
 		VALUES ('".quoteSQL($match_id)."', $player_id, '".quoteSQL($steam_id)."', '".quoteSQL($player_name)."', $team, NOW())
+		ON DUPLICATE KEY UPDATE team = VALUES(team), player_name = VALUES(player_name)
 	");
 
 	return 1;
@@ -3900,8 +3901,8 @@ sub doEvent_KTPMatchEnd
 	# Get server ID
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
-	# Aggregate stats from hlstats_Events_Frags and insert into ktp_match_stats
-	# This query aggregates kills, deaths, and headshots per player for this match
+	# Aggregate stats from event tables and insert into ktp_match_stats
+	# Counts kills, deaths, headshots, team kills, and suicides per player for this match
 	&execNonQuery("
 		INSERT INTO ktp_match_stats (match_id, player_id, kills, deaths, headshots, team_kills, suicides)
 		SELECT
@@ -3910,8 +3911,8 @@ sub doEvent_KTPMatchEnd
 			COALESCE(k.kills, 0) as kills,
 			COALESCE(d.deaths, 0) as deaths,
 			COALESCE(k.headshots, 0) as headshots,
-			0 as team_kills,
-			0 as suicides
+			COALESCE(tk.team_kills, 0) as team_kills,
+			COALESCE(s.suicides, 0) as suicides
 		FROM ktp_match_players mp
 		JOIN hlstats_Players p ON mp.player_id = p.playerId
 		LEFT JOIN (
@@ -3926,11 +3927,25 @@ sub doEvent_KTPMatchEnd
 			WHERE match_id = '".quoteSQL($matchid)."'
 			GROUP BY victimId
 		) d ON p.playerId = d.victimId
+		LEFT JOIN (
+			SELECT killerId, COUNT(*) as team_kills
+			FROM hlstats_Events_Teamkills
+			WHERE match_id = '".quoteSQL($matchid)."'
+			GROUP BY killerId
+		) tk ON p.playerId = tk.killerId
+		LEFT JOIN (
+			SELECT playerId, COUNT(*) as suicides
+			FROM hlstats_Events_Suicides
+			WHERE match_id = '".quoteSQL($matchid)."'
+			GROUP BY playerId
+		) s ON p.playerId = s.playerId
 		WHERE mp.match_id = '".quoteSQL($matchid)."'
 		ON DUPLICATE KEY UPDATE
 			kills = VALUES(kills),
 			deaths = VALUES(deaths),
-			headshots = VALUES(headshots)
+			headshots = VALUES(headshots),
+			team_kills = VALUES(team_kills),
+			suicides = VALUES(suicides)
 	");
 
 	# Update match end time for most recent record with this match_id

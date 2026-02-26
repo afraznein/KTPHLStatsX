@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS ktp_match_players (
     joined_at DATETIME NOT NULL,
 
     PRIMARY KEY (id),
+    UNIQUE KEY uk_match_player (match_id, player_id),
     KEY idx_match (match_id),
     KEY idx_player (player_id),
     KEY idx_steam (steam_id)
