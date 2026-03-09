@@ -2778,7 +2778,42 @@ while ($loop = &getLine()) {
 			
 
 			if ($ev_verb eq "triggered") {  # it's either 'triggered' or 'triggered a'
-			
+
+				if ($ev_obj_a eq "headshot_kill") {
+					# KTP: Headshot kill marker from stats_logging.sma
+					# Fired immediately after the engine's kill log line for headshot kills.
+					# We flush the frag queue then UPDATE the most recent matching frag to headshot=1.
+					# ev_obj_b = victim player string, ev_obj_c = weapon
+					$ev_type = 900;  # KTP headshot marker
+
+					my $killerinfo = &getPlayerInfo($ev_player, 0);
+					my $victiminfo = &getPlayerInfo($ev_obj_b, 0);
+
+					if ($killerinfo && $victiminfo) {
+						my $killerId = lookupPlayer($s_addr, $killerinfo->{"userid"}, $killerinfo->{"uniqueid"});
+						my $victimId = lookupPlayer($s_addr, $victiminfo->{"userid"}, $victiminfo->{"uniqueid"});
+
+						if ($killerId && $victimId) {
+							# Flush pending frags so the kill is in the DB
+							flushEventTable("Frags");
+
+							# Update the most recent frag by this killer against this victim on this server
+							my $hs_weapon = $ev_obj_c || "";
+							&execNonQuery("
+								UPDATE hlstats_Events_Frags
+								SET headshot = 1
+								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+								AND killerId = ".$killerId->{playerid}."
+								AND victimId = ".$victimId->{playerid}."
+								AND weapon = '".quoteSQL($hs_weapon)."'
+								ORDER BY id DESC
+								LIMIT 1
+							");
+							$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
+						}
+					}
+				} else {
+
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
 				my $victiminfo = &getPlayerInfo($ev_obj_b, 1);
 				$ev_type = 10;
@@ -2802,7 +2837,7 @@ while ($loop = &getLine()) {
 					}
 
 					$ev_type = 11;
-					
+
 					$ev_status = &doEvent_PlayerAction(
 						$playerinfo->{"userid"},
 						$playerinfo->{"uniqueid"},
@@ -2813,6 +2848,7 @@ while ($loop = &getLine()) {
 						&getProperties($ev_properties)
 					);
 				}
+				} # end else (not headshot_kill)
 			} else {
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
 				$ev_type = 11;
@@ -2829,41 +2865,7 @@ while ($loop = &getLine()) {
 					);
 				}
 			}
-		} elsif ($s_output =~ /^"(.+?(?:<.+?>)*)" triggered "headshot_kill" against "(.+?(?:<.+?>)*)" with "([^"]*)"/) {
-		# KTP: Headshot kill marker from stats_logging.sma
-		# Fired immediately after the engine's kill log line for headshot kills.
-		# We flush the frag queue then UPDATE the most recent matching frag to headshot=1.
-		$ev_player = $1;
-		my $hs_victim = $2;
-		my $hs_weapon = $3;
-		$ev_type = 900;  # KTP headshot marker
-
-		my $killerinfo = &getPlayerInfo($ev_player, 0);
-		my $victiminfo = &getPlayerInfo($hs_victim, 0);
-
-		if ($killerinfo && $victiminfo) {
-			my $killerId = lookupPlayer($s_addr, $killerinfo->{"userid"}, $killerinfo->{"uniqueid"});
-			my $victimId = lookupPlayer($s_addr, $victiminfo->{"userid"}, $victiminfo->{"uniqueid"});
-
-			if ($killerId && $victimId) {
-				# Flush pending frags so the kill is in the DB
-				flushEventTable("Frags");
-
-				# Update the most recent frag by this killer against this victim on this server
-				&execNonQuery("
-					UPDATE hlstats_Events_Frags
-					SET headshot = 1
-					WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
-					AND killerId = ".$killerId->{playerid}."
-					AND victimId = ".$victimId->{playerid}."
-					AND weapon = '".quoteSQL($hs_weapon)."'
-					ORDER BY id DESC
-					LIMIT 1
-				");
-				$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
-			}
-		}
-	} elsif ($s_output =~ /^(?:\[STATSME\] )?"(.+?(?:<.+?>)*)" triggered "(weaponstats\d{0,1})"(.*)$/ ) {
+		} elsif ($s_output =~ /^(?:\[STATSME\] )?"(.+?(?:<.+?>)*)" triggered "(weaponstats\d{0,1})"(.*)$/ ) {
 			# Prototype: [STATSME] "player" triggered "weaponstats?"[properties]
 			# Matches:
 			# 501. Statsme weaponstats

@@ -1,5 +1,12 @@
 # KTP HLStatsX Changelog
 
+## [0.3.2] - 2026-03-09
+
+### Fixed
+- **Headshots never recorded (all zeros)** — The `headshot_kill` handler was dead code. It was in an `elsif` branch at line 2832 that could never execute because the generic `triggered` regex at line 2753 matched first and routed all `triggered` events through `PlayerPlayerAction`. Moved the `headshot_kill` check inside the `triggered` block as the first condition, before generic action handling. Removed the unreachable `elsif` branch.
+
+---
+
 ## [0.3.1] - 2026-03-04
 
 ### Added
