@@ -38,6 +38,7 @@
 
 $g_version = "<Unable to Detect>";
 my %db_stmt_cache = ();
+@g_hostgroups_cache = ();  # cached [pattern, name] pairs from hlstats_HostGroups
 
 %g_eventTables = (
 	"TeamBonuses",
@@ -55,21 +56,21 @@ my %db_stmt_cache = ();
 	"Entries",
 		["playerId"],
 	"Frags",
-		["killerId", "victimId", "weapon", "headshot", "killerRole", "victimRole", "pos_x","pos_y","pos_z", "pos_victim_x","pos_victim_y","pos_victim_z"],
+		["killerId", "victimId", "weapon", "headshot", "killerRole", "victimRole", "pos_x","pos_y","pos_z", "pos_victim_x","pos_victim_y","pos_victim_z", "half"],
 	"PlayerActions",
 		["playerId", "actionId", "bonus", "pos_x","pos_y","pos_z"],
 	"PlayerPlayerActions",
 		["playerId", "victimId", "actionId", "bonus", "pos_x","pos_y","pos_z", "pos_victim_x","pos_victim_y","pos_victim_z"],
 	"Suicides",
-		["playerId", "weapon", "pos_x","pos_y","pos_z"],
+		["playerId", "weapon", "pos_x","pos_y","pos_z", "half"],
 	"Teamkills",
-		["killerId", "victimId", "weapon", "pos_x","pos_y","pos_z", "pos_victim_x","pos_victim_y","pos_victim_z"],
+		["killerId", "victimId", "weapon", "pos_x","pos_y","pos_z", "pos_victim_x","pos_victim_y","pos_victim_z", "half"],
 	"Rcon",
 		["type", "remoteIp", "password", "command"],
 	"Admin",
 		["type", "message", "playerName"],
 	"Statsme",
-		["playerId", "weapon", "shots", "hits", "headshots", "damage", "kills", "deaths"],
+		["playerId", "weapon", "shots", "hits", "headshots", "damage", "kills", "deaths", "half"],
 	"Statsme2",
 		["playerId", "weapon", "head", "chest", "stomach", "leftarm", "rightarm", "leftleg", "rightleg"],
 	"StatsmeLatency",
@@ -117,7 +118,10 @@ sub error
 	
 	if ($g_mailto && $g_mailpath)
 	{
-		system("echo \"$errormsg\" | $g_mailpath -s \"HLstatsX:CE crashed `date`\" $g_mailto");
+		if (open(my $mail_pipe, '|-', $g_mailpath, '-s', 'HLstatsX:CE crashed', $g_mailto)) {
+			print $mail_pipe $errormsg;
+			close($mail_pipe);
+		}
 	}
 
 	die("$errormsg\n");
@@ -195,7 +199,10 @@ sub execNonQuery
 		&doConnect();
 	}
 	#&printEvent("DEBUG","execNonQuery:\n".$query);
-	$db_conn->do($query);
+	my $rv = $db_conn->do($query);
+	if (!defined($rv)) {
+		&printEvent("SQL_ERROR", "Query failed: $DBI::errstr | " . substr($query, 0, 200), 1);
+	}
 }
 
 sub execCached {
@@ -242,7 +249,7 @@ sub resolveIp
 	
 	eval
 	{
-		$SIG{ALRM} = sub { die "DNS Timeout\n" };
+		local $SIG{ALRM} = sub { die "DNS Timeout\n" };
 		alarm $g_dns_timeout;	# timeout after $g_dns_timeout sec
 		$host = gethostbyaddr(inet_aton($ip), AF_INET);
 		alarm 0;
@@ -269,14 +276,16 @@ sub resolveIp
 
 
 #
-# object queryHostGroups ()
+# void loadHostGroups ()
 #
-# Returns result identifier.
+# Loads host group patterns from database into @g_hostgroups_cache.
+# Call at startup and on SIGHUP reload.
 #
 
-sub queryHostGroups
+sub loadHostGroups
 {
-	return &doQuery("
+	@g_hostgroups_cache = ();
+	my $result = &doQuery("
 		SELECT
 			pattern,
 			name,
@@ -287,37 +296,40 @@ sub queryHostGroups
 			patternlength DESC,
 			pattern ASC
 	");
+	while (my($pattern, $name) = $result->fetchrow_array())
+	{
+		push @g_hostgroups_cache, [$pattern, $name];
+	}
+	$result->finish;
+	&printEvent("CONFIG", "Loaded " . scalar(@g_hostgroups_cache) . " host group patterns", 1);
 }
 
 
 #
-# string getHostGroup (string hostname[, object result])
+# string getHostGroup (string hostname)
 #
 # Return host group name if any match, or last 2 or 3 parts of hostname.
+# Uses cached @g_hostgroups_cache (populated by loadHostGroups).
 #
 
 sub getHostGroup
 {
-	my ($hostname, $result) = @_;
+	my ($hostname) = @_;
 	my $hostgroup = "";
-	
+
 	# User can define special named hostgroups in hlstats_HostGroups, i.e.
 	# '.adsl.someisp.net' => 'SomeISP ADSL'
-	
-	$result = &queryHostGroups()  unless ($result);
-	$result->execute();
-	
-	while (my($pattern, $name) = $result->fetchrow_array())
+
+	foreach my $entry (@g_hostgroups_cache)
 	{
-		$pattern = quotemeta($pattern);
+		my $pattern = quotemeta($entry->[0]);
 		$pattern =~ s/\\\*/[^.]*/g;	# allow basic shell-style globbing in pattern
 		if ($hostname =~ /$pattern$/)
 		{
-			$hostgroup = $name;
+			$hostgroup = $entry->[1];
 			last;
 		}
 	}
-	$result->finish;
 	
 	if (!$hostgroup)
 	{

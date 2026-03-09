@@ -1,6 +1,6 @@
 # KTP HLStatsX
 
-**Version 0.2.7** | Modified HLStatsX:CE Perl daemon with KTP match integration
+**Version 0.3.1** | Modified HLStatsX:CE Perl daemon with KTP match integration
 
 A fork of [HLStatsX:CE](https://github.com/NomisCZ/hlstatsx-community-edition) that enables match-based statistics tracking for competitive play. Separates warmup/practice stats from official match stats by tagging events with match IDs from KTP Match Handler.
 
@@ -76,7 +76,7 @@ L 02/05/2026 - 15:35:00: KTP_MATCH_END (matchid "KTP-1734355200-dod_charlie") (m
 **New KTP tables:**
 - `ktp_matches` — Match boundaries (match_id, server_id, map, half, start/end times)
 - `ktp_match_players` — Players per match (steam_id, team, joined_at)
-- `ktp_match_stats` — Aggregated kills/deaths/headshots per player per match
+- `ktp_match_stats` — Aggregated kills/deaths/headshots/damage/score per player per match per half
 
 **Views:** `ktp_match_leaderboard`, `ktp_recent_matches`
 

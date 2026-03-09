@@ -1,6 +1,6 @@
 -- KTP HLStatsX Schema Migration
 -- Adds match tracking support for KTP Match Handler integration
--- Version: 0.1.0
+-- Version: 0.2.0
 
 -- ============================================================================
 -- Add match_id column to event tables
@@ -29,6 +29,17 @@ ALTER TABLE hlstats_Events_PlayerActions
 ADD COLUMN IF NOT EXISTS match_id VARCHAR(64) DEFAULT NULL AFTER map;
 
 CREATE INDEX IF NOT EXISTS idx_match_id ON hlstats_Events_PlayerActions (match_id);
+
+-- ============================================================================
+-- Add half column to event tables (for per-half stat aggregation)
+-- Convention: 0=full match total (backward compat), 1=1st half, 2=2nd half, 3+=OT rounds
+-- Note: MySQL 8.0 does not support ADD COLUMN IF NOT EXISTS
+-- ============================================================================
+
+ALTER TABLE hlstats_Events_Frags ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
+ALTER TABLE hlstats_Events_Teamkills ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
+ALTER TABLE hlstats_Events_Suicides ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
+ALTER TABLE hlstats_Events_Statsme ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
 
 -- ============================================================================
 -- Create KTP match tables
@@ -74,11 +85,13 @@ CREATE TABLE IF NOT EXISTS ktp_match_players (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 COMMENT='Players participating in KTP matches';
 
--- Aggregated match statistics per player (computed from events)
+-- Aggregated match statistics per player per half (computed from events)
+-- half=0: full match total, half=1: 1st half, half=2: 2nd half, half=3+: OT rounds
 CREATE TABLE IF NOT EXISTS ktp_match_stats (
     id INT AUTO_INCREMENT,
     match_id VARCHAR(64) NOT NULL,
     player_id INT NOT NULL,
+    half TINYINT NOT NULL DEFAULT 0,
     kills INT DEFAULT 0,
     deaths INT DEFAULT 0,
     headshots INT DEFAULT 0,
@@ -88,17 +101,17 @@ CREATE TABLE IF NOT EXISTS ktp_match_stats (
     score INT DEFAULT 0,
 
     PRIMARY KEY (id),
-    UNIQUE KEY uk_match_player (match_id, player_id),
+    UNIQUE KEY uk_match_player_half (match_id, player_id, half),
     KEY idx_match (match_id),
     KEY idx_player (player_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-COMMENT='Aggregated player stats per KTP match';
+COMMENT='Aggregated player stats per KTP match per half';
 
 -- ============================================================================
 -- Useful views for querying match data
 -- ============================================================================
 
--- View: Match leaderboard with K/D ratio
+-- View: Match leaderboard with K/D ratio (uses half=0 totals)
 CREATE OR REPLACE VIEW ktp_match_leaderboard AS
 SELECT
     m.match_id,
@@ -112,13 +125,15 @@ SELECT
     COALESCE(ms.deaths, 0) AS deaths,
     COALESCE(ms.headshots, 0) AS headshots,
     COALESCE(ms.team_kills, 0) AS team_kills,
+    COALESCE(ms.damage, 0) AS damage,
+    COALESCE(ms.score, 0) AS score,
     CASE WHEN COALESCE(ms.deaths, 0) > 0
          THEN ROUND(COALESCE(ms.kills, 0) / ms.deaths, 2)
          ELSE COALESCE(ms.kills, 0) END AS kd_ratio
 FROM ktp_matches m
 JOIN ktp_match_players mp ON m.match_id = mp.match_id
 JOIN hlstats_Players p ON mp.player_id = p.playerId
-LEFT JOIN ktp_match_stats ms ON m.match_id = ms.match_id AND mp.player_id = ms.player_id
+LEFT JOIN ktp_match_stats ms ON m.match_id = ms.match_id AND mp.player_id = ms.player_id AND ms.half = 0
 ORDER BY m.start_time DESC, ms.kills DESC;
 
 -- View: Recent matches summary
@@ -130,7 +145,7 @@ SELECT
     m.end_time,
     TIMEDIFF(m.end_time, m.start_time) AS duration,
     (SELECT COUNT(*) FROM ktp_match_players WHERE match_id = m.match_id) AS player_count,
-    (SELECT SUM(kills) FROM ktp_match_stats WHERE match_id = m.match_id) AS total_kills,
+    (SELECT SUM(kills) FROM ktp_match_stats WHERE match_id = m.match_id AND half = 0) AS total_kills,
     s.name AS server_name
 FROM ktp_matches m
 JOIN hlstats_Servers s ON m.server_id = s.serverId

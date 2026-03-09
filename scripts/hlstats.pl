@@ -66,6 +66,7 @@ use IO::Select;
 use DBI;
 use Digest::MD5;
 use Encode;
+use Socket qw(sockaddr_in inet_ntoa SO_RCVBUF);
 use bytes;
 
 require "$opt_libdir/ConfigReaderSimple.pm";
@@ -511,7 +512,6 @@ sub calcL4DSkill
 	
 	if ($g_debug > 2) {
 		&printNotice("Begin calcSkill: killerSkill=$killerSkill");
-		&printNotice("Begin calcSkill: victimSkill=$victimSkill");
 	}
 
 	my $modifier = 1.00;
@@ -519,15 +519,15 @@ sub calcL4DSkill
 	if (defined($g_games{$g_servers{$s_addr}->{game}}{weapons}{$weapon})) {
 		$modifier = $g_games{$g_servers{$s_addr}->{game}}{weapons}{$weapon}{modifier};
 	}
-	
+
 	# Calculate the new skills
-	
-	$diffweight=0.5;
+
+	my $diffweight = 0.5;
 	if ($difficulty > 0) {
 			$diffweight = $difficulty / 2;
-	}	
-	
-	my $killerSkillChange = $pointvalue * $diffweight;
+	}
+
+	my $killerSkillChange = $modifier * $diffweight;
 
 	if ($killerSkillChange > $g_skill_maxchange) {
 		&printNotice("Capping killer skill change of $killerSkillChange to $g_skill_maxchange") if ($g_debug > 2);
@@ -1146,7 +1146,7 @@ sub getPlayerInfo
 		} else {
 			if ($g_mode eq "LAN" && !$bot && $userid > 0) {
 				if ($ipAddr ne "") {
-					$g_lan_noplayerinfo->{"$s_addr/$userid/$name"} = {
+					$g_lan_noplayerinfo{"$s_addr/$userid/$name"} = {
 						ipaddress => $ipAddr,
 						userid => $userid,
 						name => $name,
@@ -1443,14 +1443,16 @@ sub flushAll
 	my ($flushevents) = @_;
 	if ($flushevents)
 	{
+		flushAccumulators();
 		while ( my ($table, $colsref) = each(%g_eventTables) )
 		{
 			flushEventTable($table);
 		}
+		%g_ktpScoreAccum = ();  # KTP: Clear score accumulator on shutdown
 	}
-	
+
 	while( my($se, $server) = each(%g_servers))
-	{	
+	{
 		while ( my($pl, $player) = each(%{$server->{"srv_players"}}) )
 		{
 			if ($player)
@@ -1460,6 +1462,58 @@ sub flushAll
 		}
 		$server->flushDB();
 	}
+}
+
+
+#
+# KTP: Flush in-memory accumulators to database
+# Batches Roles, Weapons, and Maps_Counts UPDATEs to reduce MySQL round-trips
+#
+sub flushAccumulators
+{
+	# Flush Roles accumulator: kills and deaths per game:role
+	while (my ($key, $counts) = each(%g_roles_accum)) {
+		my ($game, $code) = split(/:/, $key, 2);
+		next if (!defined($game) || !defined($code));
+		my $set_parts = "";
+		if (($counts->{kills} || 0) > 0) {
+			$set_parts .= "kills=kills+" . int($counts->{kills});
+		}
+		if (($counts->{deaths} || 0) > 0) {
+			$set_parts .= ", " if ($set_parts ne "");
+			$set_parts .= "deaths=deaths+" . int($counts->{deaths});
+		}
+		if ($set_parts ne "") {
+			&execNonQuery("UPDATE hlstats_Roles SET $set_parts WHERE game='" . &quoteSQL($game) . "' AND code='" . &quoteSQL($code) . "'");
+		}
+	}
+	%g_roles_accum = ();
+
+	# Flush Weapons accumulator: kills and headshots per game:weapon
+	while (my ($key, $counts) = each(%g_weapons_accum)) {
+		my ($game, $code) = split(/:/, $key, 2);
+		next if (!defined($game) || !defined($code));
+		my $set_parts = "kills=kills+" . int($counts->{kills} || 0);
+		if (($counts->{headshots} || 0) > 0) {
+			$set_parts .= ", headshots=headshots+" . int($counts->{headshots});
+		}
+		&execNonQuery("UPDATE hlstats_Weapons SET $set_parts WHERE game='" . &quoteSQL($game) . "' AND code='" . &quoteSQL($code) . "'");
+	}
+	%g_weapons_accum = ();
+
+	# Flush Maps_Counts accumulator: kills and headshots per game:map
+	while (my ($key, $counts) = each(%g_maps_accum)) {
+		my ($game, $map) = split(/:/, $key, 2);
+		next if (!defined($game) || !defined($map));
+		my $kills = int($counts->{kills} || 0);
+		my $headshots = int($counts->{headshots} || 0);
+		&execNonQuery("
+			INSERT INTO hlstats_Maps_Counts (game, map, kills, headshots)
+			VALUES ('" . &quoteSQL($game) . "', '" . &quoteSQL($map) . "', $kills, $headshots)
+			ON DUPLICATE KEY UPDATE kills=kills+$kills, headshots=headshots+$headshots
+		");
+	}
+	%g_maps_accum = ();
 }
 
 
@@ -1496,7 +1550,7 @@ $g_server_ip = "";
 $g_server_port = 27015;
 $g_timestamp = 0;
 $g_cpanelhack = 0;
-$g_event_queue_size = 10;
+$g_event_queue_size = 100;
 $g_dns_resolveip = 1;
 $g_dns_timeout = 5;
 $g_skill_maxchange = 100;
@@ -1740,7 +1794,8 @@ sub readDatabaseConfig()
 		$g_gi->close();
 		$g_gi = undef;
 	}
-} 
+	&loadHostGroups();
+}
 
 # Read Config File
 
@@ -1930,8 +1985,12 @@ if ($g_stdin) {
 		LocalAddr=>"$s_ip",
 		LocalPort=>"$s_port"
 	) or die ("\nCan't setup UDP socket on $ip$s_port: $!\n");
-	
+	$s_socket->sockopt(SO_RCVBUF, 1048576);  # Request 1MB receive buffer
+	my $actual_rcvbuf = $s_socket->sockopt(SO_RCVBUF);
+	$s_select = IO::Select->new($s_socket);
+
 	&printEvent("UDP", "Opening UDP listen socket on $ip$s_port ... ok", 1);
+	&printEvent("UDP", "Socket receive buffer: " . int($actual_rcvbuf / 1024) . "KB", 1);
 }
 
 if ($g_track_stats_trend > 0) {
@@ -1955,7 +2014,7 @@ if ($g_log_chat > 0) {
 
 if ($g_global_chat == 1) {
 	&printEvent("HLSTATSX", "Broadcasting public chat to all players is enabled", 1);
-} elsif ($g_gloabl_chat == 2) {
+} elsif ($g_global_chat == 2) {
 	&printEvent("HLSTATSX", "Broadcasting public chat to admins is enabled", 1);
 } else {
 	&printEvent("HLSTATSX", "Broadcasting public chat is disabled", 1);
@@ -1969,6 +2028,13 @@ if ($g_global_chat == 1) {
 # KTP: Match context tracking for KTP Match Handler integration
 # Stores match_id per server address for tagging events
 %g_ktpMatchContext = ();
+
+# KTP: In-memory accumulators for batching frag-related UPDATEs
+# Flushed every 30s, on shutdown, and before match stats aggregation
+%g_roles_accum = ();    # {game:code} => {kills => N, deaths => N}
+%g_weapons_accum = ();  # {game:code} => {kills => N, headshots => N}
+%g_maps_accum = ();     # {game:map}  => {kills => N, headshots => N}
+%g_ktpScoreAccum = ();  # {match_id}{player_id}{half_num} => score total
 
 &printEvent("HLSTATSX", "HLstatsX:CE is now running ($g_mode mode, debug level $g_debug)", 1);
 
@@ -2015,59 +2081,77 @@ while ($loop = &getLine()) {
 			$start_parse_time = $ev_unixtime;
 		}
 	} else {
-		if(IO::Select->new($s_socket)->can_read(2)) {  # 2 second timeout
-			$s_socket->recv($s_output, 1024);
-			$s_output = decode( 'utf8', $s_output );
+		# UDP mode: drain-then-process architecture
+		# Drain phase: read all available packets into queue
+		@_pkt_queue = ();
+		if ($s_select->can_read(2)) {  # 2 second timeout for first packet
+			while (scalar(@_pkt_queue) < 500) {
+				my ($pkt_data, $pkt_peer);
+				$pkt_peer = recv($s_socket, $pkt_data, 4096, 0);
+				last if (!defined($pkt_peer) || length($pkt_data) == 0);
+				my ($pkt_port, $pkt_iaddr) = sockaddr_in($pkt_peer);
+				push @_pkt_queue, [$pkt_data, inet_ntoa($pkt_iaddr), $pkt_port];
+				last unless $s_select->can_read(0);  # non-blocking check for more
+			}
+			if (scalar(@_pkt_queue) >= 500) {
+				&printEvent("UDP", "Drain cap reached: 500 packets in single cycle, possible burst", 1);
+			}
 			$timeout = 0;
 		} else {
 			$timeout++;
 			if ($timeout % 60 == 0) {
 				&printEvent("HLSTATSX", "No data since 120 seconds");
-			}    
-		}
-
-		if (($s_output =~ /^.*PROXY Key=(.+) (.*)PROXY.+/) && $proxy_key ne "") {
-			$rproxy_key = $1;
-			$s_addr = $2;
-
-			if ($s_addr ne "") {
-				($s_peerhost, $s_peerport) = split(/:/, $s_addr);
 			}
-
-			$proxy_s_peerhost = $s_socket->peerhost;
-			$proxy_s_peerport  = $s_socket->peerport;
-			&printEvent("PROXY", "Detected proxy call from $proxy_s_peerhost:$proxy_s_peerport") if ($d_debug > 2);
-
-
-			if ($proxy_key eq $rproxy_key) {
-				$s_output =~ s/PROXY.*PROXY //;
-				if ($s_output =~ /^C;HEARTBEAT;/) {
-					&printEvent("PROXY, Heartbeat request from $proxy_s_peerhost:$proxy_s_peerport");
-				} elsif ($s_output =~ /^C;RELOAD;/) {
-					&printEvent("PROXY, Reload request from $proxy_s_peerhost:$proxy_s_peerport");
-				} elsif ($s_output =~ /^C;KILL;/) {
-					&printEvent("PROXY, Kill request from $proxy_s_peerhost:$proxy_s_peerport");
-				} else {
-					&printEvent("PROXY", $s_output);
-				}
-			} else {
-				&printEvent("PROXY", "proxy_key mismatch, dropping package");
-				&printEvent("PROXY", $s_output) if ($g_debug > 2);
-				$s_output = "";
-				next;
-			}
-		} else {
-			# Reset the proxy stuff and use it as "normal"
-			$rproxy_key = "";
-			$proxy_s_peerhost = "";
-			$proxy_s_peerport = "";
-
-			$s_peerhost  = $s_socket->peerhost;
-			$s_peerport  = $s_socket->peerport;
-
-			$s_addr = "$s_peerhost:$s_peerport";
 		}
 	}
+
+	# Process phase: iterate drained packets (UDP) or single pass (STDIN)
+	my $_pkt_count = $g_stdin ? 1 : scalar(@_pkt_queue);
+	for (my $_pi = 0; $_pi < $_pkt_count; $_pi++) {
+		# For UDP mode, set per-packet variables from drained queue
+		if (!$g_stdin) {
+			my $_pkt = $_pkt_queue[$_pi];
+			$s_output = decode('utf8', $_pkt->[0]);
+			$s_peerhost = $_pkt->[1];
+			$s_peerport = $_pkt->[2];
+			$s_addr = "$s_peerhost:$s_peerport";
+
+			if (($s_output =~ /^.*PROXY Key=(.+?) (.*)PROXY.+/) && $proxy_key ne "") {
+				$rproxy_key = $1;
+				$s_addr = $2;
+
+				if ($s_addr ne "") {
+					($s_peerhost, $s_peerport) = split(/:/, $s_addr);
+				}
+
+				$proxy_s_peerhost = $_pkt->[1];
+				$proxy_s_peerport = $_pkt->[2];
+				&printEvent("PROXY", "Detected proxy call from $proxy_s_peerhost:$proxy_s_peerport") if ($g_debug > 2);
+
+				if ($proxy_key eq $rproxy_key) {
+					$s_output =~ s/PROXY.*PROXY //;
+					if ($s_output =~ /^C;HEARTBEAT;/) {
+						&printEvent("PROXY", "Heartbeat request from $proxy_s_peerhost:$proxy_s_peerport");
+					} elsif ($s_output =~ /^C;RELOAD;/) {
+						&printEvent("PROXY", "Reload request from $proxy_s_peerhost:$proxy_s_peerport");
+					} elsif ($s_output =~ /^C;KILL;/) {
+						&printEvent("PROXY", "Kill request from $proxy_s_peerhost:$proxy_s_peerport");
+					} else {
+						&printEvent("PROXY", $s_output);
+					}
+				} else {
+					&printEvent("PROXY", "proxy_key mismatch, dropping package");
+					&printEvent("PROXY", $s_output) if ($g_debug > 2);
+					$s_output = "";
+					next;
+				}
+			} else {
+				# Reset the proxy stuff
+				$rproxy_key = "";
+				$proxy_s_peerhost = "";
+				$proxy_s_peerport = "";
+			}
+		}
 
 	if ($timeout == 0) {
 		my ($address, $port);
@@ -2128,11 +2212,11 @@ while ($loop = &getLine()) {
 				$std_cfg{"BroadCastEvents"}					= 0;
 				$std_cfg{"BroadCastPlayerActions"}			= 0;
 				$std_cfg{"BroadCastEventsCommand"}			= "say";
-				$std_cfg{"BroadCastEventsCommandAnnounce"}	= "say",
+				$std_cfg{"BroadCastEventsCommandAnnounce"}	= "say";
 				$std_cfg{"PlayerEvents"}					= 1;
 				$std_cfg{"PlayerEventsCommand"}				= "say";
-				$std_cfg{"PlayerEventsCommandOSD"}			= "",
-				$std_cfg{"PlayerEventsCommandHint"}			= "",
+				$std_cfg{"PlayerEventsCommandOSD"}			= "";
+				$std_cfg{"PlayerEventsCommandHint"}			= "";
 				$std_cfg{"PlayerEventsAdminCommand"}		= "";
 				$std_cfg{"ShowStats"}						= 1;
 				$std_cfg{"TKPenalty"}						= 50;
@@ -2817,6 +2901,20 @@ while ($loop = &getLine()) {
 						$ev_properties{"deaths"}
 					);
 
+					# KTP: Accumulate score for match stats (score comes from weaponstats)
+					if (defined($g_ktpMatchContext{$s_addr}) &&
+						$g_ktpMatchContext{$s_addr}{match_id} ne "") {
+						my $score_val = $ev_properties{"score"} || 0;
+						if ($score_val > 0) {
+							my $mid = $g_ktpMatchContext{$s_addr}{match_id};
+							my $hnum = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+							my $player = lookupPlayer($s_addr, $playerId, $playerUniqueId);
+							if ($player) {
+								$g_ktpScoreAccum{$mid}{$player->{playerid}}{$hnum} += $score_val;
+							}
+						}
+					}
+
 					if (!$ingame) {
 						&doEvent_Disconnect(
 							$playerId,
@@ -3366,6 +3464,17 @@ while ($loop = &getLine()) {
 					$ev_properties{"matchid"},
 					$ev_properties{"map"}
 				);
+			} elsif ($ev_obj_a =~ /^KTP_HALF_END\s+(.*)$/) {
+				# KTP: Half end event
+				# Prototype: KTP_HALF_END (matchid "xxx") (map "xxx") (half "1st")
+				$ev_properties = $1;
+				%ev_properties = &getProperties($ev_properties);
+				$ev_type = 602;  # KTP event type
+				$ev_status = &doEvent_KTPHalfEnd(
+					$ev_properties{"matchid"},
+					$ev_properties{"map"},
+					$ev_properties{"half"}
+				);
 			} else {
 				# Default: Treat as admin message
 				$ev_type = 500;
@@ -3683,6 +3792,7 @@ EOT
 	} else {
 		$s_addr = "";
 	}
+	} # end per-packet for loop
 
 	while( my($server) = each(%g_servers))
 	{	
@@ -3699,9 +3809,6 @@ EOT
 					if ($g_mode eq "LAN")  {
 						$timeout = $timeout * 2;
 					}
-					#if (($player->{is_bot} == 0) && (($ev_unixtime - $player->get("timestamp")) > ($timeout - 20))) {
-					#	&printEvent(400, $player->getInfoString()." is ".($ev_unixtime - $player->get("timestamp"))."s idle");
-					#}  
 					my $userid = $player->{userid};
 					my $uniqueid = $player->{uniqueid};
 					if ( ($ev_daemontime - $player->{timestamp}) > $timeout ) {
@@ -3729,7 +3836,7 @@ EOT
 
 	while ( my($pl, $player) = each(%g_preconnect) ) {
 		my $timeout = 600;
-		if ( ($ev_unixtime - $player->{"timestamp"}) > $timeout ) {
+		if ( ($ev_daemontime - $player->{"timestamp"}) > $timeout ) {
 			&printEvent(401, "Clearing pre-connect entry with key ".$pl);
 			delete($g_preconnect{$pl});
 		}
@@ -3753,10 +3860,13 @@ EOT
 				flushEventTable($table);
 			}
 		}
-		
-		if (defined($g_servers{$s_addr})) {
-			if (($g_servers{$s_addr}->{map} eq "") && (($timeout > 0) && ($timeout % 60 == 0))) {
-				$g_servers{$s_addr}->get_map();
+		flushAccumulators();
+
+		if ($timeout > 0 && $timeout % 60 == 0) {
+			while (my($map_addr, $map_server) = each(%g_servers)) {
+				if (defined($map_server) && $map_server->{map} eq "") {
+					$map_server->get_map();
+				}
 			}
 		}
 	}  
@@ -3817,6 +3927,9 @@ sub doEvent_KTPMatchStart
 		elsif ($half =~ /^2/) { $half_num = 2; }
 		elsif ($half =~ /^OT(\d+)/) { $half_num = 2 + $1; }
 	}
+
+	# KTP: Store half_num in match context for per-half event tracking
+	$g_ktpMatchContext{$s_addr}{half_num} = $half_num;
 
 	# KTP DEBUG: Log parsed half number
 	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: half_num=$half_num server_id=$server_id", 1);
@@ -3890,7 +4003,7 @@ sub ktpTrackMatchPlayer
 
 #
 # KTP: Handle KTP_MATCH_END event
-# Aggregates stats from Events_Frags and updates match record
+# Aggregates per-half and total stats from event tables into ktp_match_stats
 #
 sub doEvent_KTPMatchEnd
 {
@@ -3901,58 +4014,123 @@ sub doEvent_KTPMatchEnd
 	# Get server ID
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
-	# Aggregate stats from event tables and insert into ktp_match_stats
-	# Counts kills, deaths, headshots, team kills, and suicides per player for this match
-	&execNonQuery("
-		INSERT INTO ktp_match_stats (match_id, player_id, kills, deaths, headshots, team_kills, suicides)
-		SELECT
-			'".quoteSQL($matchid)."' as match_id,
-			p.playerId as player_id,
-			COALESCE(k.kills, 0) as kills,
-			COALESCE(d.deaths, 0) as deaths,
-			COALESCE(k.headshots, 0) as headshots,
-			COALESCE(tk.team_kills, 0) as team_kills,
-			COALESCE(s.suicides, 0) as suicides
-		FROM ktp_match_players mp
-		JOIN hlstats_Players p ON mp.player_id = p.playerId
-		LEFT JOIN (
-			SELECT killerId, COUNT(*) as kills, SUM(headshot) as headshots
-			FROM hlstats_Events_Frags
-			WHERE match_id = '".quoteSQL($matchid)."'
-			GROUP BY killerId
-		) k ON p.playerId = k.killerId
-		LEFT JOIN (
-			SELECT victimId, COUNT(*) as deaths
-			FROM hlstats_Events_Frags
-			WHERE match_id = '".quoteSQL($matchid)."'
-			GROUP BY victimId
-		) d ON p.playerId = d.victimId
-		LEFT JOIN (
-			SELECT killerId, COUNT(*) as team_kills
-			FROM hlstats_Events_Teamkills
-			WHERE match_id = '".quoteSQL($matchid)."'
-			GROUP BY killerId
-		) tk ON p.playerId = tk.killerId
-		LEFT JOIN (
-			SELECT playerId, COUNT(*) as suicides
-			FROM hlstats_Events_Suicides
-			WHERE match_id = '".quoteSQL($matchid)."'
-			GROUP BY playerId
-		) s ON p.playerId = s.playerId
-		WHERE mp.match_id = '".quoteSQL($matchid)."'
-		ON DUPLICATE KEY UPDATE
-			kills = VALUES(kills),
-			deaths = VALUES(deaths),
-			headshots = VALUES(headshots),
-			team_kills = VALUES(team_kills),
-			suicides = VALUES(suicides)
+	# KTP: Flush all pending event queues and accumulators before aggregation
+	# With queue size 100, up to 100 kills could be in-memory when match ends
+	flushEventTable("Frags");
+	flushEventTable("Teamkills");
+	flushEventTable("Suicides");
+	flushEventTable("Statsme");
+	flushAccumulators();
+
+	# Get all halves recorded for this match
+	my @halves = ();
+	my $q_matchid = quoteSQL($matchid);
+	my $result = &doQuery("
+		SELECT half FROM ktp_matches
+		WHERE match_id = '$q_matchid' AND server_id = $server_id
+		ORDER BY half
 	");
+	if ($result) {
+		while (my $row = $result->fetchrow_hashref()) {
+			push @halves, $row->{half};
+		}
+	}
+	@halves = (0) if (scalar(@halves) == 0);
+
+	&printEvent("KTP_DEBUG", "doEvent_KTPMatchEnd: match=$matchid halves=[@halves]", 1);
+
+	# Aggregate per-half stats from event tables into ktp_match_stats
+	foreach my $half_num (@halves) {
+		&execNonQuery("
+			INSERT INTO ktp_match_stats
+				(match_id, player_id, half, kills, deaths, headshots,
+				 team_kills, suicides, damage, score)
+			SELECT
+				'$q_matchid', p.playerId, $half_num,
+				COALESCE(k.kills, 0), COALESCE(d.deaths, 0),
+				COALESCE(k.headshots, 0), COALESCE(tk.team_kills, 0),
+				COALESCE(s.suicides, 0), COALESCE(dmg.damage, 0), 0
+			FROM ktp_match_players mp
+			JOIN hlstats_Players p ON mp.player_id = p.playerId
+			LEFT JOIN (
+				SELECT killerId, COUNT(*) as kills, SUM(headshot) as headshots
+				FROM hlstats_Events_Frags
+				WHERE match_id = '$q_matchid' AND half = $half_num
+				GROUP BY killerId
+			) k ON p.playerId = k.killerId
+			LEFT JOIN (
+				SELECT victimId, COUNT(*) as deaths
+				FROM hlstats_Events_Frags
+				WHERE match_id = '$q_matchid' AND half = $half_num
+				GROUP BY victimId
+			) d ON p.playerId = d.victimId
+			LEFT JOIN (
+				SELECT killerId, COUNT(*) as team_kills
+				FROM hlstats_Events_Teamkills
+				WHERE match_id = '$q_matchid' AND half = $half_num
+				GROUP BY killerId
+			) tk ON p.playerId = tk.killerId
+			LEFT JOIN (
+				SELECT playerId, COUNT(*) as suicides
+				FROM hlstats_Events_Suicides
+				WHERE match_id = '$q_matchid' AND half = $half_num
+				GROUP BY playerId
+			) s ON p.playerId = s.playerId
+			LEFT JOIN (
+				SELECT playerId, SUM(damage) as damage
+				FROM hlstats_Events_Statsme
+				WHERE match_id = '$q_matchid' AND half = $half_num
+				GROUP BY playerId
+			) dmg ON p.playerId = dmg.playerId
+			WHERE mp.match_id = '$q_matchid'
+			ON DUPLICATE KEY UPDATE
+				kills = VALUES(kills), deaths = VALUES(deaths),
+				headshots = VALUES(headshots), team_kills = VALUES(team_kills),
+				suicides = VALUES(suicides), damage = VALUES(damage)
+		");
+
+		# Update score from in-memory accumulator
+		if (defined($g_ktpScoreAccum{$matchid})) {
+			foreach my $pid (keys %{$g_ktpScoreAccum{$matchid}}) {
+				my $sc = $g_ktpScoreAccum{$matchid}{$pid}{$half_num} || 0;
+				next if ($sc == 0);
+				&execNonQuery("
+					UPDATE ktp_match_stats SET score = $sc
+					WHERE match_id = '$q_matchid'
+					AND player_id = $pid AND half = $half_num
+				");
+			}
+		}
+	}
+
+	# Insert total row (half=0) by summing per-half rows
+	if ($halves[0] != 0) {
+		&execNonQuery("
+			INSERT INTO ktp_match_stats
+				(match_id, player_id, half, kills, deaths, headshots,
+				 team_kills, suicides, damage, score)
+			SELECT match_id, player_id, 0,
+				SUM(kills), SUM(deaths), SUM(headshots),
+				SUM(team_kills), SUM(suicides), SUM(damage), SUM(score)
+			FROM ktp_match_stats
+			WHERE match_id = '$q_matchid' AND half > 0
+			GROUP BY match_id, player_id
+			ON DUPLICATE KEY UPDATE
+				kills = VALUES(kills), deaths = VALUES(deaths),
+				headshots = VALUES(headshots), team_kills = VALUES(team_kills),
+				suicides = VALUES(suicides), damage = VALUES(damage),
+				score = VALUES(score)
+		");
+	}
+
+	# Clean up score accumulator for this match
+	delete $g_ktpScoreAccum{$matchid};
 
 	# Update match end time for most recent record with this match_id
 	&execNonQuery("
 		UPDATE ktp_matches
 		SET end_time = NOW()
-		WHERE match_id = '".quoteSQL($matchid)."'
+		WHERE match_id = '$q_matchid'
 		AND server_id = $server_id
 		AND end_time IS NULL
 		ORDER BY start_time DESC
@@ -3965,7 +4143,7 @@ sub doEvent_KTPMatchEnd
 		delete $g_ktpMatchContext{$s_addr};
 	}
 
-	&printEvent("KTP", "Match ended: $matchid on $map (stats aggregated)", 1);
+	&printEvent("KTP", "Match ended: $matchid on $map (per-half stats aggregated)", 1);
 
 	return 1;
 }

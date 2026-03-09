@@ -1,5 +1,70 @@
 # KTP HLStatsX Changelog
 
+## [0.3.1] - 2026-03-04
+
+### Added
+- **Per-half stat breakdown** — Event tables (`Frags`, `Teamkills`, `Suicides`, `Statsme`) now record `half` column (1=1st half, 2=2nd half, 3+=OT rounds). `ktp_match_stats` aggregates per-half rows plus a `half=0` total row per player.
+- **Damage aggregation** — `doEvent_KTPMatchEnd` now JOINs `hlstats_Events_Statsme` to aggregate total damage dealt per player per half. Previously the `damage` column existed but was never populated.
+- **Score (objective) tracking** — Weaponstats parser accumulates `score` property from `stats_logging.sma` into `%g_ktpScoreAccum` in-memory hash, applied to `ktp_match_stats` at match end.
+- **Statsme event queue flush** — `doEvent_KTPMatchEnd` now flushes the `Statsme` event queue before aggregation (was missing — only Frags, Teamkills, Suicides were flushed).
+- **`%g_ktpScoreAccum` global** — Three-level hash `{match_id}{player_id}{half_num}` for accumulating objective scores across weaponstats events. Cleared per-match on match end and globally on daemon shutdown.
+
+### Changed
+- **`doEvent_KTPMatchEnd` rewritten** — Queries `ktp_matches` for all halves, aggregates stats per-half in a loop, then inserts a `half=0` total row by summing per-half data. Replaces the single flat aggregation query.
+- **`doEvent_KTPMatchStart` stores `half_num`** — Integer half number now stored in `$g_ktpMatchContext{$s_addr}{half_num}` for use by event handlers.
+- **Event handlers pass `half_num` to `recordEvent`** — `doEvent_Frag`, `doEvent_Suicide`, and `doEvent_Statsme` look up `half_num` from match context and pass it as the last argument to their `recordEvent` calls (Frags, Teamkills, Suicides, Statsme).
+
+### Schema
+- Added `half TINYINT NOT NULL DEFAULT 0` to `hlstats_Events_Frags`, `hlstats_Events_Teamkills`, `hlstats_Events_Suicides`, `hlstats_Events_Statsme`
+- Added `half TINYINT NOT NULL DEFAULT 0` to `ktp_match_stats` (after `player_id`)
+- Replaced `uk_match_player` unique key with `uk_match_player_half (match_id, player_id, half)`
+- Updated `ktp_match_leaderboard` and `ktp_recent_matches` views to filter on `half=0` and include `damage`/`score`
+- Existing data preserved: all prior rows default to `half=0` (full match total)
+- **Migration:** `sql/migrate_002_half_damage_score.sql`
+
+---
+
+## [0.3.0] - 2026-03-03
+
+### Performance
+- **Drain-then-process UDP architecture** - Main loop now drains all available packets (up to 500) into a queue before processing any, preventing kernel buffer overflow during burst periods. Per-packet peer address captured via `sockaddr_in()` instead of stale `peerhost/peerport`.
+- **Batched frag UPDATEs via in-memory accumulators** - Roles, Weapons, and Maps_Counts UPDATEs replaced with hash increments flushed every 30 seconds, reducing per-frag MySQL round-trips from 4 to 0.
+- **Event queue size increased 10 to 100** - Reduces multi-row INSERT frequency, cutting MySQL round-trips further. 30-second timer flush remains as staleness bound.
+- **IO::Select created once and reused** - Eliminated per-iteration `IO::Select->new()` allocation.
+- **1MB socket receive buffer** - Explicit `SO_RCVBUF` request as backup to system-level sysctl defaults.
+- **Chat command regex chain replaced with hash lookup** - 30+ individual regex matches for `hlx_auto` command validation replaced with O(1) hash lookup.
+- **`get_fav_weapon()` query reduction** - Reduced from 4 sequential queries to 2 using correlated subqueries.
+- **Host group patterns cached at startup** - `loadHostGroups()` loads patterns once from DB into `@g_hostgroups_cache`, refreshed on SIGHUP. Eliminates per-connect DB query.
+
+### Fixed
+- **Match stats flush before aggregation** - `doEvent_KTPMatchEnd` now flushes Frags, Teamkills, Suicides event queues and accumulators before running aggregation query. With queue size 100, up to 100 kills could be in-memory when match ends.
+- **Action hash access ignored map-specific variant** - `doEvent_TeamAction` and `doEvent_WorldAction` checked for both `$action` and `$map."_$action"` in an OR condition, but always accessed the non-prefixed key. Now determines which key matched and uses it consistently.
+- **`$cmd_str` sent as empty RCON command** - Three `dorcon()` calls were outside the `display_events` conditional, sending undefined RCON commands when display was off. Moved inside the guard.
+- **`printEvent()` missing argument separator in proxy handler** - Three calls passed a single concatenated string instead of separate `(code, description)` arguments, producing malformed log output.
+- **`$g_lan_noplayerinfo` hash/hashref mismatch** - Write used `->{}` (hashref) syntax while reads used `%{}` (hash) syntax, making LAN mode player tracking non-functional.
+- **Pre-connect timeout used stale timestamp** - Used `$ev_unixtime` (from last parsed event) instead of `$ev_daemontime` (current clock) for pre-connect cleanup.
+- **`$pointvalue` undefined in `calcL4DSkill()`** - Variable was used but never defined. Changed to `$modifier` (the weapon skill modifier). Also added `my` declaration to `$diffweight`.
+- **Proxy regex greedy mismatch** - `(.+)` greedily consumed spaces in proxy key matching, potentially swallowing part of the address capture. Changed to `(.+?)`.
+- **"STEANBANS" typo** - Fixed to "STEAMBANS" in disconnect handler log string.
+- **"KD-Radio" typo** - Fixed to "KD-Ratio" in player stats chat output.
+- **Duplicate URL parameter** - `/load` command URL had `mode=status&server_id=%s&mode=load` with redundant first `mode=`. Removed.
+- **Commas instead of semicolons** - Three hash assignments in server config defaults used comma operator instead of semicolons.
+- **`execNonQuery` silent error dropping** - Failed queries now logged via `printEvent("SQL_ERROR", ...)` instead of silently discarded.
+- **Shell injection in `error()` mail handler** - Replaced `system("... | $mailpath ...")` with safe list-form `open` pipe.
+- **`$SIG{ALRM}` handler leaked after DNS timeout** - Changed to `local $SIG{ALRM}` for automatic restoration after eval block.
+- **`$d_debug` typo** - Fixed to `$g_debug` in drain cap logging.
+- **`$g_gloabl_chat` typo** - Fixed to `$g_global_chat`.
+- **`nextkillzvic` hash key typo** - Fixed to `nextkillvicz`.
+- **`$killer` used instead of `$player`** - Fixed bot check in `doEvent_PlayerPlayerAction`.
+- **Stale `$s_addr` in housekeeping map check** - Replaced single-server check with iteration over all servers.
+- **Missing `KTP_HALF_END` handler** - Added elsif branch in AMXX wrapper handler for half-end events.
+
+### Removed
+- Dead geo parsing block in `hlx_set` handler (parsed variables but never used them)
+- Commented-out idle detection code (superseded by active `$ev_daemontime` version)
+
+---
+
 ## [0.2.7] - 2026-02-25
 
 ### Fixed
