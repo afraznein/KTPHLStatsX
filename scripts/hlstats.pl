@@ -329,9 +329,12 @@ sub recordEvent
 	my @coldata = @_;
 
 	# KTP: Get match_id from context if active for this server (NULL if no match)
+	# Only tag events with match_id when round is live (filter freeze-time kills)
 	my $ktp_match_id_sql = "NULL";
 	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
-		$ktp_match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$ktp_match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+		}
 	}
 
 	my $value = "(FROM_UNIXTIME($::ev_unixtime),".$g_servers{$s_addr}->{'id'}.",'".quoteSQL($g_servers{$s_addr}->get_map())."',".$ktp_match_id_sql;
@@ -3566,6 +3569,24 @@ while ($loop = &getLine()) {
 				$ev_properties{"map"},
 				$ev_properties{"half"}
 			);
+		} elsif ($s_output =~ /^KTP_ROUND_FREEZE\s+(.*)$/) {
+			# KTP: Round freeze event - pause match_id tagging
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 603;  # KTP event type
+			if (defined($g_ktpMatchContext{$s_addr})) {
+				$g_ktpMatchContext{$s_addr}{round_live} = 0;
+				&printEvent("KTP_DEBUG", "KTP_ROUND_FREEZE: match=$g_ktpMatchContext{$s_addr}{match_id}", 1);
+			}
+		} elsif ($s_output =~ /^KTP_ROUND_LIVE\s+(.*)$/) {
+			# KTP: Round live event - resume match_id tagging
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 604;  # KTP event type
+			if (defined($g_ktpMatchContext{$s_addr})) {
+				$g_ktpMatchContext{$s_addr}{round_live} = 1;
+				&printEvent("KTP_DEBUG", "KTP_ROUND_LIVE: match=$g_ktpMatchContext{$s_addr}{match_id}", 1);
+			}
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -3907,6 +3928,7 @@ sub doEvent_KTPMatchStart
 		match_id => $matchid,
 		map => $map,
 		half => $half || "1",
+		round_live => 1,  # KTP: Default to live; toggled by KTP_ROUND_FREEZE/KTP_ROUND_LIVE
 		players_tracked => {}  # Track which players we've already recorded
 	};
 
@@ -4185,7 +4207,13 @@ sub doEvent_KTPHalfEnd
 		AND end_time IS NULL
 	");
 
-	&printEvent("KTP", "Half ended: $matchid half $half_num on $map (end_time set)", 1);
+	# Clear match context so inter-half kills aren't tagged with match_id
+	if (defined($g_ktpMatchContext{$s_addr})) {
+		&printEvent("KTP_DEBUG", "doEvent_KTPHalfEnd: Clearing match context for inter-half gap", 1);
+		delete $g_ktpMatchContext{$s_addr};
+	}
+
+	&printEvent("KTP", "Half ended: $matchid half $half_num on $map (end_time set, context cleared)", 1);
 
 	return 1;
 }
