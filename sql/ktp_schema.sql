@@ -49,7 +49,9 @@ ALTER TABLE hlstats_Events_Statsme ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS ktp_matches (
     id INT AUTO_INCREMENT,
     match_id VARCHAR(64) NOT NULL,
-    server_id INT NOT NULL,
+    -- INT UNSIGNED to match hlstats_Servers.serverId; a plain INT FK fails on
+    -- MySQL with errno 1824 (referenced-table open failure on a type mismatch).
+    server_id INT UNSIGNED NOT NULL,
     map_name VARCHAR(32) NOT NULL,
     half TINYINT DEFAULT 1 COMMENT '1=first half, 2=second half',
     start_time DATETIME NOT NULL,
@@ -60,10 +62,10 @@ CREATE TABLE IF NOT EXISTS ktp_matches (
     UNIQUE KEY uk_match_id_half (match_id, half),
     KEY idx_server (server_id),
     KEY idx_start_time (start_time),
-    KEY idx_map (map_name),
-
-    FOREIGN KEY (server_id) REFERENCES hlstats_Servers(serverId)
-        ON DELETE CASCADE
+    KEY idx_map (map_name)
+    -- No FOREIGN KEY to hlstats_Servers: the HLStatsX base tables are MyISAM,
+    -- which has no FK support, so an InnoDB FK referencing it fails with errno
+    -- 1824. server_id stays an indexed column; integrity is enforced app-side.
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 COMMENT='KTP match metadata - tracks match boundaries';
 
