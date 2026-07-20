@@ -1,6 +1,18 @@
 -- KTP HLStatsX Schema Migration
 -- Adds match tracking support for KTP Match Handler integration
--- Version: 0.2.0
+-- Version: 0.3.3
+--
+-- ⚠️ DO NOT RUN THIS FILE AS-IS ON MySQL. The match_id block below uses
+-- ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS, which is MariaDB-only
+-- syntax — MySQL rejects it at every version (the comment further down says so,
+-- and the `half` block is written correctly for MySQL). `mysql < this_file`
+-- aborts at the first ALTER and applies NOTHING after it.
+--
+-- Verified 2026-07-20 on the live data server (MySQL 8.0.46): the match_id
+-- columns DO exist on Frags / Teamkills / PlayerActions, so production was
+-- populated by some other path. The hazard is a FRESH install — notably LAN
+-- data-server provisioning — where this file silently applies almost nothing.
+-- Apply the match_id block by hand, or port it to plain ALTER first.
 
 -- ============================================================================
 -- Add match_id column to event tables

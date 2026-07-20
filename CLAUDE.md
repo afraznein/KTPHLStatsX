@@ -3,6 +3,13 @@
 > **IPs here are placeholders** — this repo is public. Real addresses resolve in
 > the private root context (`KTP Git Projects/CLAUDE.md` § IP Addresses),
 > which is deliberately not in any git repository.
+>
+> **One deliberate exception:** `README.md`'s `logaddress_add <data-server>:27500`
+> carries the real address, because it is the endpoint an operator has to type to
+> ship logs. It stays an IP rather than a hostname — the directive is UDP and
+> HLDS hostname resolution there is not guaranteed, so substituting a name risks
+> silently breaking ingest. Note the listener accepts unauthenticated log lines,
+> so publishing it is a small log-injection surface; revisit if that changes.
 
 **REQUIRED: Before modifying or deploying this service, invoke the `service-dev` skill** (`.claude/skills/service-dev/SKILL.md`). It carries the fork-discipline boundary, the match-context staleness landmine, and the deploy/verify checklist; do not edit `hlstats.pl` without it loaded.
 
@@ -45,7 +52,7 @@ log on
 sv_logbans 1
 sv_logecho 1
 sv_logfile 1
-log_address_add <DATA_SERVER_IP>:27500
+logaddress_add <DATA_SERVER_IP>:27500
 ```
 
 ## How It Works
@@ -66,10 +73,13 @@ Debug points:
 - `KTP_DEBUG KTP_MATCH_END parsed` - Parsed match end properties
 - `KTP_DEBUG doEvent_KTPMatchStart CALLED` - Function entry with args
 - `KTP_DEBUG doEvent_KTPMatchStart: half_num=` - Parsed half number and server_id
+- `KTP_DEBUG KTP_ROUND_FREEZE: match=` - Round went to freeze; match_id tagging paused (0.3.3+)
+- `KTP_DEBUG KTP_ROUND_LIVE: match=` - Round went live; match_id tagging resumed (0.3.3+)
+- `KTP_DEBUG doEvent_KTPHalfEnd: Clearing match context for inter-half gap` (0.3.3+)
 
 ## File Locations
 - **Daemon:** `/opt/hlstatsx/scripts/hlstats.pl` (authoritative KTP handlers)
-- **Handlers:** `/opt/hlstatsx/scripts/HLstats_EventHandlers.plib` (base handlers, NOT KTP)
+- **Handlers:** `/opt/hlstatsx/scripts/HLstats_EventHandlers.plib` (base handlers **plus KTP delta**: `ktpTrackMatchPlayer` calls in `doEvent_Frag`, per-half lookups — do not overwrite from upstream)
 - **Config:** `/opt/hlstatsx/scripts/hlstats.conf`
 
 ## SSH Access

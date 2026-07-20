@@ -1,5 +1,51 @@
 # KTP HLStatsX Changelog
 
+## [Unreleased]
+
+### Schema
+- **`ktp_schema.sql` now loads on MySQL 8.x** (2026-06-21) — `ktp_matches.server_id` was
+  `INT` with a FOREIGN KEY to `hlstats_Servers(serverId)`, but `serverId` is `INT UNSIGNED`
+  and the HLStatsX base tables are MyISAM (no FK support). Both the InnoDB-FK-to-MyISAM and
+  the signedness mismatch fail with errno 1824, so the KTP match tables were never created.
+  Dropped the FK (`server_id` stays an indexed column; integrity is enforced app-side) and
+  made `server_id` `INT UNSIGNED`. Surfaced provisioning the July LAN box.
+
+### Documentation
+- README brought up to 0.3.3: round-state filtering was shipped without any doc
+  change, so the README still described 0.3.2 semantics. Added event types 603/604,
+  the two new untagged-inside-a-match contexts (freeze time, inter-half gap), and a
+  note that those NULLs are deliberate — the previous "all events tagged" claim was
+  a wrong-diagnosis trap for anyone investigating low match frag counts.
+- Documented the `half` column on the event tables, split fresh-install vs. upgrade
+  SQL paths, added the missing `hlstats.conf` DB-config step (`DBName` must be
+  overridden to `hlstatsx` — the built-in default is `hlstats`), and corrected the
+  MySQL prerequisite to 8.0+ to match `migrate_002` and the deployed servers.
+- `CLAUDE.md`: relabeled `HLstats_EventHandlers.plib` as containing KTP delta (it was
+  marked "NOT KTP", which would lose `ktpTrackMatchPlayer` on a fork-rebase), and
+  appended the three 0.3.3 `KTP_DEBUG` trace points.
+- `deploy.ps1`: corrected the staging path to `N:\Nein_\KTP Git Projects\KTP DoD Server\hlstatsx`
+  (the old path does not exist, and `New-Item -Force` silently created a bogus tree
+  one level too high and reported success), and corrected the header comment — the
+  script stages locally, it never reaches the data server.
+
+## [0.3.3] - 2026-03-24
+
+Companion to KTPMatchHandler v0.10.101 round-state filtering.
+
+### Added
+- **`KTP_ROUND_FREEZE` handler (event type 603)** — sets `round_live = 0` on the match
+  context, pausing `match_id` tagging.
+- **`KTP_ROUND_LIVE` handler (event type 604)** — sets `round_live = 1`, resuming tagging.
+
+### Changed
+- **`recordEvent` gated on the `round_live` flag** — freeze-time kills get
+  `match_id = NULL` and are excluded from match stats.
+- **`doEvent_KTPMatchStart` initializes `round_live = 1`** by default.
+- **`doEvent_KTPHalfEnd` clears the match context entirely** so inter-half kills
+  aren't tagged.
+
+---
+
 ## [0.3.2] - 2026-03-09
 
 ### Fixed

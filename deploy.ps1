@@ -1,5 +1,6 @@
 # KTP HLStatsX Deployment Script
-# Deploys KTP HLStatsX files to the data server
+# Stages KTP HLStatsX files to the local DoD Server tree. This does NOT reach
+# the data server — copy to /opt/hlstatsx/scripts/ from there separately.
 
 $ErrorActionPreference = "Stop"
 
@@ -10,7 +11,7 @@ Write-Host ""
 
 # Configuration
 $SourceDir = $PSScriptRoot
-$StagingDest = "N:\Nein_\KTP DoD Server\hlstatsx"
+$StagingDest = "N:\Nein_\KTP Git Projects\KTP DoD Server\hlstatsx"
 
 # Ensure staging directory exists
 if (-not (Test-Path $StagingDest)) {
