@@ -2038,6 +2038,7 @@ if ($g_global_chat == 1) {
 %g_weapons_accum = ();  # {game:code} => {kills => N, headshots => N}
 %g_maps_accum = ();     # {game:map}  => {kills => N, headshots => N}
 %g_ktpScoreAccum = ();  # {match_id}{player_id}{half_num} => score total
+$g_accum_lastflush = 0; # housekeeping-loop gate; see the flushAccumulators call site
 
 &printEvent("HLSTATSX", "HLstatsX:CE is now running ($g_mode mode, debug level $g_debug)", 1);
 
@@ -3883,7 +3884,17 @@ EOT
 				flushEventTable($table);
 			}
 		}
-		flushAccumulators();
+
+		# Same 30s gate as the event tables above. Ungated, this pass runs on
+		# nearly every outer-loop iteration during a live match, which is the
+		# per-frag UPDATE pattern the accumulators exist to batch away.
+		# Shutdown and pre-aggregation call flushAccumulators() directly and
+		# must stay ungated.
+		if ($g_accum_lastflush + 30 < $ev_daemontime)
+		{
+			flushAccumulators();
+			$g_accum_lastflush = $ev_daemontime;
+		}
 
 		if ($timeout > 0 && $timeout % 60 == 0) {
 			while (my($map_addr, $map_server) = each(%g_servers)) {
@@ -3908,6 +3919,23 @@ if ($g_stdin) {
 	&flushAll(1);
 	&execNonQuery("UPDATE hlstats_Players SET last_event=UNIX_TIMESTAMP();");
 	&printEvent("IMPORT", "Import of log file complete. Scanned ".$import_logs_count." lines in ".($end_time-$start_time)." seconds", 1, 1);
+}
+
+#
+# KTP: Map a KTPMatchHandler half string to the half column's numbering.
+# "1st"/"1st half" -> 1, "2nd" -> 2, "OTn" -> 2+n. Both KTP_MATCH_START and
+# KTP_HALF_END parse the same field, and this used to be copy-pasted in each —
+# nothing kept the two copies in step if the numbering ever changed.
+#
+sub parseHalfNumber
+{
+	my ($half) = @_;
+
+	return 1 if (!defined($half));
+	return 1 if ($half =~ /^1/);
+	return 2 if ($half =~ /^2/);
+	return 2 + $1 if ($half =~ /^OT(\d+)/);
+	return 1;
 }
 
 #
@@ -3944,13 +3972,7 @@ sub doEvent_KTPMatchStart
 	# Get server ID
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
-	# Parse half number from string (e.g., "1st half" -> 1, "2nd half" -> 2, "OT1" -> 3)
-	my $half_num = 1;
-	if (defined($half)) {
-		if ($half =~ /^1/) { $half_num = 1; }
-		elsif ($half =~ /^2/) { $half_num = 2; }
-		elsif ($half =~ /^OT(\d+)/) { $half_num = 2 + $1; }
-	}
+	my $half_num = parseHalfNumber($half);
 
 	# KTP: Store half_num in match context for per-half event tracking
 	$g_ktpMatchContext{$s_addr}{half_num} = $half_num;
@@ -4186,13 +4208,7 @@ sub doEvent_KTPHalfEnd
 	# Get server ID
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
-	# Parse half number from string (e.g., "1st" -> 1, "2nd" -> 2)
-	my $half_num = 1;
-	if (defined($half)) {
-		if ($half =~ /^1/) { $half_num = 1; }
-		elsif ($half =~ /^2/) { $half_num = 2; }
-		elsif ($half =~ /^OT(\d+)/) { $half_num = 2 + $1; }
-	}
+	my $half_num = parseHalfNumber($half);
 
 	&printEvent("KTP_DEBUG", "doEvent_KTPHalfEnd: Setting end_time for half $half_num of match $matchid", 1);
 

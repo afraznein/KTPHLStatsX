@@ -1,5 +1,30 @@
 # KTP HLStatsX Changelog
 
+## [0.3.4] - 2026-08-09
+
+### Fixed
+- **Accumulator flush was not time-gated, so it ran on nearly every housekeeping
+  pass.** `flushEventTable()` two lines above its call site is gated on a 30-second
+  interval; `flushAccumulators()` had no such gate at that site, so during a live
+  match with a steady kill stream it drained and issued its `hlstats_Roles` /
+  `hlstats_Weapons` / `hlstats_Maps_Counts` UPDATEs at roughly per-frag cadence —
+  the exact MySQL round-trip pattern the batching rewrite exists to remove, on the
+  one daemon serving the whole fleet. The in-source comment already claimed
+  "flushed every 30s", so the gate was intended and simply never written. Now gated
+  on its own `$g_accum_lastflush` timestamp with the same 30s interval.
+  The shutdown (`flushAll`) and pre-aggregation call sites stay ungated — those
+  must drain unconditionally.
+
+### Changed
+- **Half-string parsing de-duplicated.** The `/^1/`, `/^2/`, `/^OT(\d+)/` ladder was
+  copy-pasted identically into `doEvent_KTPMatchStart` and `doEvent_KTPHalfEnd`, with
+  nothing keeping the two in step if the numbering scheme ever changed. Both now call
+  `parseHalfNumber()`. Behaviour is unchanged — verified by differential test over 16
+  inputs (including `undef`, empty, `OT10`, lowercase `ot1` and non-matching junk):
+  0 mismatches.
+
+---
+
 ## [Unreleased]
 
 ### Schema
