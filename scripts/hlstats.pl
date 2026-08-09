@@ -3114,6 +3114,28 @@ while ($loop = &getLine()) {
 						);
 					}
 				}
+			} elsif ($ev_verb eq "committed suicide with") {
+				# GoldSrc suicides reach the daemon through this branch, not the
+				# bracketed-coordinate one above: that branch requires a "[x y z]"
+				# block DoD never emits, so doEvent_Suicide was unreachable for
+				# this game and hlstats_Events_Suicides stayed empty fleet-wide
+				# even though the handler, schema and aggregation were all correct.
+				# No coordinates in this log format, hence undef (same as the
+				# other coordinate-less branches here).
+				my $playerinfo = &getPlayerInfo($ev_player, 1);
+				
+				$ev_type = 4;
+				
+				if ($playerinfo) {
+					$ev_status = &doEvent_Suicide(
+						$playerinfo->{"userid"},
+						$playerinfo->{"uniqueid"},
+						$ev_obj_a,
+						undef,
+						undef,
+						undef
+					);
+				}
 			} elsif ($ev_verb eq "joined team") {
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
 				
