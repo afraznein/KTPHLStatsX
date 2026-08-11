@@ -28,6 +28,28 @@
 ## [Unreleased]
 
 ### Schema
+- **`ktp_schema.sql` now RUNS on MySQL, and is idempotent in both directions**
+  (2026-08-11). Eight statements used MariaDB-only `ADD COLUMN IF NOT EXISTS` /
+  `CREATE INDEX IF NOT EXISTS`; MySQL rejects those with ERROR 1064 at any
+  version, and because the file applies as one batch the first rejection
+  aborted everything after it. Nothing failed in production only because the
+  live database was built incrementally and nobody re-runs the file — the
+  exposure was the next fresh provision or DR rebuild, which would have come up
+  missing `match_id` on four event tables and all three `ktp_*` tables while
+  the daemon ran against it happily, writing rows that silently lose their
+  match attribution. Each change is now guarded by an `information_schema`
+  lookup executed through a prepared statement: plain SQL, no privilege the
+  migration did not already need, and no change to the operator runbook.
+  Bare `ALTER` was not an option — it is ERROR 1060 on an already-applied
+  database, which is the path production takes.
+  Gated on a disposable MySQL 8.0.46: fresh install applies everything,
+  a second run is a clean no-op, a production-shaped database is a no-op, and
+  running with no database selected aborts at ERROR 1046 rather than silently
+  guarding to "nothing to do". The control that makes those meaningful — the
+  old file on the same fresh database — fails at 1064 and applies nothing.
+  ⚠️ The file is declarative, so it is **not** a guaranteed no-op on the live
+  database: `idx_match_id` is currently present only on `hlstats_Events_Frags`,
+  never having been created on `_Teamkills`, `_Suicides` or `_PlayerActions`.
 - **`ktp_schema.sql` now loads on MySQL 8.x** (2026-06-21) — `ktp_matches.server_id` was
   `INT` with a FOREIGN KEY to `hlstats_Servers(serverId)`, but `serverId` is `INT UNSIGNED`
   and the HLStatsX base tables are MyISAM (no FK support). Both the InnoDB-FK-to-MyISAM and

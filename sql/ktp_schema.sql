@@ -1,57 +1,137 @@
 -- KTP HLStatsX Schema Migration
 -- Adds match tracking support for KTP Match Handler integration
--- Version: 0.3.3
 --
--- ⚠️ DO NOT RUN THIS FILE AS-IS ON MySQL. The match_id block below uses
--- ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS, which is MariaDB-only
--- syntax — MySQL rejects it at every version (the comment further down says so,
--- and the `half` block is written correctly for MySQL). `mysql < this_file`
--- aborts at the first ALTER and applies NOTHING after it.
+-- Runs on MySQL 8.0 and MariaDB, and is idempotent in both directions: a fresh
+-- database and an already-applied one both succeed. Apply with
 --
--- Verified 2026-07-20 on the live data server (MySQL 8.0.46): the match_id
--- columns DO exist on Frags / Teamkills / PlayerActions, so production was
--- populated by some other path. The hazard is a FRESH install — notably LAN
--- data-server provisioning — where this file silently applies almost nothing.
--- Apply the match_id block by hand, or port it to plain ALTER first.
+--     mysql <database> < ktp_schema.sql
+--
+-- The database MUST be named on the command line. With none selected DATABASE()
+-- is NULL, every guard below finds nothing, and each guard therefore chooses to
+-- APPLY rather than skip — so the first ALTER aborts the batch with
+-- "ERROR 1046 (3D000): No database selected" before anything has run. Verified;
+-- the file cannot silently do nothing and report success.
+--
+-- WHY THE ALTERs LOOK LIKE THIS. MariaDB has ADD COLUMN IF NOT EXISTS and
+-- CREATE INDEX IF NOT EXISTS; MySQL has neither, at any version, and rejects
+-- them with ERROR 1064. Because the file is applied as one batch, the first
+-- rejection aborts everything after it — so on MySQL the old file applied
+-- almost nothing and said so only once. Each change is therefore guarded by an
+-- information_schema lookup and run through a prepared statement, which is
+-- plain SQL and needs no privilege the migration does not already have.
+--
+-- Bare `ALTER TABLE ... ADD COLUMN` is not an alternative: it is ERROR 1060 on
+-- a database that already has the column, which is the path production takes.
+--
+-- ⚠️ This file is DECLARATIVE — it creates whatever is absent. As of
+-- 2026-08-11 the live database is missing idx_match_id on Teamkills, Suicides
+-- and PlayerActions, so running it there is NOT a no-op: it will build those
+-- three indexes (a MyISAM table rebuild). Check before assuming it is free.
 
 -- ============================================================================
 -- Add match_id column to event tables
 -- ============================================================================
 
--- Add match_id to hlstats_Events_Frags (kill events)
-ALTER TABLE hlstats_Events_Frags
-ADD COLUMN IF NOT EXISTS match_id VARCHAR(64) DEFAULT NULL AFTER map;
+-- hlstats_Events_Frags (kill events)
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Frags'
+                   AND COLUMN_NAME = 'match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Frags ADD COLUMN match_id VARCHAR(64) DEFAULT NULL AFTER map');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CREATE INDEX IF NOT EXISTS idx_match_id ON hlstats_Events_Frags (match_id);
+SET @exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Frags'
+                   AND INDEX_NAME = 'idx_match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'CREATE INDEX idx_match_id ON hlstats_Events_Frags (match_id)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Add match_id to hlstats_Events_Teamkills
-ALTER TABLE hlstats_Events_Teamkills
-ADD COLUMN IF NOT EXISTS match_id VARCHAR(64) DEFAULT NULL AFTER map;
+-- hlstats_Events_Teamkills
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Teamkills'
+                   AND COLUMN_NAME = 'match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Teamkills ADD COLUMN match_id VARCHAR(64) DEFAULT NULL AFTER map');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CREATE INDEX IF NOT EXISTS idx_match_id ON hlstats_Events_Teamkills (match_id);
+SET @exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Teamkills'
+                   AND INDEX_NAME = 'idx_match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'CREATE INDEX idx_match_id ON hlstats_Events_Teamkills (match_id)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Add match_id to hlstats_Events_Suicides
-ALTER TABLE hlstats_Events_Suicides
-ADD COLUMN IF NOT EXISTS match_id VARCHAR(64) DEFAULT NULL AFTER map;
+-- hlstats_Events_Suicides
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Suicides'
+                   AND COLUMN_NAME = 'match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Suicides ADD COLUMN match_id VARCHAR(64) DEFAULT NULL AFTER map');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CREATE INDEX IF NOT EXISTS idx_match_id ON hlstats_Events_Suicides (match_id);
+SET @exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Suicides'
+                   AND INDEX_NAME = 'idx_match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'CREATE INDEX idx_match_id ON hlstats_Events_Suicides (match_id)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Add match_id to hlstats_Events_PlayerActions
-ALTER TABLE hlstats_Events_PlayerActions
-ADD COLUMN IF NOT EXISTS match_id VARCHAR(64) DEFAULT NULL AFTER map;
+-- hlstats_Events_PlayerActions
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_PlayerActions'
+                   AND COLUMN_NAME = 'match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_PlayerActions ADD COLUMN match_id VARCHAR(64) DEFAULT NULL AFTER map');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CREATE INDEX IF NOT EXISTS idx_match_id ON hlstats_Events_PlayerActions (match_id);
+SET @exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_PlayerActions'
+                   AND INDEX_NAME = 'idx_match_id');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'CREATE INDEX idx_match_id ON hlstats_Events_PlayerActions (match_id)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ============================================================================
 -- Add half column to event tables (for per-half stat aggregation)
 -- Convention: 0=full match total (backward compat), 1=1st half, 2=2nd half, 3+=OT rounds
--- Note: MySQL 8.0 does not support ADD COLUMN IF NOT EXISTS
 -- ============================================================================
 
-ALTER TABLE hlstats_Events_Frags ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
-ALTER TABLE hlstats_Events_Teamkills ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
-ALTER TABLE hlstats_Events_Suicides ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
-ALTER TABLE hlstats_Events_Statsme ADD COLUMN half TINYINT NOT NULL DEFAULT 0;
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Frags' AND COLUMN_NAME = 'half');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Frags ADD COLUMN half TINYINT NOT NULL DEFAULT 0');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Teamkills' AND COLUMN_NAME = 'half');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Teamkills ADD COLUMN half TINYINT NOT NULL DEFAULT 0');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Suicides' AND COLUMN_NAME = 'half');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Suicides ADD COLUMN half TINYINT NOT NULL DEFAULT 0');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'hlstats_Events_Statsme' AND COLUMN_NAME = 'half');
+SET @ddl := IF(@exists > 0, 'DO 0',
+    'ALTER TABLE hlstats_Events_Statsme ADD COLUMN half TINYINT NOT NULL DEFAULT 0');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ============================================================================
 -- Create KTP match tables
