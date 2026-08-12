@@ -27,6 +27,19 @@
 
 ## [Unreleased]
 
+### Fixed
+- **DoD suicides are now recorded** — `hlstats_Events_Suicides` had been empty
+  fleet-wide, and `ktp_match_stats.suicides` therefore always 0, since the table
+  was introduced. The cause was dispatch, not handling: the only branch in
+  `hlstats.pl` that called `doEvent_Suicide` sat inside the regex that requires a
+  bracketed `[x y z]` coordinate block, which is CS:GO's log format. DoD emits
+  `"Player<uid><steamid><team>" committed suicide with "weapon"` with no
+  coordinates, so it fell through to the generic `"player" verb "obj_a"` branch —
+  which lists suicides in its own comment header but never actually checked for
+  the verb. Added that check. `doEvent_Suicide`, the `Suicides` schema, the `half`
+  and `match_id` tagging, and the `ktp_match_stats` aggregation were all already
+  correct and needed no changes, so the fix is purely additive.
+
 ### Schema
 - **`ktp_schema.sql` now RUNS on MySQL, and is idempotent in both directions**
   (2026-08-11). Eight statements used MariaDB-only `ADD COLUMN IF NOT EXISTS` /
