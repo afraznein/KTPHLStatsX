@@ -77,6 +77,16 @@
 ## [Unreleased]
 
 ### Added
+- **Frag context recorded on every kill** (`sql/migrate_005_frag_context_columns.sql`,
+  `scripts/hlstats.pl`) — headshot, killer/victim prone state, killer/victim
+  scope state, and killer/victim clip/ammo now land on `hlstats_Events_Frags`
+  for every kill, not just headshots. New `frag_context` handler (event type
+  901) in `hlstats.pl`, same flush-then-UPDATE-most-recent-row technique the
+  old `headshot_kill` handler (900) used — that handler is left in place as
+  dead code, since KTPAMXX no longer emits the line it matches, but nothing
+  needs it removed either. Eight new columns, all guarded/idempotent on both
+  MySQL and MariaDB per `ktp_schema.sql`'s pattern; `headshot` itself is not
+  new, it already existed from the marker this retires.
 - **DoD cap breaks are now recorded** (`sql/migrate_004_cap_break_action.sql`) —
   seeds the `hlstats_Actions` row for the `cap_break` lines KTPAMXX's
   `ktp_stats_capture.inc` emits when a player kills an enemy off a point their

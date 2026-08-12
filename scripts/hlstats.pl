@@ -2843,6 +2843,60 @@ while ($loop = &getLine()) {
 							$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
 						}
 					}
+				} elsif ($ev_obj_a eq "frag_context") {
+					# KTP: Frag context marker from ktp_stats_capture.inc, fired on
+					# EVERY kill (this retired the old headshot-only "headshot_kill"
+					# marker above -- that branch is left in place as dead code,
+					# nothing emits it anymore, but nothing needs it removed either).
+					# Same technique: flush the frag queue, then UPDATE the most
+					# recent matching row. ev_obj_b = victim player string,
+					# ev_obj_c = weapon, properties carry headshot/prone/scope/ammo.
+					$ev_type = 901;  # KTP frag-context marker
+
+					my $killerinfo = &getPlayerInfo($ev_player, 0);
+					my $victiminfo = &getPlayerInfo($ev_obj_b, 0);
+
+					if ($killerinfo && $victiminfo) {
+						my $killerId = lookupPlayer($s_addr, $killerinfo->{"userid"}, $killerinfo->{"uniqueid"});
+						my $victimId = lookupPlayer($s_addr, $victiminfo->{"userid"}, $victiminfo->{"uniqueid"});
+
+						if ($killerId && $victimId) {
+							# Flush pending frags so the kill is in the DB
+							flushEventTable("Frags");
+
+							my $fc_weapon   = $ev_obj_c || "";
+							my $fc_headshot = $ev_properties_hash{"headshot"} // 0;
+							my $fc_k_prone  = $ev_properties_hash{"k_prone"}  // 0;
+							my $fc_v_prone  = $ev_properties_hash{"v_prone"}  // 0;
+							my $fc_k_scope  = $ev_properties_hash{"k_scope"}  // 0;
+							my $fc_v_scope  = $ev_properties_hash{"v_scope"}  // 0;
+							my $fc_k_clip   = $ev_properties_hash{"k_clip"}   // -1;
+							my $fc_k_ammo   = $ev_properties_hash{"k_ammo"}   // -1;
+							my $fc_v_clip   = $ev_properties_hash{"v_clip"}   // -1;
+							my $fc_v_ammo   = $ev_properties_hash{"v_ammo"}   // -1;
+
+							# Update the most recent frag by this killer against this victim on this server
+							&execNonQuery("
+								UPDATE hlstats_Events_Frags
+								SET headshot = ".($fc_headshot ? 1 : 0).",
+									k_prone = ".int($fc_k_prone).",
+									v_prone = ".int($fc_v_prone).",
+									k_scope = ".($fc_k_scope ? 1 : 0).",
+									v_scope = ".($fc_v_scope ? 1 : 0).",
+									k_clip = ".int($fc_k_clip).",
+									k_ammo = ".int($fc_k_ammo).",
+									v_clip = ".int($fc_v_clip).",
+									v_ammo = ".int($fc_v_ammo)."
+								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+								AND killerId = ".$killerId->{playerid}."
+								AND victimId = ".$victimId->{playerid}."
+								AND weapon = '".quoteSQL($fc_weapon)."'
+								ORDER BY id DESC
+								LIMIT 1
+							");
+							$ev_status = "Frag context marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $fc_weapon";
+						}
+					}
 				} else {
 
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
