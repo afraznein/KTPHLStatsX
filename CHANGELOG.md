@@ -27,6 +27,30 @@
 
 ## [Unreleased]
 
+### Added
+- **DoD cap breaks are now recorded** (`sql/migrate_004_cap_break_action.sql`) —
+  seeds the `hlstats_Actions` row for the `cap_break` lines KTPAMXX's
+  `ktp_stats_capture.inc` emits when a player kills an enemy off a point their
+  team was capturing. No daemon code change; same single-player action path the
+  existing DoD capture actions use. `reward_player` is 0 (see the assist entry).
+  Records *that* a break happened, not *which* point — the `(flag "...")`
+  property is dropped by `doEvent_PlayerAction` until the break-context phase
+  teaches it to parse one.
+- **DoD assists are now recorded** (`sql/migrate_003_assist_action.sql`) —
+  `hlstats_Events_PlayerPlayerActions` has been empty since it was created,
+  because nothing ever emitted a player-vs-player action for DoD and the engine
+  logs no damage events for the daemon to derive assists from. KTPAMXX's
+  `ktp_stats_capture.inc` now emits `triggered "assist" against` lines; this
+  seeds the `hlstats_Actions` row that lets the existing dispatcher record them.
+  **No daemon code change** — the line rides the same generic player-vs-player
+  path KTP's own `headshot_kill` marker already uses.
+
+  `reward_player` is 0 on purpose: assists must not move HLStatsX's `skill` ELO,
+  or adding a stat would silently re-rate the whole ladder. `for_PlayerActions`
+  is `'0'` on purpose too — the dispatcher calls both action handlers for one
+  line, so enabling both flags would record the assist twice (once without the
+  victim) and double-apply the reward.
+
 ### Fixed
 - **DoD suicides are now recorded** — `hlstats_Events_Suicides` had been empty
   fleet-wide, and `ktp_match_stats.suicides` therefore always 0, since the table
