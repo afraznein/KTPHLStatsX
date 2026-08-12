@@ -828,6 +828,7 @@ sub getServer
 		$result->finish;
 		if (!defined($g_games{$game})) {
 			$g_games{$game} = new HLstats_Game($game);
+			&ktpAssertActionsSeeded($game);
 		}
 		# l4d code should be reused for l4d2
 		# trying first using l4d as "realgame" code for l4d2 in db. if default server config settings won't work, will leave as own "realgame" code in db but uncomment line.
@@ -1990,12 +1991,23 @@ if ($g_stdin) {
 		LocalAddr=>"$s_ip",
 		LocalPort=>"$s_port"
 	) or die ("\nCan't setup UDP socket on $ip$s_port: $!\n");
-	$s_socket->sockopt(SO_RCVBUF, 1048576);  # Request 1MB receive buffer
+	my $want_rcvbuf = 1048576;               # Request 1MB receive buffer
+	$s_socket->sockopt(SO_RCVBUF, $want_rcvbuf);
 	my $actual_rcvbuf = $s_socket->sockopt(SO_RCVBUF);
 	$s_select = IO::Select->new($s_socket);
 
 	&printEvent("UDP", "Opening UDP listen socket on $ip$s_port ... ok", 1);
 	&printEvent("UDP", "Socket receive buffer: " . int($actual_rcvbuf / 1024) . "KB", 1);
+
+	# Linux silently clamps the request to net.core.rmem_max and reports back double
+	# what it granted. Asking for a buffer and not getting it is exactly the condition
+	# that loses log lines under concurrent servers, and nothing else reports it.
+	if (($actual_rcvbuf / 2) < $want_rcvbuf) {
+		&printEvent("UDP",
+			"WARNING: asked for " . int($want_rcvbuf / 1024) . "KB of receive buffer but " .
+			"the kernel granted " . int($actual_rcvbuf / 2 / 1024) . "KB. Raise " .
+			"net.core.rmem_max -- under load this drops log lines with no other symptom.", 1);
+	}
 }
 
 if ($g_track_stats_trend > 0) {
@@ -2033,6 +2045,18 @@ if ($g_global_chat == 1) {
 # KTP: Match context tracking for KTP Match Handler integration
 # Stores match_id per server address for tagging events
 %g_ktpMatchContext = ();
+
+# KTP: actions seen in the log that resolve to no row in hlstats_Actions.
+# {game/action} => count. Keyed so each distinct action warns once and then
+# only tallies -- an objective-heavy map would otherwise flood the journal.
+%g_ktpUnresolvedActions = ();
+
+# KTP: write-path health, reported by the housekeeping loop. Retries that
+# succeed are as interesting as failures: a rising retry count is the shape of
+# a database connection dying under load, which otherwise looks like nothing.
+$g_sql_error_count = 0;
+$g_sql_retry_count = 0;
+$g_ktp_lasthealth  = 0;
 
 # KTP: In-memory accumulators for batching frag-related UPDATEs
 # Flushed every 30s, on shutdown, and before match stats aggregation
@@ -3921,6 +3945,21 @@ EOT
 			$g_accum_lastflush = $ev_daemontime;
 		}
 
+		# Write-path health, every 5 minutes and only when there is something to
+		# say. A counter nobody reads is the same as no counter, and these three
+		# are the ones that were silent through the LAN.
+		if ($g_ktp_lasthealth + 300 < $ev_daemontime)
+		{
+			$g_ktp_lasthealth = $ev_daemontime;
+			my $unresolved = scalar(keys %g_ktpUnresolvedActions);
+			if ($g_sql_error_count || $g_sql_retry_count || $unresolved)
+			{
+				&printEvent("KTP_HEALTH",
+					"sql_failed=$g_sql_error_count sql_retried=$g_sql_retry_count " .
+					"unresolved_actions=$unresolved", 1);
+			}
+		}
+
 		if ($timeout > 0 && $timeout % 60 == 0) {
 			while (my($map_addr, $map_server) = each(%g_servers)) {
 				if (defined($map_server) && $map_server->{map} eq "") {
@@ -3961,6 +4000,59 @@ sub parseHalfNumber
 	return 2 if ($half =~ /^2/);
 	return 2 + $1 if ($half =~ /^OT(\d+)/);
 	return 1;
+}
+
+#
+# KTP: Report an action the log carried but hlstats_Actions cannot resolve.
+#
+# The upstream handler skips such an event with no error, no counter and no log
+# line. At the Philly 2026 LAN the actions table was never seeded, so every
+# dod_control_point and dod_capture_area of the weekend was parsed, dropped, and
+# never missed until the objective columns turned up empty afterwards.
+#
+# Warn on the first sighting of each distinct action and tally the rest, so a
+# misconfiguration is loud once rather than either silent or unreadable.
+#
+sub ktpWarnUnresolvedAction
+{
+	my ($game, $action) = @_;
+	return unless (defined($action) && $action ne "");
+	$game = "?" unless defined($game);
+
+	my $key = "$game/$action";
+	if (!$g_ktpUnresolvedActions{$key}++) {
+		&printEvent("SQL_ERROR",
+			"Unresolved action '$action' (game '$game') is NOT in hlstats_Actions -- " .
+			"this event is being DISCARDED and will never reach the database. " .
+			"Seed the actions table for this game.", 1);
+	}
+}
+
+#
+# KTP: Warn if hlstats_Actions is empty for a game we are about to serve.
+#
+# Cheap to check once per game at discovery, and it turns a whole weekend of
+# silently dropped objectives into one line at startup.
+#
+sub ktpAssertActionsSeeded
+{
+	my ($game) = @_;
+	return unless defined($game);
+
+	my $result = &doQuery("
+		SELECT COUNT(*) FROM hlstats_Actions WHERE game = '" . &quoteSQL($game) . "'
+	");
+	my ($count) = $result->fetchrow_array;
+	$result->finish;
+
+	if (!$count) {
+		&printEvent("SQL_ERROR",
+			"hlstats_Actions has NO rows for game '$game'. Every objective event for " .
+			"this game will be parsed and then discarded. Seed the actions table " .
+			"before running a match.", 1);
+	} else {
+		&printEvent("HLSTATSX", "Actions loaded for game '$game': $count", 1);
+	}
 }
 
 #

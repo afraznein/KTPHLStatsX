@@ -1,5 +1,54 @@
 # KTP HLStatsX Changelog
 
+## [0.3.5] - 2026-08-12
+
+### Added
+- **An action missing from `hlstats_Actions` now says so instead of vanishing.**
+  The upstream handler tests `defined($g_games{...}{actions}{$action}) && ...{paction}`
+  and, when that fails, simply does not record the event — no error, no counter, no log
+  line. At the Philadelphia 2026 LAN the actions table was never seeded for `dod`, so
+  **every `dod_control_point` and `dod_capture_area` of the weekend was parsed and
+  discarded**, and nobody found out until the objective columns turned up empty days
+  later. `ktpWarnUnresolvedAction()` now reports each distinct unresolved action once
+  and tallies the rest, so a misconfiguration is loud on the first capture rather than
+  silent for three days.
+  The guard is deliberately additive — it sits *beside* the upstream test rather than
+  restructuring it, so the base handler's control flow is untouched.
+- **Startup assertion that the actions table is populated.** `ktpAssertActionsSeeded()`
+  runs once per game at server discovery and reports the row count, or an error if it
+  is zero. One line at startup against a weekend of lost objectives.
+- **The UDP receive buffer now reports when the kernel did not grant what was asked.**
+  The socket requests 1 MB; Linux silently clamps that to `net.core.rmem_max` and then
+  reports back double whatever it granted. A request that was quietly cut is exactly
+  the condition that drops log lines once several servers are busy, and nothing else
+  in the daemon notices. Note the doubling when reading the number — a healthy 1 MB
+  grant prints as 2048 KB.
+- **Write-path health counters, surfaced every 5 minutes when non-zero** —
+  `KTP_HEALTH sql_failed=N sql_retried=N unresolved_actions=N`. Silent when all three
+  are zero, so it does not become noise to scroll past.
+
+### Changed
+- **`execNonQuery` retries once before giving up.** The common failure is a connection
+  that died between the `ping()` and the write; a genuinely bad statement fails
+  identically twice and is still reported, so the retry cannot turn a real error into
+  a silent one. Retries that succeed are counted and logged too — a rising retry count
+  is what a database connection dying under load looks like, and it otherwise looks
+  like nothing at all.
+
+### Fixed
+- **`VERSION` said 0.3.3 while `CHANGELOG.md` and `README.md` both said 0.3.4.** The
+  file was never bumped with the release; corrected here.
+
+### Notes
+- ⚠️ **None of this would have saved the LAN's 982 lost frags.** Those died in the UDP
+  receive path before the daemon ever saw them — there is no copy to retry and no event
+  to count. What is recoverable is *knowing*: the kernel's `RcvbufErrors` counter is the
+  only signal, and on the production data server it currently reads **5,404**, so the
+  fleet is dropping log lines today. Sampling that per half is tracked in
+  KTPInfrastructure, not here — the daemon cannot see its own dropped packets.
+
+---
+
 ## [0.3.4] - 2026-08-09
 
 ### Fixed
