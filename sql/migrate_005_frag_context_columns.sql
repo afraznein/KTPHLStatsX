@@ -24,10 +24,17 @@
 --                           while down. Not a bool -- the raw value is kept.
 --   k_scope / v_scope    -- 0/1, tracked live from the dod_client_scope
 --                           forward (DODX has no getter).
---   k_clip / k_ammo       -- killer's current weapon clip/ammo at the moment
---   v_clip / v_ammo          of the kill. -1 is a sentinel for "not
---                            applicable" (melee, grenades) or "read failed",
---                            never a fabricated empty magazine.
+--   k_clip / k_ammo       -- participant's CURRENT weapon clip/ammo at the
+--   v_clip / v_ammo          moment of the kill line -- not necessarily the
+--                            weapon that scored the kill (verified live: a
+--                            grenade kill showed real rifle clip/ammo, because
+--                            the killer had switched back by client_death).
+--                            -1 is a sentinel for "read failed" (a narrow
+--                            disconnect race), never a fabricated empty
+--                            magazine. NOT a melee/grenade indicator -- a
+--                            knife kill returns real 0 0 from the engine,
+--                            confirmed live, which is a different reading
+--                            from -1 and must not be conflated with it.
 --
 -- The database MUST be named on the command line -- see ktp_schema.sql's
 -- header for why (DATABASE() is NULL otherwise and every guard chooses to
