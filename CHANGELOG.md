@@ -77,6 +77,25 @@
 ## [Unreleased]
 
 ### Added
+- **Per-hit damage ledger** (`sql/migrate_006_damage_ledger.sql`,
+  `scripts/hlstats.pl`) — new `ktp_damage_events` table and `doEvent_KTPDamage`
+  handler (event type 605) record every `client_damage` hit KTPAMXX emits:
+  attacker, victim, weapon, raw damage, a capped damage value, hitplace,
+  `game_time`, and `match_id`/`half` from the same round-live gating
+  `recordEvent()` uses. **Not** routed through the daemon's generic
+  `recordEvent`/`hlstats_Events_*` batching — that machinery is config-driven
+  around the stock event set, so this is a standalone table with a direct
+  per-event `INSERT`, matching how `KTP_MATCH_*` is already handled.
+
+  **`damage_capped` is the KTPR-facing column, not `damage`.** DoD's raw
+  per-hit value is the nominal weapon value with multipliers applied
+  (headshot, wallbang) and is not clamped to a player's actual 0-100 HP pool
+  — a single hit can log 400+. `damage_capped` is `MIN(damage, 100)`,
+  computed plugin-side, matching the convention CS2 uses for the same
+  reason. Raw is kept for anyone who wants the uncapped weapon-power
+  reading; nothing is discarded, but a rating or aggregate should sum the
+  capped column, or one absurd wallbang could outweigh several clean kills.
+
 - **Frag context recorded on every kill** (`sql/migrate_005_frag_context_columns.sql`,
   `scripts/hlstats.pl`) — headshot, killer/victim prone state, killer/victim
   scope state, and killer/victim clip/ammo now land on `hlstats_Events_Frags`

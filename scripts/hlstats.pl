@@ -2897,6 +2897,35 @@ while ($loop = &getLine()) {
 							$ev_status = "Frag context marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $fc_weapon";
 						}
 					}
+				} elsif ($ev_obj_a eq "damage") {
+					# KTP: Per-hit damage ledger marker from ktp_stats_capture.inc,
+					# fired on every client_damage hit -- enemy, team, and self
+					# alike. Unlike headshot_kill/frag_context, this is not an
+					# UPDATE onto an existing row (there is no independent "damage"
+					# row from the stock daemon to update) -- it INSERTs directly
+					# into ktp_damage_events, a standalone table, not one of the
+					# generic recordEvent-batched hlstats_Events_* tables.
+					# ev_obj_b = victim player string, ev_obj_c = weapon.
+					$ev_type = 605;  # KTP damage-ledger marker
+
+					my $attackerinfo = &getPlayerInfo($ev_player, 0);
+					my $dmg_victiminfo = &getPlayerInfo($ev_obj_b, 0);
+
+					if ($attackerinfo && $dmg_victiminfo) {
+						my $attackerId = lookupPlayer($s_addr, $attackerinfo->{"userid"}, $attackerinfo->{"uniqueid"});
+						my $dmg_victimId = lookupPlayer($s_addr, $dmg_victiminfo->{"userid"}, $dmg_victiminfo->{"uniqueid"});
+
+						if ($attackerId && $dmg_victimId) {
+							$ev_status = &doEvent_KTPDamage(
+								$attackerId->{playerid}, $dmg_victimId->{playerid},
+								$ev_obj_c || "",
+								$ev_properties_hash{"damage"} // 0,
+								$ev_properties_hash{"damage_capped"} // 0,
+								$ev_properties_hash{"hitplace"} // 0,
+								$ev_properties_hash{"game_time"} // 0
+							);
+						}
+					}
 				} else {
 
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
@@ -4113,6 +4142,45 @@ sub ktpAssertActionsSeeded
 # KTP: Handle KTP_MATCH_START event
 # Sets match context for tagging events and creates match record in database
 #
+sub doEvent_KTPDamage
+{
+	# KTP: Per-hit damage ledger. INSERTs directly into ktp_damage_events --
+	# not one of the generic recordEvent-batched hlstats_Events_* tables,
+	# since that machinery is config-driven around the stock event set and
+	# this is a standalone KTP table. Same shape as doEvent_KTPMatchStart:
+	# direct execNonQuery, not a queue.
+	my ($attacker_id, $victim_id, $weapon, $damage, $damage_capped, $hitplace, $game_time) = @_;
+
+	return 0 if (!defined($attacker_id) || !defined($victim_id));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	# Same match_id/round_live gating recordEvent() uses -- only tag with
+	# match_id while the round is live, so freeze-time and warmup damage
+	# lands with match_id NULL rather than attributed to a match that isn't
+	# actually running.
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	&execNonQuery("
+		INSERT INTO ktp_damage_events
+			(server_id, match_id, half, attacker_id, victim_id, weapon,
+			 damage, damage_capped, hitplace, game_time, event_time)
+		VALUES
+			($server_id, $match_id_sql, $half, $attacker_id, $victim_id,
+			 '".quoteSQL($weapon)."', ".int($damage).", ".int($damage_capped).",
+			 ".int($hitplace).", ".($game_time + 0).", NOW())
+	");
+
+	return "Damage logged: attacker=$attacker_id victim=$victim_id weapon=$weapon damage=$damage capped=$damage_capped";
+}
+
 sub doEvent_KTPMatchStart
 {
 	my ($matchid, $map, $half) = @_;
