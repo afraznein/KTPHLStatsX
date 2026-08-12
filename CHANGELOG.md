@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- **DoD cap breaks are now recorded** (`sql/migrate_004_cap_break_action.sql`) —
+  seeds the `hlstats_Actions` row for the `cap_break` lines KTPAMXX's
+  `ktp_stats_capture.inc` emits when a player kills an enemy off a point their
+  team was capturing. No daemon code change; same single-player action path the
+  existing DoD capture actions use. `reward_player` is 0 (see the assist entry).
+  Records *that* a break happened, not *which* point — the `(flag "...")`
+  property is dropped by `doEvent_PlayerAction` until the break-context phase
+  teaches it to parse one.
 - **DoD assists are now recorded** (`sql/migrate_003_assist_action.sql`) —
   `hlstats_Events_PlayerPlayerActions` has been empty since it was created,
   because nothing ever emitted a player-vs-player action for DoD and the engine
