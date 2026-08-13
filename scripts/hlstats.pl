@@ -2874,6 +2874,19 @@ while ($loop = &getLine()) {
 							my $fc_k_ammo   = $ev_properties_hash{"k_ammo"}   // -1;
 							my $fc_v_clip   = $ev_properties_hash{"v_clip"}   // -1;
 							my $fc_v_ammo   = $ev_properties_hash{"v_ammo"}   // -1;
+							my $fc_last_flag_def = $ev_properties_hash{"is_last_flag_defense"} // 0;
+
+							# k_position/v_position are "x y z" (ksc_origin_str's format,
+							# same as assist/break positions) -- present only when the
+							# plugin-side origin read succeeded; Phase 5's positions
+							# guard (never fabricate 0 0 0) applies here too.
+							my $fc_pos_sql = "";
+							if (defined($ev_properties_hash{"k_position"}) && $ev_properties_hash{"k_position"} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+								$fc_pos_sql .= ", pos_x = $1, pos_y = $2, pos_z = $3";
+							}
+							if (defined($ev_properties_hash{"v_position"}) && $ev_properties_hash{"v_position"} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+								$fc_pos_sql .= ", pos_victim_x = $1, pos_victim_y = $2, pos_victim_z = $3";
+							}
 
 							# Update the most recent frag by this killer against this victim on this server
 							&execNonQuery("
@@ -2886,7 +2899,9 @@ while ($loop = &getLine()) {
 									k_clip = ".int($fc_k_clip).",
 									k_ammo = ".int($fc_k_ammo).",
 									v_clip = ".int($fc_v_clip).",
-									v_ammo = ".int($fc_v_ammo)."
+									v_ammo = ".int($fc_v_ammo).",
+									is_last_flag_defense = ".($fc_last_flag_def ? 1 : 0)."
+									$fc_pos_sql
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".$killerId->{playerid}."
 								AND victimId = ".$victimId->{playerid}."
@@ -3293,16 +3308,48 @@ while ($loop = &getLine()) {
 				  $playerinfo = &getPlayerInfo($ev_player, 1);
 				}
 				if ($playerinfo) {
-					if ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
-						
+					if ($ev_obj_a eq "break_context") {
+						# KTP: follow-up marker on cap_break from
+						# ktp_stats_capture.inc, same technique frag_context uses
+						# on Frags but UPDATEing the most recent matching
+						# hlstats_Events_PlayerActions row instead (matched by
+						# playerId + the cap_break actionId, looked up from the
+						# in-memory actions table rather than a DB round-trip).
+						$ev_type = 606;  # KTP break-context marker
+
+						my $breakerId = lookupPlayer($s_addr, $playerinfo->{"userid"}, $playerinfo->{"uniqueid"});
+						my $capBreakActionId = $g_games{$g_servers{$s_addr}->{game}}{actions}{"cap_break"}{id};
+
+						if ($breakerId && $capBreakActionId) {
+							flushEventTable("PlayerActions");
+
+							my $bc_contesters = $ev_properties{"contester_count"} // 0;
+							my $bc_remaining  = $ev_properties{"time_remaining"}  // 0;
+							my $bc_capout     = $ev_properties{"is_capout"}       // 0;
+
+							&execNonQuery("
+								UPDATE hlstats_Events_PlayerActions
+								SET contester_count = ".int($bc_contesters).",
+									time_remaining = ".($bc_remaining + 0).",
+									is_capout = ".($bc_capout ? 1 : 0)."
+								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+								AND playerId = ".$breakerId->{playerid}."
+								AND actionId = ".int($capBreakActionId)."
+								ORDER BY id DESC
+								LIMIT 1
+							");
+							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
+						}
+					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
+
 						$ev_type = 6;
-						
+
 						$ev_status = &doEvent_RoleSelection(
 							$playerinfo->{"userid"},
 							$playerinfo->{"uniqueid"},
 							$ev_properties{newclass}
 						);
-					} else {					
+					} else {
 						if ($g_servers{$s_addr}->{play_game} == TFC())
 						{
 							if ($ev_obj_a eq "Sentry_Destroyed")
@@ -3720,6 +3767,22 @@ while ($loop = &getLine()) {
 				$g_ktpMatchContext{$s_addr}{round_live} = 1;
 				&printEvent("KTP_DEBUG", "KTP_ROUND_LIVE: match=$g_ktpMatchContext{$s_addr}{match_id}", 1);
 			}
+		} elsif ($s_output =~ /^KTP_FLAG_POSITION\s+(.*)$/) {
+			# KTP: static per-flag position from ktp_stats_capture.inc,
+			# fired once per map load (controlpoints_init) -- a bare marker,
+			# no player string, same shape as KTP_MATCH_START.
+			# Prototype: KTP_FLAG_POSITION (map "xxx") (flag_index "0")
+			#   (flag_name "xxx") (x "1234") (y "-567")
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 607;  # KTP event type
+			$ev_status = &doEvent_KTPFlagPosition(
+				$ev_properties{"map"},
+				$ev_properties{"flag_index"},
+				$ev_properties{"flag_name"},
+				$ev_properties{"x"},
+				$ev_properties{"y"}
+			);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -4179,6 +4242,33 @@ sub doEvent_KTPDamage
 	");
 
 	return "Damage logged: attacker=$attacker_id victim=$victim_id weapon=$weapon damage=$damage capped=$damage_capped";
+}
+
+sub doEvent_KTPFlagPosition
+{
+	# KTP: static per-flag position, upserted into ktp_flag_positions.
+	# Fires once per map load (controlpoints_init), including warmup and
+	# halftime reloads -- harmless, this is idempotent on the unique key.
+	my ($map, $flag_index, $flag_name, $x, $y) = @_;
+
+	return 0 if (!defined($map) || $map eq "" || !defined($flag_index));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	&execNonQuery("
+		INSERT INTO ktp_flag_positions
+			(server_id, map_name, flag_index, flag_name, origin_x, origin_y)
+		VALUES
+			($server_id, '".quoteSQL($map)."', ".int($flag_index).",
+			 '".quoteSQL($flag_name)."', ".int($x // 0).", ".int($y // 0)."
+		)
+		ON DUPLICATE KEY UPDATE
+			flag_name = '".quoteSQL($flag_name)."',
+			origin_x = ".int($x // 0).",
+			origin_y = ".int($y // 0)."
+	");
+
+	return "Flag position recorded: map=$map flag_index=$flag_index name=$flag_name x=$x y=$y";
 }
 
 sub doEvent_KTPMatchStart

@@ -77,6 +77,33 @@
 ## [Unreleased]
 
 ### Added
+- **Break context, flag positions, and last-flag-defense**
+  (`sql/migrate_007_break_context.sql`, `scripts/hlstats.pl`).
+  - `ktp_flag_positions` (new table) — static per-flag `(x, y)`, upserted from
+    a `KTP_FLAG_POSITION` marker (event type 607, `doEvent_KTPFlagPosition`)
+    on every map load. Keyed on `(server_id, map_name, flag_index)` so
+    repeat loads (warmup, halftime reload) don't accumulate duplicates.
+  - `hlstats_Events_PlayerActions` gains `contester_count`, `time_remaining`,
+    `is_capout` — a follow-up `break_context` marker (event type 606) on
+    every `cap_break`, same flush-then-UPDATE-most-recent-row technique
+    `frag_context` uses on Frags, matched here by `(playerId, actionId)`
+    with the `cap_break` action id read from the in-memory actions table
+    rather than a DB round-trip.
+  - `hlstats_Events_Frags` gains `is_last_flag_defense`; `frag_context`'s
+    handler (901) extended to set it plus the row's *existing* (stock)
+    `pos_x/y/z`/`pos_victim_x/y/z` columns from new `k_position`/`v_position`
+    properties — no migration needed for those, verified against
+    `base-schema.sql` before assuming a new column was required.
+  - **Last-flag-defense keys off kill position relative to the defended
+    flag, not the break queue** — per the operator's correction, a defender
+    who kills a would-be ninja before they start capping is defending just
+    as much, and the break queue structurally cannot see a kill that never
+    touched a capture zone. Computed plugin-side (needs live flag-ownership
+    state); `is_capout` and `is_last_flag_defense` share the same
+    "does this team own exactly one flag" test, asked at two different
+    event types.
+  - `perl -c` verified inside the Lane B image.
+
 - **Per-hit damage ledger** (`sql/migrate_006_damage_ledger.sql`,
   `scripts/hlstats.pl`) — new `ktp_damage_events` table and `doEvent_KTPDamage`
   handler (event type 605) record every `client_damage` hit KTPAMXX emits:
