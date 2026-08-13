@@ -157,6 +157,33 @@
   victim) and double-apply the reward.
 
 ### Fixed
+- **`frag_context`/`break_context`/`headshot_kill` markers could silently
+  corrupt a stale row when a frag or cap_break line was dropped.** Found by
+  an independent production-rollout audit, not by this project's own Lane B
+  testing (which never simulates dropped UDP lines). GoldSrc log delivery
+  is fire-and-forget UDP; the marker+UPDATE technique used throughout the
+  frag-context/break-context/damage-ledger phases matched on
+  `serverId + killerId + victimId + weapon` (or `playerId + actionId` for
+  breaks), `ORDER BY id DESC LIMIT 1`, with no time bound and no rowcount
+  check. If the primary event line was lost but its follow-up marker
+  survived, the UPDATE silently rewrote the *previous* matching row —
+  potentially from an earlier match — with the new kill's context. Fixed by
+  bounding every one of these UPDATEs to `eventTime >=
+  FROM_UNIXTIME($ev_unixtime - 60)` (the event's own parsed-log-time clock
+  basis, not SQL `NOW()` — the two diverge by design during offline replay,
+  and by drift under any live processing backlog) and logging a
+  `KTP_NO_ROW_MATCHED` line whenever the bound legitimately finds nothing to
+  update. Validated with two Lane B replay controls: (a) frag + context
+  together still updates correctly (verified column-by-column against the
+  source log's own properties); (b) a synthetic dropped-frag-line replay,
+  built specifically to have a genuinely older matching row available to
+  corrupt, first reproduced the exact silent-corruption defect against the
+  pre-fix code (old row's `headshot`/`k_clip`/`k_ammo`/position all
+  overwritten from an unrelated, later marker), then confirmed the fix
+  leaves that old row untouched and logs the warning instead. `execNonQuery`
+  (`HLstats.plib`) now returns its own affected-row count so callers can
+  check it directly — additive only, every existing caller already ignores
+  the return value.
 - **DoD suicides are now recorded** — `hlstats_Events_Suicides` had been empty
   fleet-wide, and `ktp_match_stats.suicides` therefore always 0, since the table
   was introduced. The cause was dispatch, not handling: the only branch in

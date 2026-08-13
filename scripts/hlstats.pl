@@ -2828,18 +2828,27 @@ while ($loop = &getLine()) {
 							# Flush pending frags so the kill is in the DB
 							flushEventTable("Frags");
 
-							# Update the most recent frag by this killer against this victim on this server
+							# Update the most recent frag by this killer against this
+							# victim on this server -- time-bounded for the same
+							# dropped-UDP-line reason as frag_context below (this
+							# branch is dead code, nothing emits headshot_kill
+							# anymore, but kept consistent rather than left as a
+							# latent copy of the bug it was fixed for).
 							my $hs_weapon = $ev_obj_c || "";
-							&execNonQuery("
+							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
 								SET headshot = 1
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".$killerId->{playerid}."
 								AND victimId = ".$victimId->{playerid}."
 								AND weapon = '".quoteSQL($hs_weapon)."'
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
 								ORDER BY id DESC
 								LIMIT 1
 							");
+							if (defined($hs_rv) && $hs_rv == 0) {
+								&printEvent("KTP_NO_ROW_MATCHED", "headshot_kill: no frag within 60s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$hs_weapon", 1, 1);
+							}
 							$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
 						}
 					}
@@ -2888,8 +2897,15 @@ while ($loop = &getLine()) {
 								$fc_pos_sql .= ", pos_victim_x = $1, pos_victim_y = $2, pos_victim_z = $3";
 							}
 
-							# Update the most recent frag by this killer against this victim on this server
-							&execNonQuery("
+							# Update the most recent frag by this killer against this
+							# victim on this server -- time-bounded. GoldSrc log
+							# delivery is fire-and-forget UDP: without a bound, a
+							# lost frag line lets this UPDATE silently rewrite an
+							# OLDER matching frag (possibly from a previous match)
+							# with this kill's context instead. 60s is generous
+							# against flush latency/clock skew while still
+							# excluding a stale prior match.
+							my $fc_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
 								SET headshot = ".($fc_headshot ? 1 : 0).",
 									k_prone = ".int($fc_k_prone).",
@@ -2906,9 +2922,13 @@ while ($loop = &getLine()) {
 								AND killerId = ".$killerId->{playerid}."
 								AND victimId = ".$victimId->{playerid}."
 								AND weapon = '".quoteSQL($fc_weapon)."'
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
 								ORDER BY id DESC
 								LIMIT 1
 							");
+							if (defined($fc_rv) && $fc_rv == 0) {
+								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no frag within 60s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$fc_weapon -- likely a dropped UDP frag line, context discarded rather than misattributed", 1, 1);
+							}
 							$ev_status = "Frag context marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $fc_weapon";
 						}
 					}
@@ -3327,7 +3347,11 @@ while ($loop = &getLine()) {
 							my $bc_remaining  = $ev_properties{"time_remaining"}  // 0;
 							my $bc_capout     = $ev_properties{"is_capout"}       // 0;
 
-							&execNonQuery("
+							# Time-bounded for the same reason as frag_context's
+							# UPDATE above -- a dropped cap_break UDP line would
+							# otherwise let this rewrite an older PlayerActions
+							# row for the same player instead of a no-op.
+							my $bc_rv = &execNonQuery("
 								UPDATE hlstats_Events_PlayerActions
 								SET contester_count = ".int($bc_contesters).",
 									time_remaining = ".($bc_remaining + 0).",
@@ -3335,9 +3359,13 @@ while ($loop = &getLine()) {
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND playerId = ".$breakerId->{playerid}."
 								AND actionId = ".int($capBreakActionId)."
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
 								ORDER BY id DESC
 								LIMIT 1
 							");
+							if (defined($bc_rv) && $bc_rv == 0) {
+								&printEvent("KTP_NO_ROW_MATCHED", "break_context: no cap_break within 60s for player=".$breakerId->{playerid}, 1, 1);
+							}
 							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {

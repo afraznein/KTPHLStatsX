@@ -217,6 +217,11 @@ sub execNonQuery
 				"after: " . ($first_err || "unknown error"), 1);
 		}
 	}
+	# KTP: return DBI's own affected-row count ("0E0" for zero rows, which
+	# is boolean-true but numerically 0 -- distinguishable from undef on
+	# error). Additive only: every existing caller invokes this in void
+	# context and already ignores the return value.
+	return $rv;
 }
 
 sub execCached {
