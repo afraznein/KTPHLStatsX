@@ -77,6 +77,23 @@
 ## [Unreleased]
 
 ### Added
+- **Periodic roster-position samples** (`sql/migrate_008_position_samples.sql`,
+  `scripts/hlstats.pl`) — new `ktp_position_samples` table and
+  `doEvent_KTPPosition` handler (event type 608) record every
+  `position_sample` marker KTPAMXX's `ksc_position_broadcast_task` emits
+  (every 30s per connected, alive player): player, team, `(x, y, z)`,
+  `game_time`, and `match_id`/`half` from the same round-live gating
+  `recordEvent()`/`doEvent_KTPDamage` use. Same dispatch shape as
+  `break_context` — a single-action `"Player" triggered "position_sample"
+  (props)` line, routed through the `$ev_verb eq "triggered"` branch — but
+  a standalone direct `INSERT` like `doEvent_KTPDamage`, not an `UPDATE`
+  onto an existing row, since there's no prior event to attach this to.
+  Raw facts only, on purpose: no positional/"holding" judgment happens in
+  this handler, that's entirely query-layer, reading this table plus
+  `ktp_flag_positions`. Live-verified: 129 real samples in a short Lane B
+  run, correct team/position/game_time, correct `match_id`/`half` gating
+  (`NULL`/0 in warmup and halftime, tagged during live play).
+
 - **Break context, flag positions, and last-flag-defense**
   (`sql/migrate_007_break_context.sql`, `scripts/hlstats.pl`).
   - `ktp_flag_positions` (new table) — static per-flag `(x, y)`, upserted from

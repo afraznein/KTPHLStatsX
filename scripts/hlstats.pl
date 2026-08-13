@@ -3368,6 +3368,27 @@ while ($loop = &getLine()) {
 							}
 							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
 						}
+					} elsif ($ev_obj_a eq "position_sample") {
+						# KTP: periodic roster-position sample from
+						# ktp_stats_capture.inc's ksc_position_broadcast_task
+						# (KSC_POSITION_BROADCAST_SECS, currently 30s). Raw facts
+						# only -- no "is this holding forward territory" judgment
+						# happens here, that's entirely query-layer, reading this
+						# table plus ktp_flag_positions. Standalone table, direct
+						# INSERT, same shape as doEvent_KTPDamage -- not routed
+						# through recordEvent's generic hlstats_Events_* batching.
+						$ev_type = 608;  # KTP position-sample marker
+
+						my $ps_playerId = lookupPlayer($s_addr, $playerinfo->{"userid"}, $playerinfo->{"uniqueid"});
+
+						if ($ps_playerId) {
+							$ev_status = &doEvent_KTPPosition(
+								$ps_playerId->{playerid},
+								$ev_properties{"team"} // 0,
+								$ev_properties{"position"} // "",
+								$ev_properties{"game_time"} // 0
+							);
+						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
 
 						$ev_type = 6;
@@ -4270,6 +4291,49 @@ sub doEvent_KTPDamage
 	");
 
 	return "Damage logged: attacker=$attacker_id victim=$victim_id weapon=$weapon damage=$damage capped=$damage_capped";
+}
+
+sub doEvent_KTPPosition
+{
+	# KTP: periodic roster-position sample. Same match_id/round_live gating
+	# recordEvent() and doEvent_KTPDamage use -- only tag with match_id while
+	# the round is live, so warmup/freeze-time samples land with match_id
+	# NULL rather than attributed to a match that isn't actually running.
+	my ($player_id, $team, $position, $game_time) = @_;
+
+	return 0 if (!defined($player_id));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	# "X Y Z", same format/regex ksc_origin_str's callers already use
+	# (frag_context's k_position/v_position). Never fabricate 0 0 0 -- if
+	# the plugin-side read failed the marker wouldn't have this property at
+	# all, but guard the parse anyway rather than trust an unvalidated string
+	# straight into an INSERT.
+	if ($position !~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+		return "Position sample dropped for player=$player_id: unparseable position '$position'";
+	}
+	my ($x, $y, $z) = ($1, $2, $3);
+
+	&execNonQuery("
+		INSERT INTO ktp_position_samples
+			(server_id, match_id, half, player_id, team, pos_x, pos_y, pos_z,
+			 game_time, event_time)
+		VALUES
+			($server_id, $match_id_sql, $half, $player_id, ".int($team).",
+			 $x, $y, $z, ".($game_time + 0).", NOW())
+	");
+
+	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
 }
 
 sub doEvent_KTPFlagPosition
