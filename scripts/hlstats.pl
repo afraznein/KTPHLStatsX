@@ -1761,7 +1761,9 @@ sub readDatabaseConfig()
 			$g_config_servers{$addr}{"EnablePublicCommands"}			= 1;
 		}
 		if (!defined($g_config_servers{$addr}{"ConnectAnnounce"})) {
-			$g_config_servers{$addr}{"ConnectAnnounce"}					= 1;
+			# KTP policy: never inject rank/points connect messages into live
+			# game chat. Missing per-server configuration must fail closed.
+			$g_config_servers{$addr}{"ConnectAnnounce"}					= 0;
 		}
 		if (!defined($g_config_servers{$addr}{"UpdateHostname"})) {
 			$g_config_servers{$addr}{"UpdateHostname"}					= 0;
@@ -2239,7 +2241,8 @@ while ($loop = &getLine()) {
 				$std_cfg{"BonusRoundIgnore"}				= 0;
 				$std_cfg{"BonusRoundTime"}					= 20;
 				$std_cfg{"UpdateHostname"}					= 0;
-				$std_cfg{"ConnectAnnounce"}					= 1;
+				# Unknown servers inherit the same no-chat-announcement policy.
+				$std_cfg{"ConnectAnnounce"}					= 0;
 				$std_cfg{"DefaultDisplayEvents"}			= 1;
 				%{$g_config_servers{$s_addr}}				= %std_cfg;
 				&printEvent("CFG", "Created default config for unknown server [$s_addr]");
