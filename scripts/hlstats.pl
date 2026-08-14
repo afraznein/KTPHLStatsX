@@ -3434,20 +3434,53 @@ while ($loop = &getLine()) {
 				}
 			} elsif ($ev_verb eq "triggered a") {
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
-				
-				$ev_type = 11;
-				
-				if ($playerinfo)
-				{
-					$ev_status = &doEvent_PlayerAction(
-						$playerinfo->{"userid"},
-						$playerinfo->{"uniqueid"},
-						$ev_obj_a,
-						undef,
-						undef,
-						undef,
-						%ev_properties
-					);
+
+				if ($playerinfo && $ev_obj_a eq "dod_capture_area") {
+					# KTP: DoD 1.3 (GoldSrc) flag-capture completion --
+					#     "Player<uid><steamid><Team>" triggered a "dod_capture_area" - "POINT_NAME"
+					# One line per capping player (DoD 1.3's multi-capper mechanic:
+					# some points need two players standing on them simultaneously,
+					# some need one), plus a redundant "Team X triggered a
+					# dod_capture_area - POINT_NAME" line carrying no information
+					# the per-player rows don't already have (team is on every
+					# player row) -- that one hits the generic Team "..." branch
+					# above, isn't seeded in hlstats_Actions, and is left
+					# discarded on purpose rather than double-recorded here.
+					#
+					# The trailing "- \"POINT_NAME\"" is a bare dash-suffixed
+					# string, not the parenthesized (key "val") shape
+					# getProperties() expects -- that function's own DoD-specific
+					# $dods_flag/flagindex handling is for DoD:Source's different
+					# log format and never matches these GoldSrc 1.3 lines, so
+					# the point name is parsed directly here instead.
+					$ev_type = 609;  # KTP flag-capture marker
+
+					my ($flagname) = ($ev_properties =~ /-\s*"(.+?)"\s*$/);
+
+					my $capperId = lookupPlayer($s_addr, $playerinfo->{"userid"}, $playerinfo->{"uniqueid"});
+
+					if ($capperId) {
+						$ev_status = &doEvent_KTPFlagCapture(
+							$capperId->{playerid},
+							$playerinfo->{"team"},
+							$flagname // ""
+						);
+					}
+				} else {
+					$ev_type = 11;
+
+					if ($playerinfo)
+					{
+						$ev_status = &doEvent_PlayerAction(
+							$playerinfo->{"userid"},
+							$playerinfo->{"uniqueid"},
+							$ev_obj_a,
+							undef,
+							undef,
+							undef,
+							%ev_properties
+						);
+					}
 				}
 			} elsif ($ev_verb eq "say" || $ev_verb eq "say_team" || $ev_verb eq "say_squad") {
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
@@ -4334,6 +4367,40 @@ sub doEvent_KTPPosition
 	");
 
 	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
+}
+
+sub doEvent_KTPFlagCapture
+{
+	# KTP: per-player flag-capture completion. Same match_id/round_live
+	# gating as doEvent_KTPPosition/doEvent_KTPDamage -- only tag with
+	# match_id while the round is live, so warmup captures land with
+	# match_id NULL rather than attributed to a match that isn't running.
+	my ($player_id, $team, $flag_name) = @_;
+
+	return 0 if (!defined($player_id));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	my $flag_sql = defined($flag_name) && $flag_name ne "" ? "'".quoteSQL($flag_name)."'" : "NULL";
+	my $team_sql = defined($team) && $team ne "" ? "'".quoteSQL($team)."'" : "NULL";
+
+	&execNonQuery("
+		INSERT INTO ktp_flag_captures
+			(server_id, match_id, half, player_id, team, flag_name, event_time)
+		VALUES
+			($server_id, $match_id_sql, $half, $player_id, $team_sql, $flag_sql, NOW())
+	");
+
+	return "Flag capture logged: player=$player_id team=".($team // "?")." flag=".($flag_name // "?");
 }
 
 sub doEvent_KTPFlagPosition
