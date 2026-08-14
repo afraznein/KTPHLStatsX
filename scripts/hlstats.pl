@@ -1991,7 +1991,10 @@ if ($g_stdin) {
 		LocalAddr=>"$s_ip",
 		LocalPort=>"$s_port"
 	) or die ("\nCan't setup UDP socket on $ip$s_port: $!\n");
-	my $want_rcvbuf = 1048576;               # Request 1MB receive buffer
+	# Ask for everything the kernel already permits. A 1MB request buffered only a few
+	# thousand log lines, so any stall that stopped this single-threaded daemon draining
+	# the socket -- a slow MySQL write, a lock -- dropped frags with no other symptom.
+	my $want_rcvbuf = 26214400;
 	$s_socket->sockopt(SO_RCVBUF, $want_rcvbuf);
 	my $actual_rcvbuf = $s_socket->sockopt(SO_RCVBUF);
 	$s_select = IO::Select->new($s_socket);
