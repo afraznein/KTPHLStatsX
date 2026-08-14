@@ -1,5 +1,36 @@
 # KTP HLStatsX Changelog
 
+## [Unreleased]
+
+### Fixed
+- **An empty quoted field no longer swallows the rest of the line.** `getProperties`
+  matched a quoted value with `"(.+?)"`, which requires at least one character — so
+  `(matchid "")` could not match the quoted branch at all, and the lazy match ran on to
+  the *next* quote pair. `(matchid "") (map "dod_harrington") (half "2nd half")` parsed
+  as `match_id = ") (map "dod_harrington`, a phantom id that spread across **13 tables
+  and 721 rows** at the Philadelphia 2026 LAN before anyone noticed. `.+?` is now `.*?`.
+
+  The upstream trigger is already fixed — KTPMatchHandler no longer starts a half with
+  an empty match id — so this is the amplifier rather than the cause. It is worth
+  closing anyway: it fails **silently**, it corrupts across every table an event
+  touches, and any future emitter writing an empty field re-opens it.
+
+  ⚠️ **Test this with an EMPTY quoted field.** A malformed-input suite passes while this
+  case still breaks, which is precisely how it survived.
+
+  Verified by extracting the regex from the edited file and parsing the original
+  corrupting line: `matchid` now yields the empty string, with `map` and `half` intact.
+  Normal values, values containing spaces, bare unquoted values and a trailing empty
+  field all parse unchanged.
+
+### Known, not fixed here
+- **A bare boolean key followed by ` (` still mis-parses.** `(flagindex) (map "dod_anzio")`
+  yields key `flagindex)` with the remainder as its value, because `\S+` is greedy and
+  `)` is not whitespace — so the `# boolean property` branch is unreachable whenever a
+  space follows. Present before this change and after it. Fixing it means altering
+  `\S+`, which changes how every other line parses, and no real log sample carrying a
+  bare boolean was available to test that against.
+
 ## [0.3.5] - 2026-08-12
 
 ### Added

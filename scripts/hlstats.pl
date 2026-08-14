@@ -1363,7 +1363,13 @@ sub getProperties
 	my %properties;
 	my $dods_flag = 0;
 	
-	while ($propstring =~ s/^\s*\((\S+)(?:(?: "(.+?)")|(?: ([^\)]+)))?\)//) {
+	# `.*?` not `.+?`: an EMPTY quoted value must match here. With `.+?` the
+	# quoted branch cannot match `(matchid "")` at all, so the lazy match runs on
+	# to the NEXT quote pair and yields `") (map "dod_harrington` as the value --
+	# a phantom match id that spread across 13 tables before anyone noticed.
+	# Nothing errors, which is why it survived. Test with an empty field: a
+	# malformed-input suite passes while this case still breaks.
+	while ($propstring =~ s/^\s*\((\S+)(?:(?: "(.*?)")|(?: ([^\)]+)))?\)//) {
 		my $key = $1;
 		if (defined($2)) {
 			if ($key eq "player") {
