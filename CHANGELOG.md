@@ -77,6 +77,43 @@
 ## [Unreleased]
 
 ### Added
+- **Per-player flag-capture completions** (`sql/migrate_009_flag_captures.sql`,
+  `scripts/hlstats.pl`) — new `ktp_flag_captures` table and
+  `doEvent_KTPFlagCapture` handler (event type 609) record DoD 1.3's own
+  `dod_capture_area` engine event, previously discarded silently (no
+  `hlstats_Actions` row existed for it — the same failure mode the 0.3.5
+  entry below describes for the Philly LAN) and only ever explored ad hoc
+  from raw logs (KTPInfrastructure's `composite_v2.py`).
+  - The real GoldSrc log line is `"Player<uid><steamid><Team>" triggered a
+    "dod_capture_area" - "POINT_NAME"` — a bare dash-suffixed quoted string,
+    **not** the parenthesized `(key "val")` shape `getProperties()` expects.
+    That function's own DoD-specific `$dods_flag`/`flagindex` handling is
+    for DoD:**Source**'s different log format and never matches these
+    GoldSrc 1.3 lines — confirmed by checking our own captured Lane B log
+    against it, not assumed. The point name is parsed directly out of the
+    raw trailing text instead of routing through the generic properties
+    parser.
+  - Deliberately a direct `INSERT` (same shape as `ktp_position_samples`/
+    `ktp_damage_events`), not a generic-dispatcher `hlstats_Actions` seed —
+    seeding one would have meant fighting the parser for a shape it wasn't
+    built for, for a table (`hlstats_Events_PlayerActions`) with no columns
+    for the data that actually matters here (which flag, how many cappers).
+  - One row per capping player, on purpose. DoD 1.3's own capture mechanic
+    requires some points to have two players standing on them
+    simultaneously to complete a cap, others need only one — the engine
+    emits one line per capping player plus a redundant team-level line
+    carrying no information the per-player rows don't already have (team is
+    on every row). That team-level line is left unhandled rather than
+    double-recorded. Multi-capper detection is a query-time
+    `GROUP BY (flag_name, event_time) HAVING COUNT(*) > 1`, not a stored
+    column — same "raw facts, classify at query time" convention
+    `ktp_position_samples` already established.
+  - Live-verified against the 2026-08-13 Lane B run's captured log before
+    writing the migration: 5 real two-player captures observed (a
+    `Team "..."` line followed by exactly 2 per-player lines, same
+    timestamp, same flag), confirming the row shape and the multi-capper
+    query pattern both hold against real DoD 1.3 engine output.
+
 - **Periodic roster-position samples** (`sql/migrate_008_position_samples.sql`,
   `scripts/hlstats.pl`) — new `ktp_position_samples` table and
   `doEvent_KTPPosition` handler (event type 608) record every
