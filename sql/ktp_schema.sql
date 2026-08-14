@@ -166,7 +166,10 @@ CREATE TABLE IF NOT EXISTS ktp_match_players (
     id INT AUTO_INCREMENT,
     match_id VARCHAR(64) NOT NULL,
     player_id INT NOT NULL,
-    steam_id VARCHAR(32) NOT NULL,
+    -- HLStatsX bot identities are "BOT:" plus a 32-character MD5 (36 total).
+    -- Real Steam IDs are shorter, but the wider column lets isolated bot
+    -- regression matches exercise the same match-roster path.
+    steam_id VARCHAR(64) NOT NULL,
     player_name VARCHAR(64) NOT NULL,
     team TINYINT NOT NULL COMMENT '1=Allies, 2=Axis',
     joined_at DATETIME NOT NULL,
