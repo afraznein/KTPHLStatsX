@@ -201,6 +201,25 @@
   (`HLstats.plib`) now returns its own affected-row count so callers can
   check it directly — additive only, every existing caller already ignores
   the return value.
+
+  **Third validation, from a real bot-driven Lane B match (2026-08-13), not
+  just the two synthetic replay controls above.** A 16-bot, 156-kill match
+  organically tripped `KTP_NO_ROW_MATCHED` 5 times on `frag_context` — not
+  from a dropped frag line (the match's own `kills`/`frags` counts matched
+  156/156 exactly) but from a genuine ordering race: the daemon's own log
+  showed a `KTP_NO_ROW_MATCHED` timestamped *between* two successful
+  `frag_context` UPDATEs from the same second, i.e. the buffered context
+  marker (flushes on its own 5s cycle) reached the daemon before its primary
+  kill line had been inserted into `Frags` yet — UDP does not guarantee send
+  order, and Lane B's bots sustain a far higher kills/sec rate than real
+  human play. The fix's bound correctly discarded each of the 5 rather than
+  risking a wrong-row match; net effect was 5 kills (~3.2% of this
+  artificially bot-dense run) missing their `frag_context` properties
+  (headshot/prone/scope/clip/position), not corrupted data. Accepted as
+  correct, documented behavior — discard-over-corrupt was always the goal,
+  and the real-match rate is expected to be lower than this synthetic
+  ceiling. Not pursuing a retry/requeue for the race; see
+  `docs/handover/` in KTPInfrastructure for the full Lane B run writeup.
 - **DoD suicides are now recorded** — `hlstats_Events_Suicides` had been empty
   fleet-wide, and `ktp_match_stats.suicides` therefore always 0, since the table
   was introduced. The cause was dispatch, not handling: the only branch in
