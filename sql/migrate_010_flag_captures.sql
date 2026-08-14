@@ -1,5 +1,5 @@
--- KTP HLStatsX Migration 009: per-player flag-capture completions
--- Run on data server: mysql -u hlstatsx -p hlstatsx < migrate_009_flag_captures.sql
+-- KTP HLStatsX Migration 010: per-player flag-capture completions
+-- Run on data server: mysql -u hlstatsx -p hlstatsx < migrate_010_flag_captures.sql
 --
 -- Persists DoD 1.3's own "dod_capture_area" engine event, previously parsed
 -- for exploration only (see KTPInfrastructure's composite_v2.py, which reads

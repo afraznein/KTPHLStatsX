@@ -77,7 +77,7 @@
 ## [Unreleased]
 
 ### Added
-- **Per-player flag-capture completions** (`sql/migrate_009_flag_captures.sql`,
+- **Per-player flag-capture completions** (`sql/migrate_010_flag_captures.sql`,
   `scripts/hlstats.pl`) — new `ktp_flag_captures` table and
   `doEvent_KTPFlagCapture` handler (event type 609) record DoD 1.3's own
   `dod_capture_area` engine event, previously discarded silently (no
