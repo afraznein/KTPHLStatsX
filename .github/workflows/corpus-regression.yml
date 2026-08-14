@@ -1,0 +1,20 @@
+name: Corpus Regression
+
+on:
+  pull_request:
+    branches: [preprod, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  corpus-regression:
+    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
+    with:
+      lane: corpus
+      infrastructure_ref: preprod
+      amxx_ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+      daemon_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    secrets: inherit
