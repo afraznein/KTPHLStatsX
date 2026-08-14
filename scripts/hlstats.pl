@@ -828,6 +828,7 @@ sub getServer
 		$result->finish;
 		if (!defined($g_games{$game})) {
 			$g_games{$game} = new HLstats_Game($game);
+			&ktpAssertActionsSeeded($game);
 		}
 		# l4d code should be reused for l4d2
 		# trying first using l4d as "realgame" code for l4d2 in db. if default server config settings won't work, will leave as own "realgame" code in db but uncomment line.
@@ -1990,12 +1991,23 @@ if ($g_stdin) {
 		LocalAddr=>"$s_ip",
 		LocalPort=>"$s_port"
 	) or die ("\nCan't setup UDP socket on $ip$s_port: $!\n");
-	$s_socket->sockopt(SO_RCVBUF, 1048576);  # Request 1MB receive buffer
+	my $want_rcvbuf = 1048576;               # Request 1MB receive buffer
+	$s_socket->sockopt(SO_RCVBUF, $want_rcvbuf);
 	my $actual_rcvbuf = $s_socket->sockopt(SO_RCVBUF);
 	$s_select = IO::Select->new($s_socket);
 
 	&printEvent("UDP", "Opening UDP listen socket on $ip$s_port ... ok", 1);
 	&printEvent("UDP", "Socket receive buffer: " . int($actual_rcvbuf / 1024) . "KB", 1);
+
+	# Linux silently clamps the request to net.core.rmem_max and reports back double
+	# what it granted. Asking for a buffer and not getting it is exactly the condition
+	# that loses log lines under concurrent servers, and nothing else reports it.
+	if (($actual_rcvbuf / 2) < $want_rcvbuf) {
+		&printEvent("UDP",
+			"WARNING: asked for " . int($want_rcvbuf / 1024) . "KB of receive buffer but " .
+			"the kernel granted " . int($actual_rcvbuf / 2 / 1024) . "KB. Raise " .
+			"net.core.rmem_max -- under load this drops log lines with no other symptom.", 1);
+	}
 }
 
 if ($g_track_stats_trend > 0) {
@@ -2033,6 +2045,18 @@ if ($g_global_chat == 1) {
 # KTP: Match context tracking for KTP Match Handler integration
 # Stores match_id per server address for tagging events
 %g_ktpMatchContext = ();
+
+# KTP: actions seen in the log that resolve to no row in hlstats_Actions.
+# {game/action} => count. Keyed so each distinct action warns once and then
+# only tallies -- an objective-heavy map would otherwise flood the journal.
+%g_ktpUnresolvedActions = ();
+
+# KTP: write-path health, reported by the housekeeping loop. Retries that
+# succeed are as interesting as failures: a rising retry count is the shape of
+# a database connection dying under load, which otherwise looks like nothing.
+$g_sql_error_count = 0;
+$g_sql_retry_count = 0;
+$g_ktp_lasthealth  = 0;
 
 # KTP: In-memory accumulators for batching frag-related UPDATEs
 # Flushed every 30s, on shutdown, and before match stats aggregation
@@ -2804,19 +2828,137 @@ while ($loop = &getLine()) {
 							# Flush pending frags so the kill is in the DB
 							flushEventTable("Frags");
 
-							# Update the most recent frag by this killer against this victim on this server
+							# Update the most recent frag by this killer against this
+							# victim on this server -- time-bounded for the same
+							# dropped-UDP-line reason as frag_context below (this
+							# branch is dead code, nothing emits headshot_kill
+							# anymore, but kept consistent rather than left as a
+							# latent copy of the bug it was fixed for).
 							my $hs_weapon = $ev_obj_c || "";
-							&execNonQuery("
+							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
 								SET headshot = 1
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".$killerId->{playerid}."
 								AND victimId = ".$victimId->{playerid}."
 								AND weapon = '".quoteSQL($hs_weapon)."'
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
 								ORDER BY id DESC
 								LIMIT 1
 							");
+							if (defined($hs_rv) && $hs_rv == 0) {
+								&printEvent("KTP_NO_ROW_MATCHED", "headshot_kill: no frag within 60s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$hs_weapon", 1, 1);
+							}
 							$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
+						}
+					}
+				} elsif ($ev_obj_a eq "frag_context") {
+					# KTP: Frag context marker from ktp_stats_capture.inc, fired on
+					# EVERY kill (this retired the old headshot-only "headshot_kill"
+					# marker above -- that branch is left in place as dead code,
+					# nothing emits it anymore, but nothing needs it removed either).
+					# Same technique: flush the frag queue, then UPDATE the most
+					# recent matching row. ev_obj_b = victim player string,
+					# ev_obj_c = weapon, properties carry headshot/prone/scope/ammo.
+					$ev_type = 901;  # KTP frag-context marker
+
+					my $killerinfo = &getPlayerInfo($ev_player, 0);
+					my $victiminfo = &getPlayerInfo($ev_obj_b, 0);
+
+					if ($killerinfo && $victiminfo) {
+						my $killerId = lookupPlayer($s_addr, $killerinfo->{"userid"}, $killerinfo->{"uniqueid"});
+						my $victimId = lookupPlayer($s_addr, $victiminfo->{"userid"}, $victiminfo->{"uniqueid"});
+
+						if ($killerId && $victimId) {
+							# Flush pending frags so the kill is in the DB
+							flushEventTable("Frags");
+
+							my $fc_weapon   = $ev_obj_c || "";
+							my $fc_headshot = $ev_properties_hash{"headshot"} // 0;
+							my $fc_k_prone  = $ev_properties_hash{"k_prone"}  // 0;
+							my $fc_v_prone  = $ev_properties_hash{"v_prone"}  // 0;
+							my $fc_k_scope  = $ev_properties_hash{"k_scope"}  // 0;
+							my $fc_v_scope  = $ev_properties_hash{"v_scope"}  // 0;
+							my $fc_k_clip   = $ev_properties_hash{"k_clip"}   // -1;
+							my $fc_k_ammo   = $ev_properties_hash{"k_ammo"}   // -1;
+							my $fc_v_clip   = $ev_properties_hash{"v_clip"}   // -1;
+							my $fc_v_ammo   = $ev_properties_hash{"v_ammo"}   // -1;
+							my $fc_last_flag_def = $ev_properties_hash{"is_last_flag_defense"} // 0;
+
+							# k_position/v_position are "x y z" (ksc_origin_str's format,
+							# same as assist/break positions) -- present only when the
+							# plugin-side origin read succeeded; Phase 5's positions
+							# guard (never fabricate 0 0 0) applies here too.
+							my $fc_pos_sql = "";
+							if (defined($ev_properties_hash{"k_position"}) && $ev_properties_hash{"k_position"} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+								$fc_pos_sql .= ", pos_x = $1, pos_y = $2, pos_z = $3";
+							}
+							if (defined($ev_properties_hash{"v_position"}) && $ev_properties_hash{"v_position"} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+								$fc_pos_sql .= ", pos_victim_x = $1, pos_victim_y = $2, pos_victim_z = $3";
+							}
+
+							# Update the most recent frag by this killer against this
+							# victim on this server -- time-bounded. GoldSrc log
+							# delivery is fire-and-forget UDP: without a bound, a
+							# lost frag line lets this UPDATE silently rewrite an
+							# OLDER matching frag (possibly from a previous match)
+							# with this kill's context instead. 60s is generous
+							# against flush latency/clock skew while still
+							# excluding a stale prior match.
+							my $fc_rv = &execNonQuery("
+								UPDATE hlstats_Events_Frags
+								SET headshot = ".($fc_headshot ? 1 : 0).",
+									k_prone = ".int($fc_k_prone).",
+									v_prone = ".int($fc_v_prone).",
+									k_scope = ".($fc_k_scope ? 1 : 0).",
+									v_scope = ".($fc_v_scope ? 1 : 0).",
+									k_clip = ".int($fc_k_clip).",
+									k_ammo = ".int($fc_k_ammo).",
+									v_clip = ".int($fc_v_clip).",
+									v_ammo = ".int($fc_v_ammo).",
+									is_last_flag_defense = ".($fc_last_flag_def ? 1 : 0)."
+									$fc_pos_sql
+								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+								AND killerId = ".$killerId->{playerid}."
+								AND victimId = ".$victimId->{playerid}."
+								AND weapon = '".quoteSQL($fc_weapon)."'
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
+								ORDER BY id DESC
+								LIMIT 1
+							");
+							if (defined($fc_rv) && $fc_rv == 0) {
+								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no frag within 60s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$fc_weapon -- likely a dropped UDP frag line, context discarded rather than misattributed", 1, 1);
+							}
+							$ev_status = "Frag context marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $fc_weapon";
+						}
+					}
+				} elsif ($ev_obj_a eq "damage") {
+					# KTP: Per-hit damage ledger marker from ktp_stats_capture.inc,
+					# fired on every client_damage hit -- enemy, team, and self
+					# alike. Unlike headshot_kill/frag_context, this is not an
+					# UPDATE onto an existing row (there is no independent "damage"
+					# row from the stock daemon to update) -- it INSERTs directly
+					# into ktp_damage_events, a standalone table, not one of the
+					# generic recordEvent-batched hlstats_Events_* tables.
+					# ev_obj_b = victim player string, ev_obj_c = weapon.
+					$ev_type = 605;  # KTP damage-ledger marker
+
+					my $attackerinfo = &getPlayerInfo($ev_player, 0);
+					my $dmg_victiminfo = &getPlayerInfo($ev_obj_b, 0);
+
+					if ($attackerinfo && $dmg_victiminfo) {
+						my $attackerId = lookupPlayer($s_addr, $attackerinfo->{"userid"}, $attackerinfo->{"uniqueid"});
+						my $dmg_victimId = lookupPlayer($s_addr, $dmg_victiminfo->{"userid"}, $dmg_victiminfo->{"uniqueid"});
+
+						if ($attackerId && $dmg_victimId) {
+							$ev_status = &doEvent_KTPDamage(
+								$attackerId->{playerid}, $dmg_victimId->{playerid},
+								$ev_obj_c || "",
+								$ev_properties_hash{"damage"} // 0,
+								$ev_properties_hash{"damage_capped"} // 0,
+								$ev_properties_hash{"hitplace"} // 0,
+								$ev_properties_hash{"game_time"} // 0
+							);
 						}
 					}
 				} else {
@@ -3186,16 +3328,77 @@ while ($loop = &getLine()) {
 				  $playerinfo = &getPlayerInfo($ev_player, 1);
 				}
 				if ($playerinfo) {
-					if ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
-						
+					if ($ev_obj_a eq "break_context") {
+						# KTP: follow-up marker on cap_break from
+						# ktp_stats_capture.inc, same technique frag_context uses
+						# on Frags but UPDATEing the most recent matching
+						# hlstats_Events_PlayerActions row instead (matched by
+						# playerId + the cap_break actionId, looked up from the
+						# in-memory actions table rather than a DB round-trip).
+						$ev_type = 606;  # KTP break-context marker
+
+						my $breakerId = lookupPlayer($s_addr, $playerinfo->{"userid"}, $playerinfo->{"uniqueid"});
+						my $capBreakActionId = $g_games{$g_servers{$s_addr}->{game}}{actions}{"cap_break"}{id};
+
+						if ($breakerId && $capBreakActionId) {
+							flushEventTable("PlayerActions");
+
+							my $bc_contesters = $ev_properties{"contester_count"} // 0;
+							my $bc_remaining  = $ev_properties{"time_remaining"}  // 0;
+							my $bc_capout     = $ev_properties{"is_capout"}       // 0;
+
+							# Time-bounded for the same reason as frag_context's
+							# UPDATE above -- a dropped cap_break UDP line would
+							# otherwise let this rewrite an older PlayerActions
+							# row for the same player instead of a no-op.
+							my $bc_rv = &execNonQuery("
+								UPDATE hlstats_Events_PlayerActions
+								SET contester_count = ".int($bc_contesters).",
+									time_remaining = ".($bc_remaining + 0).",
+									is_capout = ".($bc_capout ? 1 : 0)."
+								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+								AND playerId = ".$breakerId->{playerid}."
+								AND actionId = ".int($capBreakActionId)."
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
+								ORDER BY id DESC
+								LIMIT 1
+							");
+							if (defined($bc_rv) && $bc_rv == 0) {
+								&printEvent("KTP_NO_ROW_MATCHED", "break_context: no cap_break within 60s for player=".$breakerId->{playerid}, 1, 1);
+							}
+							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
+						}
+					} elsif ($ev_obj_a eq "position_sample") {
+						# KTP: periodic roster-position sample from
+						# ktp_stats_capture.inc's ksc_position_broadcast_task
+						# (KSC_POSITION_BROADCAST_SECS, currently 30s). Raw facts
+						# only -- no "is this holding forward territory" judgment
+						# happens here, that's entirely query-layer, reading this
+						# table plus ktp_flag_positions. Standalone table, direct
+						# INSERT, same shape as doEvent_KTPDamage -- not routed
+						# through recordEvent's generic hlstats_Events_* batching.
+						$ev_type = 608;  # KTP position-sample marker
+
+						my $ps_playerId = lookupPlayer($s_addr, $playerinfo->{"userid"}, $playerinfo->{"uniqueid"});
+
+						if ($ps_playerId) {
+							$ev_status = &doEvent_KTPPosition(
+								$ps_playerId->{playerid},
+								$ev_properties{"team"} // 0,
+								$ev_properties{"position"} // "",
+								$ev_properties{"game_time"} // 0
+							);
+						}
+					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
+
 						$ev_type = 6;
-						
+
 						$ev_status = &doEvent_RoleSelection(
 							$playerinfo->{"userid"},
 							$playerinfo->{"uniqueid"},
 							$ev_properties{newclass}
 						);
-					} else {					
+					} else {
 						if ($g_servers{$s_addr}->{play_game} == TFC())
 						{
 							if ($ev_obj_a eq "Sentry_Destroyed")
@@ -3613,6 +3816,22 @@ while ($loop = &getLine()) {
 				$g_ktpMatchContext{$s_addr}{round_live} = 1;
 				&printEvent("KTP_DEBUG", "KTP_ROUND_LIVE: match=$g_ktpMatchContext{$s_addr}{match_id}", 1);
 			}
+		} elsif ($s_output =~ /^KTP_FLAG_POSITION\s+(.*)$/) {
+			# KTP: static per-flag position from ktp_stats_capture.inc,
+			# fired once per map load (controlpoints_init) -- a bare marker,
+			# no player string, same shape as KTP_MATCH_START.
+			# Prototype: KTP_FLAG_POSITION (map "xxx") (flag_index "0")
+			#   (flag_name "xxx") (x "1234") (y "-567")
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 607;  # KTP event type
+			$ev_status = &doEvent_KTPFlagPosition(
+				$ev_properties{"map"},
+				$ev_properties{"flag_index"},
+				$ev_properties{"flag_name"},
+				$ev_properties{"x"},
+				$ev_properties{"y"}
+			);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -3921,6 +4140,21 @@ EOT
 			$g_accum_lastflush = $ev_daemontime;
 		}
 
+		# Write-path health, every 5 minutes and only when there is something to
+		# say. A counter nobody reads is the same as no counter, and these three
+		# are the ones that were silent through the LAN.
+		if ($g_ktp_lasthealth + 300 < $ev_daemontime)
+		{
+			$g_ktp_lasthealth = $ev_daemontime;
+			my $unresolved = scalar(keys %g_ktpUnresolvedActions);
+			if ($g_sql_error_count || $g_sql_retry_count || $unresolved)
+			{
+				&printEvent("KTP_HEALTH",
+					"sql_failed=$g_sql_error_count sql_retried=$g_sql_retry_count " .
+					"unresolved_actions=$unresolved", 1);
+			}
+		}
+
 		if ($timeout > 0 && $timeout % 60 == 0) {
 			while (my($map_addr, $map_server) = each(%g_servers)) {
 				if (defined($map_server) && $map_server->{map} eq "") {
@@ -3964,9 +4198,171 @@ sub parseHalfNumber
 }
 
 #
+# KTP: Report an action the log carried but hlstats_Actions cannot resolve.
+#
+# The upstream handler skips such an event with no error, no counter and no log
+# line. At the Philly 2026 LAN the actions table was never seeded, so every
+# dod_control_point and dod_capture_area of the weekend was parsed, dropped, and
+# never missed until the objective columns turned up empty afterwards.
+#
+# Warn on the first sighting of each distinct action and tally the rest, so a
+# misconfiguration is loud once rather than either silent or unreadable.
+#
+sub ktpWarnUnresolvedAction
+{
+	my ($game, $action) = @_;
+	return unless (defined($action) && $action ne "");
+	$game = "?" unless defined($game);
+
+	my $key = "$game/$action";
+	if (!$g_ktpUnresolvedActions{$key}++) {
+		&printEvent("SQL_ERROR",
+			"Unresolved action '$action' (game '$game') is NOT in hlstats_Actions -- " .
+			"this event is being DISCARDED and will never reach the database. " .
+			"Seed the actions table for this game.", 1);
+	}
+}
+
+#
+# KTP: Warn if hlstats_Actions is empty for a game we are about to serve.
+#
+# Cheap to check once per game at discovery, and it turns a whole weekend of
+# silently dropped objectives into one line at startup.
+#
+sub ktpAssertActionsSeeded
+{
+	my ($game) = @_;
+	return unless defined($game);
+
+	my $result = &doQuery("
+		SELECT COUNT(*) FROM hlstats_Actions WHERE game = '" . &quoteSQL($game) . "'
+	");
+	my ($count) = $result->fetchrow_array;
+	$result->finish;
+
+	if (!$count) {
+		&printEvent("SQL_ERROR",
+			"hlstats_Actions has NO rows for game '$game'. Every objective event for " .
+			"this game will be parsed and then discarded. Seed the actions table " .
+			"before running a match.", 1);
+	} else {
+		&printEvent("HLSTATSX", "Actions loaded for game '$game': $count", 1);
+	}
+}
+
+#
 # KTP: Handle KTP_MATCH_START event
 # Sets match context for tagging events and creates match record in database
 #
+sub doEvent_KTPDamage
+{
+	# KTP: Per-hit damage ledger. INSERTs directly into ktp_damage_events --
+	# not one of the generic recordEvent-batched hlstats_Events_* tables,
+	# since that machinery is config-driven around the stock event set and
+	# this is a standalone KTP table. Same shape as doEvent_KTPMatchStart:
+	# direct execNonQuery, not a queue.
+	my ($attacker_id, $victim_id, $weapon, $damage, $damage_capped, $hitplace, $game_time) = @_;
+
+	return 0 if (!defined($attacker_id) || !defined($victim_id));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	# Same match_id/round_live gating recordEvent() uses -- only tag with
+	# match_id while the round is live, so freeze-time and warmup damage
+	# lands with match_id NULL rather than attributed to a match that isn't
+	# actually running.
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	&execNonQuery("
+		INSERT INTO ktp_damage_events
+			(server_id, match_id, half, attacker_id, victim_id, weapon,
+			 damage, damage_capped, hitplace, game_time, event_time)
+		VALUES
+			($server_id, $match_id_sql, $half, $attacker_id, $victim_id,
+			 '".quoteSQL($weapon)."', ".int($damage).", ".int($damage_capped).",
+			 ".int($hitplace).", ".($game_time + 0).", NOW())
+	");
+
+	return "Damage logged: attacker=$attacker_id victim=$victim_id weapon=$weapon damage=$damage capped=$damage_capped";
+}
+
+sub doEvent_KTPPosition
+{
+	# KTP: periodic roster-position sample. Same match_id/round_live gating
+	# recordEvent() and doEvent_KTPDamage use -- only tag with match_id while
+	# the round is live, so warmup/freeze-time samples land with match_id
+	# NULL rather than attributed to a match that isn't actually running.
+	my ($player_id, $team, $position, $game_time) = @_;
+
+	return 0 if (!defined($player_id));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	# "X Y Z", same format/regex ksc_origin_str's callers already use
+	# (frag_context's k_position/v_position). Never fabricate 0 0 0 -- if
+	# the plugin-side read failed the marker wouldn't have this property at
+	# all, but guard the parse anyway rather than trust an unvalidated string
+	# straight into an INSERT.
+	if ($position !~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+		return "Position sample dropped for player=$player_id: unparseable position '$position'";
+	}
+	my ($x, $y, $z) = ($1, $2, $3);
+
+	&execNonQuery("
+		INSERT INTO ktp_position_samples
+			(server_id, match_id, half, player_id, team, pos_x, pos_y, pos_z,
+			 game_time, event_time)
+		VALUES
+			($server_id, $match_id_sql, $half, $player_id, ".int($team).",
+			 $x, $y, $z, ".($game_time + 0).", NOW())
+	");
+
+	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
+}
+
+sub doEvent_KTPFlagPosition
+{
+	# KTP: static per-flag position, upserted into ktp_flag_positions.
+	# Fires once per map load (controlpoints_init), including warmup and
+	# halftime reloads -- harmless, this is idempotent on the unique key.
+	my ($map, $flag_index, $flag_name, $x, $y) = @_;
+
+	return 0 if (!defined($map) || $map eq "" || !defined($flag_index));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	&execNonQuery("
+		INSERT INTO ktp_flag_positions
+			(server_id, map_name, flag_index, flag_name, origin_x, origin_y)
+		VALUES
+			($server_id, '".quoteSQL($map)."', ".int($flag_index).",
+			 '".quoteSQL($flag_name)."', ".int($x // 0).", ".int($y // 0)."
+		)
+		ON DUPLICATE KEY UPDATE
+			flag_name = '".quoteSQL($flag_name)."',
+			origin_x = ".int($x // 0).",
+			origin_y = ".int($y // 0)."
+	");
+
+	return "Flag position recorded: map=$map flag_index=$flag_index name=$flag_name x=$x y=$y";
+}
+
 sub doEvent_KTPMatchStart
 {
 	my ($matchid, $map, $half) = @_;
