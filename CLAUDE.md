@@ -19,6 +19,28 @@ Modified HLStatsX:CE Perl daemon with KTP Match Handler integration. Separates w
 ## Deployment
 Deployed to `/opt/hlstatsx/` on the data server (<DATA_SERVER_IP>).
 
+### ⛔ Build and deploy from `preprod`, never `main`
+
+`preprod` is the integration branch and it is what production runs. `main` is
+several releases behind: it has neither the `ktpAssertActionsSeeded` startup
+assertion that every action-seeding gate depends on, nor the frag-context
+handlers. A daemon cut from `main` would not error — the *verification* would
+simply stop existing, and `hlstats.pl` silently discards any line whose action
+row it never loaded.
+
+`deploy.ps1` stages whatever is checked out, so the branch you are on **is** the
+build. Prove the file rather than the ref, on the deployed copy:
+
+```bash
+grep -c "Actions loaded for game" hlstats.pl   # >0 = the assertion is present
+grep -c "frag_context"            hlstats.pl   # >0 = the new handlers are present
+grep -c "zzq_not_a_real_marker"   hlstats.pl   # 0  = the probe itself works
+```
+
+Compare builds by **normalised diff**, never by byte size — this tree is
+CRLF-vs-LF against the deployed file, so a change that only adds lines can make
+the file measurably smaller.
+
 ### Verifying which build is live *(added 2026-08-14)*
 
 ⚠️ **The startup banner does NOT tell you.** `HLstatsX:CE <version> starting…`
