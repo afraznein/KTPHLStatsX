@@ -23,6 +23,18 @@
   Normal values, values containing spaces, bare unquoted values and a trailing empty
   field all parse unchanged.
 
+- **The UDP receive buffer now asks for what the box is configured to give.**
+  `net.core.rmem_max` was raised to 25MB and provisioned, but the request here stayed
+  at 1MB — so the socket got 1MB on a box configured for 25, and the raised ceiling
+  looked like a fix while changing nothing. Measured on the live daemon: it logged
+  `Socket receive buffer: 2048KB`, the kernel's doubled view of 1MB. `$want_rcvbuf` now
+  matches the ceiling.
+
+  ⚠️ **A ceiling is not a request.** `rmem_max` caps what a process may ask for; it
+  never grants anything on its own. The warning block below the request already reports
+  a shortfall, so a future mismatch says so at startup instead of being inferred from
+  lost log lines.
+
 ### Known, not fixed here
 - **A bare boolean key followed by ` (` still mis-parses.** `(flagindex) (map "dod_anzio")`
   yields key `flagindex)` with the remainder as its value, because `\S+` is greedy and

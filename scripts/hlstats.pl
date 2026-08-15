@@ -1997,7 +1997,11 @@ if ($g_stdin) {
 		LocalAddr=>"$s_ip",
 		LocalPort=>"$s_port"
 	) or die ("\nCan't setup UDP socket on $ip$s_port: $!\n");
-	my $want_rcvbuf = 1048576;               # Request 1MB receive buffer
+	# Match net.core.rmem_max (25MB, set in /etc/sysctl.d/98-ktp-dataserver.conf).
+	# Asking for 1MB was the actual drop: the ceiling was raised to 25MB and this
+	# request never was, so the socket got 1MB on a box configured for 25 and the
+	# ceiling looked like the fix while doing nothing.
+	my $want_rcvbuf = 26214400;
 	$s_socket->sockopt(SO_RCVBUF, $want_rcvbuf);
 	my $actual_rcvbuf = $s_socket->sockopt(SO_RCVBUF);
 	$s_select = IO::Select->new($s_socket);
