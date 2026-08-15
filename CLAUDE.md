@@ -19,6 +19,34 @@ Modified HLStatsX:CE Perl daemon with KTP Match Handler integration. Separates w
 ## Deployment
 Deployed to `/opt/hlstatsx/` on the data server (<DATA_SERVER_IP>).
 
+### Verifying which build is live *(added 2026-08-14)*
+
+⚠️ **The startup banner does NOT tell you.** `HLstatsX:CE <version> starting…`
+reads `hlstats_Options.version` from the database — the **upstream** number
+(`1.7.0`), not this fork's `VERSION` (0.3.x). It does not change when you deploy.
+**Identify a build by md5 of `/opt/hlstatsx/scripts/hlstats.pl`**, never by the
+banner.
+
+Two startup lines are worth reading after a restart, because both report a
+condition nothing else surfaces:
+
+```
+UDP: Socket receive buffer: <N>KB
+UDP: WARNING: asked for <N>KB ... but the kernel granted <M>KB
+```
+
+🔑 **A ceiling is not a request.** `net.core.rmem_max` caps what a process *may*
+ask for and grants nothing on its own. Raising it to 25MB on 2026-08-12 changed
+nothing measurable, because `$want_rcvbuf` stayed at 1MB and the socket kept
+getting 2MB — the raised ceiling looked like a fix for two days. The request now
+matches the ceiling (`51200KB` reported, no warning). If that warning line ever
+appears, `rmem_max` is the lever; if it does not, the request is.
+
+⚠️ **A restart drops UDP for the whole fleet** — this one daemon tags every
+instance's events. Check for a live match before restarting: an open
+`ktp_matches` row with a NULL `end_time`, or recent `hlstats_Events_Frags`.
+Players merely connected are fine; a match in progress is not.
+
 ## Service Management
 ```bash
 sudo systemctl status hlstatsx
