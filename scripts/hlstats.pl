@@ -2838,8 +2838,8 @@ while ($loop = &getLine()) {
 							# Flush pending frags so the kill is in the DB
 							flushEventTable("Frags");
 
-							# Update the most recent frag by this killer against this
-							# victim on this server -- time-bounded for the same
+							# Claim the oldest uncontextualized frag for this tuple,
+							# time-bounded for the same
 							# dropped-UDP-line reason as frag_context below (this
 							# branch is dead code, nothing emits headshot_kill
 							# anymore, but kept consistent rather than left as a
@@ -2847,17 +2847,19 @@ while ($loop = &getLine()) {
 							my $hs_weapon = $ev_obj_c || "";
 							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
-								SET headshot = 1
+								SET headshot = 1,
+									frag_context_recorded = 1
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".$killerId->{playerid}."
 								AND victimId = ".$victimId->{playerid}."
 								AND weapon = '".quoteSQL($hs_weapon)."'
-								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
-								ORDER BY id DESC
+								AND frag_context_recorded = 0
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")
+								ORDER BY id ASC
 								LIMIT 1
 							");
 							if (defined($hs_rv) && $hs_rv == 0) {
-								&printEvent("KTP_NO_ROW_MATCHED", "headshot_kill: no frag within 60s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$hs_weapon", 1, 1);
+								&printEvent("KTP_NO_ROW_MATCHED", "headshot_kill: no uncontextualized frag within 10s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$hs_weapon", 1, 1);
 							}
 							$ev_status = "Headshot marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $hs_weapon";
 						}
@@ -2907,14 +2909,11 @@ while ($loop = &getLine()) {
 								$fc_pos_sql .= ", pos_victim_x = $1, pos_victim_y = $2, pos_victim_z = $3";
 							}
 
-							# Update the most recent frag by this killer against this
-							# victim on this server -- time-bounded. GoldSrc log
-							# delivery is fire-and-forget UDP: without a bound, a
-							# lost frag line lets this UPDATE silently rewrite an
-							# OLDER matching frag (possibly from a previous match)
-							# with this kill's context instead. 60s is generous
-							# against flush latency/clock skew while still
-							# excluding a stale prior match.
+							# Claim each frag once, in FIFO order. GoldSrc log delivery
+							# is fire-and-forget UDP: without this guard, a context whose
+							# stock frag line was lost can rewrite an earlier kill. The
+							# plugin flushes within five seconds, so ten seconds covers
+							# normal latency without reaching stale pending rows.
 							my $fc_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
 								SET headshot = ".($fc_headshot ? 1 : 0).",
@@ -2926,18 +2925,20 @@ while ($loop = &getLine()) {
 									k_ammo = ".int($fc_k_ammo).",
 									v_clip = ".int($fc_v_clip).",
 									v_ammo = ".int($fc_v_ammo).",
-									is_last_flag_defense = ".($fc_last_flag_def ? 1 : 0)."
+									is_last_flag_defense = ".($fc_last_flag_def ? 1 : 0).",
+									frag_context_recorded = 1
 									$fc_pos_sql
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".$killerId->{playerid}."
 								AND victimId = ".$victimId->{playerid}."
 								AND weapon = '".quoteSQL($fc_weapon)."'
-								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
-								ORDER BY id DESC
+								AND frag_context_recorded = 0
+								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")
+								ORDER BY id ASC
 								LIMIT 1
 							");
 							if (defined($fc_rv) && $fc_rv == 0) {
-								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no frag within 60s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$fc_weapon -- likely a dropped UDP frag line, context discarded rather than misattributed", 1, 1);
+								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no uncontextualized frag within 10s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$fc_weapon -- likely a dropped UDP frag line, context discarded rather than misattributed", 1, 1);
 							}
 							$ev_status = "Frag context marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $fc_weapon";
 						}
