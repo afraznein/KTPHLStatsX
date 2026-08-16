@@ -86,7 +86,10 @@ L 02/05/2026 - 15:35:00: KTP_MATCH_END (matchid "KTP-1734355200-dod_charlie") (m
 **New KTP tables:**
 - `ktp_matches` — Match boundaries (match_id, server_id, map, half, start/end times)
 - `ktp_match_players` — Players per match (steam_id, team, joined_at)
-- `ktp_match_stats` — Aggregated kills/deaths/headshots/damage/score per player per match per half
+- `ktp_match_stats` — Derived kills/deaths/headshots/teamkills/suicides/damage/score
+  cache per player per match per half. Damage is `SUM(ktp_damage_events.damage_capped)`;
+  StatsMe remains the weapon-level shots/hits/damage breakdown, not the canonical
+  match-damage source.
 
 **Views:** `ktp_match_leaderboard`, `ktp_recent_matches`
 
