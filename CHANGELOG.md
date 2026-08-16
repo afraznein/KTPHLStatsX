@@ -1,5 +1,16 @@
 # KTP HLStatsX Changelog
 
+## [0.3.8] - 2026-08-16
+
+### Fixed
+- **KTP-owned tables now use the same collation as the existing HLStatsX
+  event tables.** MySQL 8 can otherwise create new `utf8mb4` tables with
+  `utf8mb4_0900_ai_ci`, while the existing schema uses
+  `utf8mb4_unicode_ci`. A late frag-context cache refresh then fails when it
+  joins the differently collated `match_id` columns. Migration 013 normalizes
+  existing KTP tables and the create scripts now pin the compatible collation.
+  Migration 013 must run before this daemon.
+
 ## [0.3.7] - 2026-08-16
 
 ### Fixed

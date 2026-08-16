@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS ktp_flag_captures (
     -- No FOREIGN KEY to hlstats_Servers or hlstats_Players: the HLStatsX base
     -- tables are MyISAM, which has no FK support (same reason ktp_matches,
     -- ktp_damage_events and ktp_position_samples have none).
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Per-player DoD 1.3 flag-capture completions -- raw facts, multi-capper detection is a query-time GROUP BY on (flag_name, event_time), not a stored column';
 
 -- Verify: table exists with the expected columns.

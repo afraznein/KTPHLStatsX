@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS ktp_position_samples (
     -- No FOREIGN KEY to hlstats_Servers or hlstats_Players: the HLStatsX base
     -- tables are MyISAM, which has no FK support (same reason ktp_matches
     -- and ktp_damage_events have none).
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Periodic roster-position samples -- raw facts for positional/holding stats and ninja-cap detection, classified entirely at query time';
 
 -- Verify: table exists with the expected columns.
