@@ -1,8 +1,14 @@
 # KTP HLStatsX Changelog
 
-## [Unreleased]
+## [0.3.6] - 2026-08-16
 
 ### Fixed
+- **Frag context can no longer rewrite a previously enriched kill.** Every frag
+  row is now claimed once via `frag_context_recorded`, in FIFO order, within a
+  ten-second window. This closes the observed case where the stock UDP frag line
+  was lost but its later `frag_context` marker survived and overwrote an older
+  same-killer/victim/weapon row. Migration 012 must run before this daemon.
+
 - **An empty quoted field no longer swallows the rest of the line.** `getProperties`
   matched a quoted value with `"(.+?)"`, which requires at least one character — so
   `(matchid "")` could not match the quoted branch at all, and the lazy match ran on to
