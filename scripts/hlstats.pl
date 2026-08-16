@@ -4583,7 +4583,12 @@ sub doEvent_KTPMatchEnd
 
 	&printEvent("KTP_DEBUG", "doEvent_KTPMatchEnd: match=$matchid halves=[@halves]", 1);
 
-	# Aggregate per-half stats from event tables into ktp_match_stats
+	# Aggregate per-half stats from canonical event tables into ktp_match_stats.
+	# Damage comes from the per-hit KTP ledger, not StatsMe: StatsMe is a
+	# player/weapon accumulator flush whose match attribution depends on flush
+	# timing, while ktp_damage_events is recorded at hit time with match + half.
+	# damage_capped is the competitive damage definition (actual useful HP,
+	# capped at 100 per hit), shared with composite_v2.
 	foreach my $half_num (@halves) {
 		&execNonQuery("
 			INSERT INTO ktp_match_stats
@@ -4621,10 +4626,10 @@ sub doEvent_KTPMatchEnd
 				GROUP BY playerId
 			) s ON p.playerId = s.playerId
 			LEFT JOIN (
-				SELECT playerId, SUM(damage) as damage
-				FROM hlstats_Events_Statsme
+				SELECT attacker_id AS playerId, SUM(damage_capped) as damage
+				FROM ktp_damage_events
 				WHERE match_id = '$q_matchid' AND half = $half_num
-				GROUP BY playerId
+				GROUP BY attacker_id
 			) dmg ON p.playerId = dmg.playerId
 			WHERE mp.match_id = '$q_matchid'
 			ON DUPLICATE KEY UPDATE
