@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS ktp_flag_positions (
     KEY idx_map (map_name)
     -- No FOREIGN KEY to hlstats_Servers: the HLStatsX base tables are
     -- MyISAM, which has no FK support -- same reason ktp_matches has none.
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Static per-flag (x,y) per map, for last-flag-defense / ninja-cap proximity checks';
 
 -- Verify: expects 3 new PlayerActions columns, 1 new Frags column, and the

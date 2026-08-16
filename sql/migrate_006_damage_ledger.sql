@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS ktp_damage_events (
     -- No FOREIGN KEY to hlstats_Servers or hlstats_Players: the HLStatsX base
     -- tables are MyISAM, which has no FK support, so an InnoDB FK referencing
     -- them fails with errno 1824 -- same reason ktp_matches has none.
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Per-hit damage ledger -- every client_damage hit, capped and raw';
 
 -- Verify: table exists with the expected columns.
