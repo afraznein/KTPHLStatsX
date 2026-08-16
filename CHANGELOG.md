@@ -1,5 +1,15 @@
 # KTP HLStatsX Changelog
 
+## [0.3.7] - 2026-08-16
+
+### Fixed
+- **A frag context arriving just after `KTP_MATCH_END` now refreshes the
+  affected headshot cache row.** Canonical frag rows were correct, but the
+  already-aggregated per-half and total `ktp_match_stats` rows could remain
+  one headshot behind. The refresh runs only with no active match context and
+  only for the affected killer in matches ended within 30 seconds, keeping it
+  off the live per-kill path.
+
 ## [0.3.6] - 2026-08-16
 
 ### Fixed

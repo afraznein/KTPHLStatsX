@@ -2940,6 +2940,11 @@ while ($loop = &getLine()) {
 							if (defined($fc_rv) && $fc_rv == 0) {
 								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no uncontextualized frag within 10s for killer=".$killerId->{playerid}." victim=".$victimId->{playerid}." weapon=$fc_weapon -- likely a dropped UDP frag line, context discarded rather than misattributed", 1, 1);
 							}
+							if (defined($fc_rv) && $fc_rv > 0 &&
+								!defined($g_ktpMatchContext{$s_addr})) {
+								ktpRefreshLateHeadshots(
+									$g_servers{$s_addr}->{'id'}, $killerId->{playerid});
+							}
 							$ev_status = "Frag context marked for ".$killerinfo->{"uniqueid"}." -> ".$victiminfo->{"uniqueid"}." with $fc_weapon";
 						}
 					}
@@ -4544,6 +4549,47 @@ sub ktpTrackMatchPlayer
 	");
 
 	return 1;
+}
+
+# A context buffered just before KTP_MATCH_END can arrive after the canonical
+# event tables were aggregated. Refresh only that killer's recently-ended
+# cache rows; ordinary live contexts never enter this path.
+sub ktpRefreshLateHeadshots
+{
+	my ($server_id, $player_id) = @_;
+
+	&execNonQuery("
+		UPDATE ktp_match_stats ms
+		JOIN (
+			SELECT f.match_id, f.half, f.killerId, SUM(f.headshot) AS headshots
+			FROM hlstats_Events_Frags f
+			JOIN ktp_matches m ON m.match_id = f.match_id
+				AND m.server_id = $server_id AND m.half = f.half
+			WHERE f.serverId = $server_id AND f.killerId = $player_id
+				AND f.match_id IS NOT NULL
+				AND m.end_time >= DATE_SUB(NOW(), INTERVAL 30 SECOND)
+			GROUP BY f.match_id, f.half, f.killerId
+		) canonical ON canonical.match_id = ms.match_id
+			AND canonical.half = ms.half AND canonical.killerId = ms.player_id
+		SET ms.headshots = canonical.headshots
+		WHERE ms.half > 0
+	");
+
+	&execNonQuery("
+		UPDATE ktp_match_stats total
+		JOIN (
+			SELECT part.match_id, part.player_id, SUM(part.headshots) AS headshots
+			FROM ktp_match_stats part
+			JOIN ktp_matches m ON m.match_id = part.match_id
+				AND m.server_id = $server_id AND m.half = part.half
+			WHERE part.player_id = $player_id AND part.half > 0
+				AND m.end_time >= DATE_SUB(NOW(), INTERVAL 30 SECOND)
+			GROUP BY part.match_id, part.player_id
+		) halves ON halves.match_id = total.match_id
+			AND halves.player_id = total.player_id
+		SET total.headshots = halves.headshots
+		WHERE total.half = 0
+	");
 }
 
 #
