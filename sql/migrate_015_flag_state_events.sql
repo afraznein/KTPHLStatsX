@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS ktp_flag_state_events (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (id),
+    UNIQUE KEY uk_state_event
+        (server_id, match_id, half, flag_index, game_time, owner_team, is_initial),
     KEY idx_match_timeline (match_id, half, flag_index, game_time, id),
     KEY idx_server_time (server_id, event_time),
     KEY idx_map_flag (map_name, flag_index)
