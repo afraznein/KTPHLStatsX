@@ -1369,7 +1369,10 @@ sub getProperties
 	# a phantom match id that spread across 13 tables before anyone noticed.
 	# Nothing errors, which is why it survived. Test with an empty field: a
 	# malformed-input suite passes while this case still breaks.
-	while ($propstring =~ s/^\s*\((\S+)(?:(?: "(.*?)")|(?: ([^\)]+)))?\)//) {
+	# `[^\s()]+` not `\S+` for the KEY: a bare-boolean key is followed by the next
+	# property's own paren, and `\S+` swallows it -- `(flagindex) (map "x")` parses the
+	# key as `flagindex)` and loses the pair. Measured output-neutral on 32k real tails.
+	while ($propstring =~ s/^\s*\(([^\s()]+)(?:(?: "(.*?)")|(?: ([^\)]+)))?\)//) {
 		my $key = $1;
 		if (defined($2)) {
 			if ($key eq "player") {
