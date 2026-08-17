@@ -1,5 +1,15 @@
 # KTP HLStatsX Changelog
 
+## [0.3.9] - Unreleased
+
+### Added
+- Persist KTPMatchHandler's numeric match type on each `ktp_matches` half via
+  migration 014. Missing or invalid classifications remain NULL and are never
+  eligible for type-based retention.
+- Accept the backward-compatible `(type "N")` property on `KTP_MATCH_START`
+  markers and fill a previously NULL classification without overwriting an
+  existing value.
+
 ## [0.3.8] - 2026-08-16
 
 ### Fixed
