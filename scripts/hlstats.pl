@@ -3883,6 +3883,22 @@ while ($loop = &getLine()) {
 				$ev_properties{"x"},
 				$ev_properties{"y"}
 			);
+		} elsif ($s_output =~ /^KTP_FLAG_STATE\s+(.*)$/) {
+			# KTP: compact objective-ownership timeline. The plugin emits one
+			# baseline per flag when match context becomes available, then only
+			# owner changes. Positions are joined to the resulting intervals by
+			# the analytics layer; no per-player data is present in this marker.
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 610;  # KTP flag-state marker
+			$ev_status = &doEvent_KTPFlagState(
+				$ev_properties{"map"},
+				$ev_properties{"flag_index"},
+				$ev_properties{"flag_name"},
+				$ev_properties{"owner"},
+				$ev_properties{"initial"},
+				$ev_properties{"game_time"}
+			);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -4446,6 +4462,45 @@ sub doEvent_KTPFlagPosition
 	");
 
 	return "Flag position recorded: map=$map flag_index=$flag_index name=$flag_name x=$x y=$y";
+}
+
+sub doEvent_KTPFlagState
+{
+	my ($map, $flag_index, $flag_name, $owner, $initial, $game_time) = @_;
+
+	return "Flag state dropped: missing map or flag index"
+		if (!defined($map) || $map eq "" || !defined($flag_index));
+	return "Flag state dropped: invalid owner"
+		if (!defined($owner) || $owner !~ /^\d+$/ || $owner < 0 || $owner > 2);
+
+	# Unlike samples that may be useful for warmup diagnostics, ownership rows
+	# exist only to reconstruct match intervals. Fail closed outside a live
+	# match instead of creating ambiguous NULL-match history.
+	return "Flag state ignored outside live match context"
+		if (!defined($g_ktpMatchContext{$s_addr}) ||
+			$g_ktpMatchContext{$s_addr}{match_id} eq "" ||
+			(defined($g_ktpMatchContext{$s_addr}{round_live}) &&
+			 !$g_ktpMatchContext{$s_addr}{round_live}));
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $match_id = $g_ktpMatchContext{$s_addr}{match_id};
+	my $half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+	my $flag_sql = defined($flag_name) && $flag_name ne ""
+		? "'".quoteSQL($flag_name)."'" : "NULL";
+	my $initial_sql = $initial ? 1 : 0;
+	my $game_time_sql = defined($game_time) ? ($game_time + 0) : 0;
+
+	&execNonQuery("
+		INSERT INTO ktp_flag_state_events
+			(server_id, match_id, half, map_name, flag_index, flag_name,
+			 owner_team, is_initial, game_time, event_time)
+		VALUES
+			($server_id, '".quoteSQL($match_id)."', ".int($half).",
+			 '".quoteSQL($map)."', ".int($flag_index).", $flag_sql,
+			 ".int($owner).", $initial_sql, $game_time_sql, NOW())
+	");
+
+	return "Flag state logged: match=$match_id half=$half flag=$flag_index owner=$owner initial=$initial_sql";
 }
 
 sub doEvent_KTPMatchStart

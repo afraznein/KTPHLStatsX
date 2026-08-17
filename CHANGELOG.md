@@ -3,6 +3,10 @@
 ## [0.3.9] - Unreleased
 
 ### Added
+- Persist a compact per-match flag-ownership timeline through
+  `KTP_FLAG_STATE` markers and migration 015. Each half starts with one
+  baseline row per flag and records only subsequent owner changes, allowing
+  positional samples to be classified as attacking, holding, or defending.
 - Persist KTPMatchHandler's numeric match type on each `ktp_matches` half via
   migration 014. Missing or invalid classifications remain NULL and are never
   eligible for type-based retention.
