@@ -4494,7 +4494,7 @@ sub doEvent_KTPFlagState
 	my $game_time_sql = defined($game_time) ? ($game_time + 0) : 0;
 
 	&execNonQuery("
-		INSERT INTO ktp_flag_state_events
+		INSERT IGNORE INTO ktp_flag_state_events
 			(server_id, match_id, half, map_name, flag_index, flag_name,
 			 owner_team, is_initial, game_time, event_time)
 		VALUES
