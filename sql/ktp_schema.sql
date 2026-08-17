@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS ktp_matches (
     -- No FOREIGN KEY to hlstats_Servers: the HLStatsX base tables are MyISAM,
     -- which has no FK support, so an InnoDB FK referencing it fails with errno
     -- 1824. server_id stays an indexed column; integrity is enforced app-side.
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='KTP match metadata - tracks match boundaries';
 
 -- Players participating in each match
@@ -166,7 +166,10 @@ CREATE TABLE IF NOT EXISTS ktp_match_players (
     id INT AUTO_INCREMENT,
     match_id VARCHAR(64) NOT NULL,
     player_id INT NOT NULL,
-    steam_id VARCHAR(32) NOT NULL,
+    -- HLStatsX bot identities are "BOT:" plus a 32-character MD5 (36 total).
+    -- Real Steam IDs are shorter, but the wider column lets isolated bot
+    -- regression matches exercise the same match-roster path.
+    steam_id VARCHAR(64) NOT NULL,
     player_name VARCHAR(64) NOT NULL,
     team TINYINT NOT NULL COMMENT '1=Allies, 2=Axis',
     joined_at DATETIME NOT NULL,
@@ -176,7 +179,7 @@ CREATE TABLE IF NOT EXISTS ktp_match_players (
     KEY idx_match (match_id),
     KEY idx_player (player_id),
     KEY idx_steam (steam_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Players participating in KTP matches';
 
 -- Aggregated match statistics per player per half (computed from events)
@@ -198,7 +201,7 @@ CREATE TABLE IF NOT EXISTS ktp_match_stats (
     UNIQUE KEY uk_match_player_half (match_id, player_id, half),
     KEY idx_match (match_id),
     KEY idx_player (player_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Aggregated player stats per KTP match per half';
 
 -- ============================================================================

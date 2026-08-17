@@ -1,5 +1,124 @@
 # KTP HLStatsX Changelog
 
+## [0.3.8] - 2026-08-16
+
+### Fixed
+- **KTP-owned tables now use the same collation as the existing HLStatsX
+  event tables.** MySQL 8 can otherwise create new `utf8mb4` tables with
+  `utf8mb4_0900_ai_ci`, while the existing schema uses
+  `utf8mb4_unicode_ci`. A late frag-context cache refresh then fails when it
+  joins the differently collated `match_id` columns. Migration 013 normalizes
+  existing KTP tables and the create scripts now pin the compatible collation.
+  Migration 013 must run before this daemon.
+
+## [0.3.7] - 2026-08-16
+
+### Fixed
+- **A frag context arriving just after `KTP_MATCH_END` now refreshes the
+  affected headshot cache row.** Canonical frag rows were correct, but the
+  already-aggregated per-half and total `ktp_match_stats` rows could remain
+  one headshot behind. The refresh runs only with no active match context and
+  only for the affected killer in matches ended within 30 seconds, keeping it
+  off the live per-kill path.
+
+## [0.3.6] - 2026-08-16
+
+### Fixed
+- **Frag context can no longer rewrite a previously enriched kill.** Every frag
+  row is now claimed once via `frag_context_recorded`, in FIFO order, within a
+  ten-second window. This closes the observed case where the stock UDP frag line
+  was lost but its later `frag_context` marker survived and overwrote an older
+  same-killer/victim/weapon row. Migration 012 must run before this daemon.
+
+- **An empty quoted field no longer swallows the rest of the line.** `getProperties`
+  matched a quoted value with `"(.+?)"`, which requires at least one character — so
+  `(matchid "")` could not match the quoted branch at all, and the lazy match ran on to
+  the *next* quote pair. `(matchid "") (map "dod_harrington") (half "2nd half")` parsed
+  as `match_id = ") (map "dod_harrington`, a phantom id that spread across **13 tables
+  and 721 rows** at the Philadelphia 2026 LAN before anyone noticed. `.+?` is now `.*?`.
+
+  The upstream trigger is already fixed — KTPMatchHandler no longer starts a half with
+  an empty match id — so this is the amplifier rather than the cause. It is worth
+  closing anyway: it fails **silently**, it corrupts across every table an event
+  touches, and any future emitter writing an empty field re-opens it.
+
+  ⚠️ **Test this with an EMPTY quoted field.** A malformed-input suite passes while this
+  case still breaks, which is precisely how it survived.
+
+  Verified by extracting the regex from the edited file and parsing the original
+  corrupting line: `matchid` now yields the empty string, with `map` and `half` intact.
+  Normal values, values containing spaces, bare unquoted values and a trailing empty
+  field all parse unchanged.
+
+- **The UDP receive buffer now asks for what the box is configured to give.**
+  `net.core.rmem_max` was raised to 25MB and provisioned, but the request here stayed
+  at 1MB — so the socket got 1MB on a box configured for 25, and the raised ceiling
+  looked like a fix while changing nothing. Measured on the live daemon: it logged
+  `Socket receive buffer: 2048KB`, the kernel's doubled view of 1MB. `$want_rcvbuf` now
+  matches the ceiling.
+
+  ⚠️ **A ceiling is not a request.** `rmem_max` caps what a process may ask for; it
+  never grants anything on its own. The warning block below the request already reports
+  a shortfall, so a future mismatch says so at startup instead of being inferred from
+  lost log lines.
+
+### Known, not fixed here
+- **A bare boolean key followed by ` (` still mis-parses.** `(flagindex) (map "dod_anzio")`
+  yields key `flagindex)` with the remainder as its value, because `\S+` is greedy and
+  `)` is not whitespace — so the `# boolean property` branch is unreachable whenever a
+  space follows. Present before this change and after it. Fixing it means altering
+  `\S+`, which changes how every other line parses, and no real log sample carrying a
+  bare boolean was available to test that against.
+
+## [0.3.5] - 2026-08-12
+
+### Added
+- **An action missing from `hlstats_Actions` now says so instead of vanishing.**
+  The upstream handler tests `defined($g_games{...}{actions}{$action}) && ...{paction}`
+  and, when that fails, simply does not record the event — no error, no counter, no log
+  line. At the Philadelphia 2026 LAN the actions table was never seeded for `dod`, so
+  **every `dod_control_point` and `dod_capture_area` of the weekend was parsed and
+  discarded**, and nobody found out until the objective columns turned up empty days
+  later. `ktpWarnUnresolvedAction()` now reports each distinct unresolved action once
+  and tallies the rest, so a misconfiguration is loud on the first capture rather than
+  silent for three days.
+  The guard is deliberately additive — it sits *beside* the upstream test rather than
+  restructuring it, so the base handler's control flow is untouched.
+- **Startup assertion that the actions table is populated.** `ktpAssertActionsSeeded()`
+  runs once per game at server discovery and reports the row count, or an error if it
+  is zero. One line at startup against a weekend of lost objectives.
+- **The UDP receive buffer now reports when the kernel did not grant what was asked.**
+  The socket requests 1 MB; Linux silently clamps that to `net.core.rmem_max` and then
+  reports back double whatever it granted. A request that was quietly cut is exactly
+  the condition that drops log lines once several servers are busy, and nothing else
+  in the daemon notices. Note the doubling when reading the number — a healthy 1 MB
+  grant prints as 2048 KB.
+- **Write-path health counters, surfaced every 5 minutes when non-zero** —
+  `KTP_HEALTH sql_failed=N sql_retried=N unresolved_actions=N`. Silent when all three
+  are zero, so it does not become noise to scroll past.
+
+### Changed
+- **`execNonQuery` retries once before giving up.** The common failure is a connection
+  that died between the `ping()` and the write; a genuinely bad statement fails
+  identically twice and is still reported, so the retry cannot turn a real error into
+  a silent one. Retries that succeed are counted and logged too — a rising retry count
+  is what a database connection dying under load looks like, and it otherwise looks
+  like nothing at all.
+
+### Fixed
+- **`VERSION` said 0.3.3 while `CHANGELOG.md` and `README.md` both said 0.3.4.** The
+  file was never bumped with the release; corrected here.
+
+### Notes
+- ⚠️ **None of this would have saved the LAN's 982 lost frags.** Those died in the UDP
+  receive path before the daemon ever saw them — there is no copy to retry and no event
+  to count. What is recoverable is *knowing*: the kernel's `RcvbufErrors` counter is the
+  only signal, and on the production data server it currently reads **5,404**, so the
+  fleet is dropping log lines today. Sampling that per half is tracked in
+  KTPInfrastructure, not here — the daemon cannot see its own dropped packets.
+
+---
+
 ## [0.3.4] - 2026-08-09
 
 ### Fixed
@@ -28,6 +147,116 @@
 ## [Unreleased]
 
 ### Added
+- **Per-player flag-capture completions** (`sql/migrate_010_flag_captures.sql`,
+  `scripts/hlstats.pl`) — new `ktp_flag_captures` table and
+  `doEvent_KTPFlagCapture` handler (event type 609) record DoD 1.3's own
+  `dod_capture_area` engine event, previously discarded silently (no
+  `hlstats_Actions` row existed for it — the same failure mode the 0.3.5
+  entry below describes for the Philly LAN) and only ever explored ad hoc
+  from raw logs (KTPInfrastructure's `composite_v2.py`).
+  - The real GoldSrc log line is `"Player<uid><steamid><Team>" triggered a
+    "dod_capture_area" - "POINT_NAME"` — a bare dash-suffixed quoted string,
+    **not** the parenthesized `(key "val")` shape `getProperties()` expects.
+    That function's own DoD-specific `$dods_flag`/`flagindex` handling is
+    for DoD:**Source**'s different log format and never matches these
+    GoldSrc 1.3 lines — confirmed by checking our own captured Lane B log
+    against it, not assumed. The point name is parsed directly out of the
+    raw trailing text instead of routing through the generic properties
+    parser.
+  - Deliberately a direct `INSERT` (same shape as `ktp_position_samples`/
+    `ktp_damage_events`), not a generic-dispatcher `hlstats_Actions` seed —
+    seeding one would have meant fighting the parser for a shape it wasn't
+    built for, for a table (`hlstats_Events_PlayerActions`) with no columns
+    for the data that actually matters here (which flag, how many cappers).
+  - One row per capping player, on purpose. DoD 1.3's own capture mechanic
+    requires some points to have two players standing on them
+    simultaneously to complete a cap, others need only one — the engine
+    emits one line per capping player plus a redundant team-level line
+    carrying no information the per-player rows don't already have (team is
+    on every row). That team-level line is left unhandled rather than
+    double-recorded. Multi-capper detection is a query-time
+    `GROUP BY (flag_name, event_time) HAVING COUNT(*) > 1`, not a stored
+    column — same "raw facts, classify at query time" convention
+    `ktp_position_samples` already established.
+  - Live-verified against the 2026-08-13 Lane B run's captured log before
+    writing the migration: 5 real two-player captures observed (a
+    `Team "..."` line followed by exactly 2 per-player lines, same
+    timestamp, same flag), confirming the row shape and the multi-capper
+    query pattern both hold against real DoD 1.3 engine output.
+
+- **Periodic roster-position samples** (`sql/migrate_008_position_samples.sql`,
+  `scripts/hlstats.pl`) — new `ktp_position_samples` table and
+  `doEvent_KTPPosition` handler (event type 608) record every
+  `position_sample` marker KTPAMXX's `ksc_position_broadcast_task` emits
+  (every 30s per connected, alive player): player, team, `(x, y, z)`,
+  `game_time`, and `match_id`/`half` from the same round-live gating
+  `recordEvent()`/`doEvent_KTPDamage` use. Same dispatch shape as
+  `break_context` — a single-action `"Player" triggered "position_sample"
+  (props)` line, routed through the `$ev_verb eq "triggered"` branch — but
+  a standalone direct `INSERT` like `doEvent_KTPDamage`, not an `UPDATE`
+  onto an existing row, since there's no prior event to attach this to.
+  Raw facts only, on purpose: no positional/"holding" judgment happens in
+  this handler, that's entirely query-layer, reading this table plus
+  `ktp_flag_positions`. Live-verified: 129 real samples in a short Lane B
+  run, correct team/position/game_time, correct `match_id`/`half` gating
+  (`NULL`/0 in warmup and halftime, tagged during live play).
+
+- **Break context, flag positions, and last-flag-defense**
+  (`sql/migrate_007_break_context.sql`, `scripts/hlstats.pl`).
+  - `ktp_flag_positions` (new table) — static per-flag `(x, y)`, upserted from
+    a `KTP_FLAG_POSITION` marker (event type 607, `doEvent_KTPFlagPosition`)
+    on every map load. Keyed on `(server_id, map_name, flag_index)` so
+    repeat loads (warmup, halftime reload) don't accumulate duplicates.
+  - `hlstats_Events_PlayerActions` gains `contester_count`, `time_remaining`,
+    `is_capout` — a follow-up `break_context` marker (event type 606) on
+    every `cap_break`, same flush-then-UPDATE-most-recent-row technique
+    `frag_context` uses on Frags, matched here by `(playerId, actionId)`
+    with the `cap_break` action id read from the in-memory actions table
+    rather than a DB round-trip.
+  - `hlstats_Events_Frags` gains `is_last_flag_defense`; `frag_context`'s
+    handler (901) extended to set it plus the row's *existing* (stock)
+    `pos_x/y/z`/`pos_victim_x/y/z` columns from new `k_position`/`v_position`
+    properties — no migration needed for those, verified against
+    `base-schema.sql` before assuming a new column was required.
+  - **Last-flag-defense keys off kill position relative to the defended
+    flag, not the break queue** — per the operator's correction, a defender
+    who kills a would-be ninja before they start capping is defending just
+    as much, and the break queue structurally cannot see a kill that never
+    touched a capture zone. Computed plugin-side (needs live flag-ownership
+    state); `is_capout` and `is_last_flag_defense` share the same
+    "does this team own exactly one flag" test, asked at two different
+    event types.
+  - `perl -c` verified inside the Lane B image.
+
+- **Per-hit damage ledger** (`sql/migrate_006_damage_ledger.sql`,
+  `scripts/hlstats.pl`) — new `ktp_damage_events` table and `doEvent_KTPDamage`
+  handler (event type 605) record every `client_damage` hit KTPAMXX emits:
+  attacker, victim, weapon, raw damage, a capped damage value, hitplace,
+  `game_time`, and `match_id`/`half` from the same round-live gating
+  `recordEvent()` uses. **Not** routed through the daemon's generic
+  `recordEvent`/`hlstats_Events_*` batching — that machinery is config-driven
+  around the stock event set, so this is a standalone table with a direct
+  per-event `INSERT`, matching how `KTP_MATCH_*` is already handled.
+
+  **`damage_capped` is the KTPR-facing column, not `damage`.** DoD's raw
+  per-hit value is the nominal weapon value with multipliers applied
+  (headshot, wallbang) and is not clamped to a player's actual 0-100 HP pool
+  — a single hit can log 400+. `damage_capped` is `MIN(damage, 100)`,
+  computed plugin-side, matching the convention CS2 uses for the same
+  reason. Raw is kept for anyone who wants the uncapped weapon-power
+  reading; nothing is discarded, but a rating or aggregate should sum the
+  capped column, or one absurd wallbang could outweigh several clean kills.
+
+- **Frag context recorded on every kill** (`sql/migrate_005_frag_context_columns.sql`,
+  `scripts/hlstats.pl`) — headshot, killer/victim prone state, killer/victim
+  scope state, and killer/victim clip/ammo now land on `hlstats_Events_Frags`
+  for every kill, not just headshots. New `frag_context` handler (event type
+  901) in `hlstats.pl`, same flush-then-UPDATE-most-recent-row technique the
+  old `headshot_kill` handler (900) used — that handler is left in place as
+  dead code, since KTPAMXX no longer emits the line it matches, but nothing
+  needs it removed either. Eight new columns, all guarded/idempotent on both
+  MySQL and MariaDB per `ktp_schema.sql`'s pattern; `headshot` itself is not
+  new, it already existed from the marker this retires.
 - **DoD cap breaks are now recorded** (`sql/migrate_004_cap_break_action.sql`) —
   seeds the `hlstats_Actions` row for the `cap_break` lines KTPAMXX's
   `ktp_stats_capture.inc` emits when a player kills an enemy off a point their
@@ -52,6 +281,52 @@
   victim) and double-apply the reward.
 
 ### Fixed
+- **`frag_context`/`break_context`/`headshot_kill` markers could silently
+  corrupt a stale row when a frag or cap_break line was dropped.** Found by
+  an independent production-rollout audit, not by this project's own Lane B
+  testing (which never simulates dropped UDP lines). GoldSrc log delivery
+  is fire-and-forget UDP; the marker+UPDATE technique used throughout the
+  frag-context/break-context/damage-ledger phases matched on
+  `serverId + killerId + victimId + weapon` (or `playerId + actionId` for
+  breaks), `ORDER BY id DESC LIMIT 1`, with no time bound and no rowcount
+  check. If the primary event line was lost but its follow-up marker
+  survived, the UPDATE silently rewrote the *previous* matching row —
+  potentially from an earlier match — with the new kill's context. Fixed by
+  bounding every one of these UPDATEs to `eventTime >=
+  FROM_UNIXTIME($ev_unixtime - 60)` (the event's own parsed-log-time clock
+  basis, not SQL `NOW()` — the two diverge by design during offline replay,
+  and by drift under any live processing backlog) and logging a
+  `KTP_NO_ROW_MATCHED` line whenever the bound legitimately finds nothing to
+  update. Validated with two Lane B replay controls: (a) frag + context
+  together still updates correctly (verified column-by-column against the
+  source log's own properties); (b) a synthetic dropped-frag-line replay,
+  built specifically to have a genuinely older matching row available to
+  corrupt, first reproduced the exact silent-corruption defect against the
+  pre-fix code (old row's `headshot`/`k_clip`/`k_ammo`/position all
+  overwritten from an unrelated, later marker), then confirmed the fix
+  leaves that old row untouched and logs the warning instead. `execNonQuery`
+  (`HLstats.plib`) now returns its own affected-row count so callers can
+  check it directly — additive only, every existing caller already ignores
+  the return value.
+
+  **Third validation, from a real bot-driven Lane B match (2026-08-13), not
+  just the two synthetic replay controls above.** A 16-bot, 156-kill match
+  organically tripped `KTP_NO_ROW_MATCHED` 5 times on `frag_context` — not
+  from a dropped frag line (the match's own `kills`/`frags` counts matched
+  156/156 exactly) but from a genuine ordering race: the daemon's own log
+  showed a `KTP_NO_ROW_MATCHED` timestamped *between* two successful
+  `frag_context` UPDATEs from the same second, i.e. the buffered context
+  marker (flushes on its own 5s cycle) reached the daemon before its primary
+  kill line had been inserted into `Frags` yet — UDP does not guarantee send
+  order, and Lane B's bots sustain a far higher kills/sec rate than real
+  human play. The fix's bound correctly discarded each of the 5 rather than
+  risking a wrong-row match; net effect was 5 kills (~3.2% of this
+  artificially bot-dense run) missing their `frag_context` properties
+  (headshot/prone/scope/clip/position), not corrupted data. Accepted as
+  correct, documented behavior — discard-over-corrupt was always the goal,
+  and the real-match rate is expected to be lower than this synthetic
+  ceiling. Not pursuing a retry/requeue for the race; see
+  `docs/handover/` in KTPInfrastructure for the full Lane B run writeup.
 - **DoD suicides are now recorded** — `hlstats_Events_Suicides` had been empty
   fleet-wide, and `ktp_match_stats.suicides` therefore always 0, since the table
   was introduced. The cause was dispatch, not handling: the only branch in

@@ -1792,6 +1792,13 @@ sub doEvent_PlayerAction
 						$z
 					);
 			}
+			# An action missing from hlstats_Actions falls through the test below with no
+			# error and no counter. That silence cost the Philly 2026 LAN every objective
+			# capture of the weekend. Say it once per distinct action rather than never.
+			&ktpWarnUnresolvedAction($g_servers{$s_addr}->{game}, $action)
+				unless (defined($g_games{$g_servers{$s_addr}->{game}}{actions}{$action})
+					&& $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{paction});
+
 			if (defined($g_games{$g_servers{$s_addr}->{game}}{actions}{$action}) && $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{paction}) {
 				my $actionname = $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{descr};
 				my $actionid = $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{id};

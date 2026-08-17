@@ -201,8 +201,27 @@ sub execNonQuery
 	#&printEvent("DEBUG","execNonQuery:\n".$query);
 	my $rv = $db_conn->do($query);
 	if (!defined($rv)) {
-		&printEvent("SQL_ERROR", "Query failed: $DBI::errstr | " . substr($query, 0, 200), 1);
+		# One retry, because the common failure here is a connection that died between
+		# the ping and the write. A statement that is wrong will fail identically twice
+		# and still be reported -- a retry cannot turn a real error into a silent one.
+		my $first_err = $DBI::errstr;
+		&doConnect() unless $db_conn->ping();
+		$rv = $db_conn->do($query);
+		if (!defined($rv)) {
+			$g_sql_error_count++;
+			&printEvent("SQL_ERROR", "Query failed twice (#$g_sql_error_count): " .
+				($DBI::errstr || $first_err) . " | " . substr($query, 0, 200), 1);
+		} else {
+			$g_sql_retry_count++;
+			&printEvent("SQL_ERROR", "Query succeeded on retry (#$g_sql_retry_count) " .
+				"after: " . ($first_err || "unknown error"), 1);
+		}
 	}
+	# KTP: return DBI's own affected-row count ("0E0" for zero rows, which
+	# is boolean-true but numerically 0 -- distinguishable from undef on
+	# error). Additive only: every existing caller invokes this in void
+	# context and already ignores the return value.
+	return $rv;
 }
 
 sub execCached {
