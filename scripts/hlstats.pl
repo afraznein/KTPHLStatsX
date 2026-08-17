@@ -3728,14 +3728,15 @@ while ($loop = &getLine()) {
 			# KTP: Check for KTP_MATCH events from KTPMatchHandler plugin
 			if ($ev_obj_a =~ /^KTP_MATCH_START\s+(.*)$/) {
 				# KTP: Match start event
-				# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx")
+				# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx") (type "0")
 				$ev_properties = $1;
 				%ev_properties = &getProperties($ev_properties);
 				$ev_type = 600;  # KTP event type
 				$ev_status = &doEvent_KTPMatchStart(
 					$ev_properties{"matchid"},
 					$ev_properties{"map"},
-					$ev_properties{"half"}
+					$ev_properties{"half"},
+					$ev_properties{"type"}
 				);
 			} elsif ($ev_obj_a =~ /^KTP_MATCH_END\s+(.*)$/) {
 				# KTP: Match end event
@@ -3811,16 +3812,17 @@ while ($loop = &getLine()) {
 			}
 		} elsif ($s_output =~ /^KTP_MATCH_START\s+(.*)$/) {
 			# KTP: Match start event from KTPMatchHandler
-			# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx")
+			# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx") (type "0")
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 600;  # KTP event type
 			# KTP DEBUG: Log parsed properties
-			&printEvent("KTP_DEBUG", "KTP_MATCH_START parsed: matchid='$ev_properties{\"matchid\"}' map='$ev_properties{\"map\"}' half='$ev_properties{\"half\"}'", 1);
+			&printEvent("KTP_DEBUG", "KTP_MATCH_START parsed: matchid='$ev_properties{\"matchid\"}' map='$ev_properties{\"map\"}' half='$ev_properties{\"half\"}' type='$ev_properties{\"type\"}'", 1);
 			$ev_status = &doEvent_KTPMatchStart(
 				$ev_properties{"matchid"},
 				$ev_properties{"map"},
-				$ev_properties{"half"}
+				$ev_properties{"half"},
+				$ev_properties{"type"}
 			);
 		} elsif ($s_output =~ /^KTP_MATCH_END\s+(.*)$/) {
 			# KTP: Match end event from KTPMatchHandler
@@ -4448,16 +4450,23 @@ sub doEvent_KTPFlagPosition
 
 sub doEvent_KTPMatchStart
 {
-	my ($matchid, $map, $half) = @_;
+	my ($matchid, $map, $half, $match_type) = @_;
 
 	# KTP DEBUG: Log function entry
-	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart CALLED: matchid='$matchid' map='$map' half='$half' server='$s_addr'", 1);
+	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart CALLED: matchid='$matchid' map='$map' half='$half' type='$match_type' server='$s_addr'", 1);
 
 	return 0 if (!defined($matchid) || $matchid eq "");
+	# Fail closed for retention: an absent/invalid type remains NULL, which the
+	# purge allowlist never selects. MatchHandler enum values are 0..5.
+	my $match_type_sql = "NULL";
+	if (defined($match_type) && $match_type =~ /^\d+$/ && $match_type >= 0 && $match_type <= 5) {
+		$match_type_sql = int($match_type);
+	}
 
 	# Store match context for this server (used by recordEvent to tag kills)
 	$g_ktpMatchContext{$s_addr} = {
 		match_id => $matchid,
+		match_type => ($match_type_sql eq "NULL" ? undef : $match_type_sql),
 		map => $map,
 		half => $half || "1",
 		round_live => 1,  # KTP: Default to live; toggled by KTP_ROUND_FREEZE/KTP_ROUND_LIVE
@@ -4500,9 +4509,10 @@ sub doEvent_KTPMatchStart
 
 	# Insert match record (no-op if already exists for this half — don't overwrite start_time)
 	&execNonQuery("
-		INSERT INTO ktp_matches (match_id, server_id, map_name, half, start_time)
-		VALUES ('".quoteSQL($matchid)."', $server_id, '".quoteSQL($map)."', $half_num, NOW())
-		ON DUPLICATE KEY UPDATE id = id
+		INSERT INTO ktp_matches (match_id, server_id, map_name, half, match_type, start_time)
+		VALUES ('".quoteSQL($matchid)."', $server_id, '".quoteSQL($map)."', $half_num, $match_type_sql, NOW())
+		ON DUPLICATE KEY UPDATE
+			match_type = COALESCE(match_type, VALUES(match_type))
 	");
 
 	&printEvent("KTP", "Match started: $matchid on $map (half: $half)", 1);
