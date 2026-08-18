@@ -1792,12 +1792,13 @@ sub doEvent_PlayerAction
 						$z
 					);
 			}
-			# An action missing from hlstats_Actions falls through the test below with no
-			# error and no counter. That silence cost the Philly 2026 LAN every objective
-			# capture of the weekend. Say it once per distinct action rather than never.
+			# A truly unknown action falls through the test below with no error and no
+			# counter. That silence cost the Philly 2026 LAN every objective capture of
+			# the weekend. An action that exists but is deliberately PlayerPlayerAction-
+			# only (such as assist) is not unresolved; this dispatcher probes both shapes
+			# and the paction flag correctly rejects only this leg.
 			&ktpWarnUnresolvedAction($g_servers{$s_addr}->{game}, $action)
-				unless (defined($g_games{$g_servers{$s_addr}->{game}}{actions}{$action})
-					&& $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{paction});
+				unless defined($g_games{$g_servers{$s_addr}->{game}}{actions}{$action});
 
 			if (defined($g_games{$g_servers{$s_addr}->{game}}{actions}{$action}) && $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{paction}) {
 				my $actionname = $g_games{$g_servers{$s_addr}->{game}}{actions}{$action}{descr};
