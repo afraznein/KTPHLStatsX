@@ -2,6 +2,13 @@
 
 ## [0.3.9] - Unreleased
 
+### Fixed
+- Do not report a false `Unresolved action` SQL error when a known action is
+  deliberately disabled for the PlayerAction leg. The generic trigger
+  dispatcher probes both action shapes, so victim-aware actions such as
+  `assist` must be allowed to reject PlayerActions while still recording once
+  in PlayerPlayerActions. Truly absent action definitions remain loud.
+
 ### Added
 - Persist a compact per-match flag-ownership timeline through
   `KTP_FLAG_STATE` markers and migration 015. Each half starts with one
