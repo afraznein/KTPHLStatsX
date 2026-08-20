@@ -3,6 +3,10 @@
 --
 -- Pairs with KTPAMXX's ktp_stats_capture.inc, which emits
 --     "Assister<uid><steamid><Team>" triggered "assist" against "Victim<...>"
+--       (matchid "KTP-42") (half "2")
+--       (event_epoch "1787154601") (game_time "245.32")
+-- Migration 017 adds a private canonical companion table for those producer
+-- fields. This generic action remains enabled and rating-neutral.
 -- from stats_logging.sma. The daemon already handles that line shape (the same
 -- generic player-vs-player path KTP's own headshot_kill marker rides) and needs
 -- no code change -- but doEvent_PlayerPlayerAction only records an action that

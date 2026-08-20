@@ -10,6 +10,13 @@ permissions:
   packages: read
 
 jobs:
+  capture-contract-selftests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Producer-clock and buffered-identity regressions
+        run: perl scripts/selftest-life-boundary.pl
+
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
     with:

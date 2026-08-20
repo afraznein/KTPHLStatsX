@@ -5,7 +5,9 @@
 -- (enemy, team, and self alike):
 --     "Attacker<uid><steamid><Team>" triggered "damage" against
 --     "Victim<uid><steamid><Team>" with "weapon"
---     (damage "137") (damage_capped "100") (hitplace "1") (game_time "245.32")
+--     (damage "137") (damage_capped "100") (hitplace "1")
+--     (matchid "KTP-42") (half "2")
+--     (game_time "245.32") (event_epoch "1787154601")
 --
 -- New event type 605 in hlstats.pl (following the KTP_MATCH_* 600-604 /
 -- headshot_kill 900 / frag_context 901 numbering), with its own
@@ -46,8 +48,11 @@ CREATE TABLE IF NOT EXISTS ktp_damage_events (
     damage SMALLINT NOT NULL COMMENT 'raw engine value, not clamped to HP',
     damage_capped TINYINT UNSIGNED NOT NULL COMMENT 'MIN(damage, 100) -- read this one for stats',
     hitplace TINYINT NOT NULL,
+    producer_match_id VARCHAR(64) DEFAULT NULL COMMENT 'producer context; use this for timed analytics',
+    producer_half TINYINT UNSIGNED DEFAULT NULL COMMENT 'producer half; use this for timed analytics',
     game_time FLOAT NOT NULL COMMENT 'get_gametime() at the hit, seconds since map start',
-    event_time DATETIME NOT NULL,
+    event_epoch BIGINT UNSIGNED DEFAULT NULL COMMENT 'producer get_systime() at hit',
+    event_time DATETIME NOT NULL COMMENT 'FROM_UNIXTIME(event_epoch); legacy emitters fall back to receipt time',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (id),
@@ -55,7 +60,8 @@ CREATE TABLE IF NOT EXISTS ktp_damage_events (
     KEY idx_match (match_id),
     KEY idx_attacker (attacker_id),
     KEY idx_victim (victim_id),
-    KEY idx_event_time (event_time)
+    KEY idx_event_time (event_time),
+    KEY idx_damage_producer_context (producer_match_id, producer_half, event_epoch)
     -- No FOREIGN KEY to hlstats_Servers or hlstats_Players: the HLStatsX base
     -- tables are MyISAM, which has no FK support, so an InnoDB FK referencing
     -- them fails with errno 1824 -- same reason ktp_matches has none.
