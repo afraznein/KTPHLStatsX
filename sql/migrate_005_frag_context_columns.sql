@@ -6,6 +6,10 @@
 --     "Victim<uid><steamid><Team>" with "weapon"
 --     (headshot "0") (k_prone "0") (v_prone "0") (k_scope "0") (v_scope "0")
 --     (k_clip "8") (k_ammo "72") (v_clip "-1") (v_ammo "-1")
+--     (matchid "KTP-42") (half "2")
+--     (game_time "245.32") (event_epoch "1787154601")
+-- Producer match/half and clock columns are added by migration 017; this older
+-- migration remains the source of the original context-state columns.
 --
 -- This line RETIRES the old "headshot_kill" marker (headshot-only). The
 -- daemon's frag_context handler (hlstats.pl) uses the identical technique
