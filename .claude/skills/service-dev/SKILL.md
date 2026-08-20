@@ -35,10 +35,13 @@ This is HLStatsX:CE with a KTP delta grafted on, not a from-scratch daemon.
   logic (`doEvent_KTPMatchStart`, `doEvent_KTPHalfEnd`, `doEvent_KTPMatchEnd`,
   `recordEvent`'s match-id tagging gate, the accumulator flush block) lives
   here.
-- `scripts/HLstats_EventHandlers.plib` — **base upstream handlers, NOT KTP.**
-  Only touch this file for KTP-specific event parsing that genuinely belongs
-  there (e.g. accumulator increments feeding the KTP flush); don't refactor
-  or "clean up" surrounding upstream logic while you're in there.
+- `scripts/HLstats_EventHandlers.plib` and `scripts/HLstats.plib` — **upstream
+  handlers carrying a grafted KTP delta.** The delta is small and load-bearing:
+  per-half tagging, `ktpTrackMatchPlayer`, the accumulator increments, the
+  unresolved-action report, and `execNonQuery`'s affected-row return. Deploying
+  an upstream copy over either file removes those without erroring. Touch them
+  only for KTP-specific parsing that genuinely belongs there; don't refactor or
+  "clean up" surrounding upstream logic while you're in there.
 - Stay inside the KTP delta. If a fix looks like it wants to restructure
   general HLStatsX behavior, it's almost certainly out of scope — scope the
   fix to the KTP-specific code path instead.
@@ -62,22 +65,37 @@ upstream in KTPMatchHandler's `process_ot_round_end_changelevel()` — flag
 that asymmetry to whoever owns that repo rather than trying to fully paper
 over it from this side alone.
 
-**`flushAccumulators()` is not time-gated — don't let it become per-kill.**
-`flushEventTable()`, two lines above its call site, is correctly gated on a
-30-second interval (`lastflush + 30 < $ev_daemontime`) before running its
-UPDATE queries. `flushAccumulators()` has no equivalent gate at any of its
-call sites, so during a live match with a steady kill stream it can run on
-nearly every outer-loop pass instead of once per 30s — reintroducing the
-exact per-frag MySQL round-trip pattern the 0.3.0 batching rewrite existed to
-eliminate, on the one daemon serving the whole fleet. If you touch this,
-gate it the same way `flushEventTable` is gated. Leave `flushAll()` (used at
-shutdown and `.KILL`) unconditional — that's intentional, not an oversight.
+**`flushAccumulators()` in the housekeeping loop is time-gated — keep it that
+way.** It shares the 30-second interval `flushEventTable()` uses two lines
+above (`$g_accum_lastflush`). Ungated, it runs on nearly every outer-loop pass
+during a live match, which is the per-frag MySQL round-trip pattern the
+accumulators exist to batch away, on the one daemon serving the whole fleet.
+The direct calls from shutdown, `.KILL` and pre-aggregation are deliberately
+ungated — don't "fix" those.
 
-**Half-number parsing is duplicated, not shared.** The half-string parser
-(`/^1/`, `/^2/`, `/^OT(\d+)/`) is copy-pasted identically in
-`doEvent_KTPMatchStart` and `doEvent_KTPHalfEnd`. If you ever change the
-half-numbering scheme, update both copies — nothing enforces they stay in
-sync.
+**Half-number parsing is shared — keep it that way.** `parseHalfNumber()` is
+the single parser for the half string, called from both
+`doEvent_KTPMatchStart` and `doEvent_KTPHalfEnd`. It used to be copy-pasted
+into each, with nothing keeping the copies in step. Change the numbering in
+one place or not at all.
+
+**An unresolved action is discarded, and upstream discards it silently.** The
+generic trigger dispatcher probes both action shapes, so a definition that is
+deliberately PlayerAction-disabled (`assist`) must still be allowed to reject
+that leg without being reported. A genuinely absent definition must stay loud:
+that silence cost the Philly 2026 LAN every objective capture of the weekend,
+because `hlstats_Actions` had never been seeded and nothing said so. Keep both
+`ktpWarnUnresolvedAction` and the `ktpAssertActionsSeeded` startup check.
+
+**`getProperties` carries two independent regex fixes and one harness that only
+covers one of them.** The value branch must be `.*?` so `(matchid "")` matches
+at all — with `.+?` the lazy match runs on to the next quote pair and returns
+the rest of the line as the value, minting a phantom match id that propagates
+into every table keyed on it, with nothing erroring. The key branch must be
+`[^\s()]+` so a bare boolean key does not swallow the following property's
+paren. `scripts/selftest-getproperties.pl` varies the *key* pattern only, so it
+proves the second fix and would stay green if the first were reverted — assert
+the value branch by hand when you touch that line.
 
 ## Upstream event dependencies
 This daemon parses log lines it doesn't control the format of:
@@ -92,6 +110,11 @@ This daemon parses log lines it doesn't control the format of:
   both sides, don't just patch around it unilaterally in Perl.
 
 ## Deploy workflow
+Branch from and merge to `preprod` — `main` is the release branch, advanced by a
+promotion PR, and GitHub defaults new PRs to the wrong base. A fix merged only to
+`preprod` is invisible from `main`, so deploying from `main` silently reverts
+whatever has not been promoted.
+
 There's no compile step — this is interpreted Perl. Path is:
 1. Bump `VERSION`, add a `CHANGELOG.md` section, update the version line in
    `README.md`.
@@ -102,10 +125,21 @@ There's no compile step — this is interpreted Perl. Path is:
    (`<DATA_SERVER_IP>`) via SFTP/paramiko — see the SSH pattern in the root
    `CLAUDE.md`, which resolves the placeholder.
 4. Apply any new `sql/*.sql` migration against the `hlstatsx` database
-   *before* restarting the daemon (schema and code changes must land
-   together — the daemon assumes the schema it was written against).
-5. Restart `hlstatsx` (`sudo systemctl restart hlstatsx`) — **only with
-   explicit operator permission in the current conversation.**
+   *before* the daemon that writes to it. Schema ahead of code is inert; code
+   ahead of schema loses data silently, because a write to a column or table
+   that does not exist fails inside MySQL and the event is simply gone.
+   The same ordering applies across repos: seed `hlstats_Actions` and reload
+   here *before* shipping the KTPAMXX plugin that emits those actions.
+   ⚠️ `hlstats_Events_Frags` and `hlstats_Events_PlayerActions` are MyISAM, so
+   each `ADD COLUMN` is a full rebuild under a write lock. The migrations are
+   written one guarded `ALTER` per column for idempotency — combine them per
+   table when you apply them, in an idle window.
+5. Reload or restart — **only with explicit operator permission in the current
+   conversation.** `systemctl kill -s HUP hlstatsx` re-reads the database config
+   and the per-game actions cache without dropping ingest, and is enough for a
+   seeding or config change. A code change needs `systemctl restart`, which
+   drops in-flight UDP: delivery is fire-and-forget, so a restart mid-half
+   leaves the rest of that half untagged.
 6. Verify: `sudo journalctl -u hlstatsx -f | grep KTP_DEBUG` during a live or
    test match to confirm events are being tagged with the expected
    `match_id`/`half_num`, and check for `SQL_ERROR` lines.

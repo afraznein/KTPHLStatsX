@@ -12,6 +12,11 @@
 -- remain for backward compatibility, but buffered delivery can cross a half
 -- boundary. Timed analytics must filter/join on producer_match_id and
 -- producer_half, and require non-NULL producer clocks.
+--
+-- hlstats_Events_Frags is MyISAM, so each ADD COLUMN and the index below is a
+-- full rebuild of the schema's largest table under a write lock. Combine them
+-- into one ALTER when applying, in an idle window -- the per-statement guards
+-- keep either form idempotent.
 
 -- hlstats_Events_Frags producer context and clocks (all nullable for old rows).
 SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS

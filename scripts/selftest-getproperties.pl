@@ -65,7 +65,10 @@ my @CASES = (
                 '(matchid "42") (map "dod_avalanche")'],
     ['same',   'quoted + unquoted mix',
                 '(score 5) (team "Allies")'],
-    ['same',   'EMPTY quoted field -- guards the .*? fix stays working',
+    # The empty-quoted-field fix lives in the VALUE branch (.*? not .+?), which
+    # this harness holds constant -- so this case proves only that the key fix
+    # leaves it alone, and would stay green if the value branch were reverted.
+    ['same',   'EMPTY quoted field is unaffected by the key pattern',
                 '(matchid "") (map "dod_harrington")'],
 );
 

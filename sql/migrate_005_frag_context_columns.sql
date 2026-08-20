@@ -22,6 +22,13 @@
 -- shape as ktp_schema.sql. See that file's header for why a bare
 -- `ADD COLUMN IF NOT EXISTS` is not portable.
 --
+-- ⚠️ hlstats_Events_Frags is MyISAM and the largest table in the schema, so
+-- every ADD COLUMN below is a full table rebuild under a write lock -- never
+-- MySQL 8's instant add. Run as written, that is one rebuild per column and
+-- the daemon's inserts block through all of them. Combine the columns into a
+-- single ALTER when applying, and pick an idle window; the guards keep either
+-- form idempotent.
+--
 -- Column meaning:
 --   k_prone / v_prone   -- dod_get_pronestate raw value: 0 standing,
 --                           1 going prone / MG teardown, 2 setting up an MG
