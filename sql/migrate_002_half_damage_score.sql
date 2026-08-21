@@ -2,8 +2,10 @@
 -- Run on data server: mysql -u hlstatsx -p hlstatsx < migrate_002_half_damage_score.sql
 -- Requires MySQL 8.0+ (no IF NOT EXISTS for ADD COLUMN)
 --
--- Convention: half=0 = full match total (backward compat + existing data)
---             half=1 = 1st half, half=2 = 2nd half, half=3+ = OT rounds
+-- Convention: half=1 = 1st half, half=2 = 2nd half, half=3+ = OT rounds.
+-- half=0 means "no match context" on the event tables below and "full match
+-- total" on ktp_match_stats -- the same value, two different meanings. See the
+-- notes in ktp_schema.sql before writing a query against either.
 --
 -- APPLIED: 2026-03-03 on neindataatl (74.91.112.242)
 

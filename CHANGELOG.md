@@ -1,6 +1,13 @@
 # KTP HLStatsX Changelog
 
-## [0.3.9] - Unreleased
+## [0.3.10] - Unreleased
+
+### Fixed
+- Do not report a false `Unresolved action` SQL error when a known action is
+  deliberately disabled for the PlayerAction leg. The generic trigger
+  dispatcher probes both action shapes, so victim-aware actions such as
+  `assist` must be allowed to reject PlayerActions while still recording once
+  in PlayerPlayerActions. Truly absent action definitions remain loud.
 
 ### Fixed
 - Do not report a false `Unresolved action` SQL error when a known action is
@@ -10,6 +17,37 @@
   in PlayerPlayerActions. Truly absent action definitions remain loud.
 
 ### Added
+- Persist validated per-player life starts and ends through event type 611 and
+  migration 016. The new ledger records spawn/context-live starts and
+  death/disconnect ends with explicit producer match, half, team, class, engine-time,
+  and player correlation context. Live/freeze state remains NULL because the
+  emitter cannot observe MatchHandler's private stats-pause flag; receipt-time
+  daemon state is deliberately not substituted. Duplicate/replayed markers are
+  idempotent, and match/half attribution must resolve to exactly one persisted
+  `ktp_matches` start/end interval containing producer `event_epoch`. Zero,
+  overlap, explicit-half disagreement, and match-id case mismatch all fail closed.
+- Migration `017_capture_clocks_and_assists` adds nullable producer match/half
+  and clocks to frag/damage facts, changes new damage rows' `event_time` to the
+  producer epoch (with receipt time only as an old-emitter fallback), and creates
+  the canonical `ktp_assist_events` companion ledger. The existing generic
+  `assist` PlayerPlayerAction remains intact and rating-neutral. Timed analytics
+  must use `producer_match_id`/`producer_half`, never the legacy receipt-time
+  match fields.
+- Every AMXX-buffered player marker (life, assist, frag, damage, cap break,
+  break context, and position sample) uses side-effect-free identity parsing
+  and durable player ids. The upstream `getPlayerInfo` path can disconnect an
+  in-memory player when the same Steam identity appears under an older userid;
+  a delayed marker can therefore no longer disconnect a legitimate reconnect.
+  Generic assist/cap-break actions retain their rating-neutral stock handlers
+  through a copied exact-live tuple. The focused Perl regression is wired into
+  pull-request CI.
+- Authoritative frag clocks are attached only to a same-tuple frag in the exact
+  producer `event_epoch` second, FIFO within that second. Missing UDP markers
+  cannot shift a later clock onto an older frag. Frag and damage producer clocks
+  require one exact DB match interval and explicit half agreement; a bounded
+  interval cache prevents per-hit DB queries. Old/warmup emitters silently keep
+  their legacy facts with producer fields NULL, while genuine proof failures are
+  aggregated rather than flooding the journal.
 - Persist a compact per-match flag-ownership timeline through
   `KTP_FLAG_STATE` markers and migration 015. Each half starts with one
   baseline row per flag and records only subsequent owner changes, allowing

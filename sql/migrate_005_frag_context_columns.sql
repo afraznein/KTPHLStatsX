@@ -6,6 +6,10 @@
 --     "Victim<uid><steamid><Team>" with "weapon"
 --     (headshot "0") (k_prone "0") (v_prone "0") (k_scope "0") (v_scope "0")
 --     (k_clip "8") (k_ammo "72") (v_clip "-1") (v_ammo "-1")
+--     (matchid "KTP-42") (half "2")
+--     (game_time "245.32") (event_epoch "1787154601")
+-- Producer match/half and clock columns are added by migration 017; this older
+-- migration remains the source of the original context-state columns.
 --
 -- This line RETIRES the old "headshot_kill" marker (headshot-only). The
 -- daemon's frag_context handler (hlstats.pl) uses the identical technique
@@ -17,6 +21,13 @@
 -- information_schema lookup and applied through a prepared statement, same
 -- shape as ktp_schema.sql. See that file's header for why a bare
 -- `ADD COLUMN IF NOT EXISTS` is not portable.
+--
+-- ⚠️ hlstats_Events_Frags is MyISAM and the largest table in the schema, so
+-- every ADD COLUMN below is a full table rebuild under a write lock -- never
+-- MySQL 8's instant add. Run as written, that is one rebuild per column and
+-- the daemon's inserts block through all of them. Combine the columns into a
+-- single ALTER when applying, and pick an idle window; the guards keep either
+-- form idempotent.
 --
 -- Column meaning:
 --   k_prone / v_prone   -- dod_get_pronestate raw value: 0 standing,
