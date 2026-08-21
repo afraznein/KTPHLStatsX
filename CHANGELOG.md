@@ -18,15 +18,29 @@
   column `NOT NULL DEFAULT 0` while its two siblings defaulted to NULL, so a
   break whose context marker never arrived was stored identically to a break
   the plugin measured and found was not a capout. Migration 018 makes it
-  nullable and the daemon writes NULL when the property is absent.
-  `contester_count` and `time_remaining` were already nullable but were being
-  coerced to 0 in Perl, and now pass NULL through as well. An empty quoted
-  field counts as unknown alongside an absent one, because `getProperties`
-  deliberately yields `""` rather than undef for `(key "")` -- so testing only
-  `defined` would have turned that case into the same false zero. Existing rows
-  are deliberately not backfilled -- a stored 0 is genuinely ambiguous and
-  nothing in the row distinguishes the two cases, so a backfill would invent a
-  fact.
+  nullable. The column default is what resolves the ambiguity for a row that
+  was never correlated; the daemon's matching NULL write is defensive, since
+  the current producer emits all three properties unconditionally and only a
+  truncated datagram reaches that branch. ⚠️ Note the `MODIFY` changes the
+  default for **every** row of the table, not just `cap_break` -- the generic
+  event insert does not name `is_capout`, so all future action rows take NULL
+  where they took 0.
+- Treat a malformed or empty break-context property as unknown rather than
+  zero. `contester_count`, `time_remaining` and `is_capout` are validated
+  against the producer's own formats and bounded to their columns; anything
+  else is stored NULL and logged as `KTP_BAD_PROPERTY`. Previously a bare
+  `defined` test let `getProperties`' empty-field `""` -- and any non-numeric
+  value, via Perl numification -- land as a measured 0, silently, since this
+  daemon runs without warnings enabled. Bounding also stops an out-of-range
+  value aborting the whole UPDATE under strict mode.
+- Withdraw `frag_context_recorded` from rows that carry no context
+  (migration 019). Rows the `headshot_kill` branch flagged assert that their
+  context columns are real measurements when every one of them is still at its
+  default. The correction keys on that contradiction rather than on a date or a
+  server, so it stays correct whenever it runs; `headshot` is left untouched,
+  because it is the one thing those rows did measure and it feeds the ladder.
+  ⏳ Time-sensitive: today every flagged row came from the defective path, and
+  that stops being true once any instance emits `frag_context`.
 - Stop the `headshot_kill` branch setting `frag_context_recorded`. That flag is
   read as "the context columns hold real measurements", but this marker carries
   only killer, victim and weapon, so every row it touched certified context that

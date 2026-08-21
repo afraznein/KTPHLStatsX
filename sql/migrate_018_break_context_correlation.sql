@@ -5,11 +5,18 @@
 --
 -- Two changes in one file on purpose. The paired hlstats.pl writes
 -- break_context_recorded and a NULL is_capout in the SAME UPDATE statement, so
--- applying only one half breaks that statement outright: on this schema,
--- `UPDATE ... SET is_capout = NULL` fails with ERROR 1048 (Column 'is_capout'
--- cannot be null). That aborts the whole UPDATE, so contester_count and
--- time_remaining are lost too, and execNonQuery's zero return fires a
--- misleading KTP_NO_ROW_MATCHED. One file = one precondition to get right.
+-- applying only one half breaks that statement outright.
+--
+-- Without the claim column the statement fails with ERROR 1054 (Unknown column
+-- 'break_context_recorded'). That is the failure to lead with, because it does
+-- not depend on server configuration. The NULL half fails with ERROR 1048 on
+-- this server, but only because it runs STRICT_TRANS_TABLES -- on a non-strict
+-- install the same write would silently coerce NULL to 0 and restore exactly
+-- the ambiguity this migration exists to remove, while looking healthy.
+--
+-- Either way the whole UPDATE aborts, so contester_count and time_remaining are
+-- lost with it, and execNonQuery's zero return fires a misleading
+-- KTP_NO_ROW_MATCHED. One file = one precondition to get right.
 --
 -- ⚠️ hlstats_Events_PlayerActions is MyISAM, so the ALTER below is a full
 -- table rebuild under a write lock, and the daemon writes to this table
@@ -73,6 +80,15 @@ SET @ddl := IF(@clauses IS NULL OR @clauses = '', 'DO 0',
     CONCAT('ALTER TABLE hlstats_Events_PlayerActions ', @clauses));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- ⚠️ MODIFY changes the column DEFAULT for the whole table, not just for
+-- cap_break. hlstats_Events_PlayerActions is written by the generic event-table
+-- insert, whose column list does not name is_capout, so every future row of
+-- every action type -- kill streaks, captures, everything -- now takes NULL
+-- where it previously took 0. That is the intended reading (is_capout is
+-- meaningless for a kill streak, and NULL says so where 0 asserted "measured,
+-- not a capout"), but it is a table-wide behaviour change, not a cap_break-only
+-- one, and the bounding query below deliberately counts only cap_break rows.
+--
 -- Existing rows are deliberately NOT backfilled to NULL. A stored 0 today is
 -- genuinely ambiguous -- it may be a measured non-capout or an absent marker --
 -- and nothing in the row distinguishes them, so any backfill would be inventing

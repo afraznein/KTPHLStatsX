@@ -2873,7 +2873,10 @@ while ($loop = &getLine()) {
 							# Time-bounded like frag_context below (dropped UDP lines).
 							# Must NOT set frag_context_recorded -- that flag means the
 							# context columns are real, and this marker collects none.
-							# headshot is its own claim guard; in DoD nothing else sets it.
+							# headshot is the claim guard. The insert-time parser at :2650 also
+							# writes it, on a substring match over the raw property tail; DoD kill
+							# lines carry no such property, so it never fires here. If a future
+							# build appends frag properties to the kill line, this guard mis-targets.
 							my $hs_weapon = $ev_obj_c || "";
 							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
@@ -3457,19 +3460,35 @@ while ($loop = &getLine()) {
 						if ($ktp_buffered_player_id && $capBreakActionId) {
 							flushEventTable("PlayerActions");
 
-							# An absent property means the plugin could not determine the value.
-							# NULL records that; 0 would be indistinguishable from a real zero --
-							# the false default that hid k_prone for nine seasons. getProperties
-							# yields "" for an empty quoted field, not undef, so both are unknown.
+							# Anything not matching the producer's own format is unknown, not zero.
+							# A blank or malformed value must NOT numify to 0 -- that is the false
+							# default that hid k_prone for nine seasons, and getProperties yields ""
+							# rather than undef for an empty field. Bounds keep a bad value from
+							# overflowing the column and aborting the whole UPDATE under strict mode.
 							my $bc_raw_contesters = $ev_properties{"contester_count"};
 							my $bc_raw_remaining  = $ev_properties{"time_remaining"};
 							my $bc_raw_capout     = $ev_properties{"is_capout"};
-							my $bc_contesters = (defined($bc_raw_contesters) && $bc_raw_contesters =~ /\S/)
+							my $bc_contesters = (defined($bc_raw_contesters)
+								&& $bc_raw_contesters =~ /^\d+$/ && $bc_raw_contesters <= 32767)
 								? int($bc_raw_contesters) : "NULL";
-							my $bc_remaining  = (defined($bc_raw_remaining) && $bc_raw_remaining =~ /\S/)
+							my $bc_remaining  = (defined($bc_raw_remaining)
+								&& $bc_raw_remaining =~ /^\d+(?:\.\d+)?$/ && $bc_raw_remaining < 100000)
 								? ($bc_raw_remaining + 0) : "NULL";
-							my $bc_capout     = (defined($bc_raw_capout) && $bc_raw_capout =~ /\S/)
-								? ($bc_raw_capout ? 1 : 0) : "NULL";
+							my $bc_capout     = (defined($bc_raw_capout) && $bc_raw_capout =~ /^[01]$/)
+								? ($bc_raw_capout + 0) : "NULL";
+
+							# A present-but-unparseable value is a producer/transport fault. Silence
+							# here would store it as NULL and look identical to an absent marker.
+							my @bc_bad = ();
+							push(@bc_bad, "contester_count=".$bc_raw_contesters)
+								if (defined($bc_raw_contesters) && $bc_contesters eq "NULL");
+							push(@bc_bad, "time_remaining=".$bc_raw_remaining)
+								if (defined($bc_raw_remaining) && $bc_remaining eq "NULL");
+							push(@bc_bad, "is_capout=".$bc_raw_capout)
+								if (defined($bc_raw_capout) && $bc_capout eq "NULL");
+							if (@bc_bad) {
+								&printEvent("KTP_BAD_PROPERTY", "break_context: unparseable, stored as unknown for player=".$ktp_buffered_player_id.": ".join(" ", @bc_bad), 1, 1);
+							}
 
 							# Time-bounded for the same reason as frag_context's UPDATE
 							# above, but the window alone is not enough: a dropped cap_break
