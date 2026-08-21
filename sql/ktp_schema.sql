@@ -102,7 +102,12 @@ PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ============================================================================
 -- Add half column to event tables (for per-half stat aggregation)
--- Convention: 0=full match total (backward compat), 1=1st half, 2=2nd half, 3+=OT rounds
+-- 1=1st half, 2=2nd half, 3+=OT rounds. 0 means the daemon held no match
+-- context when the line arrived -- warmup, practice, between halves. It is NOT
+-- a match total: recordEvent is the only insert path here and never writes an
+-- aggregate row. Totals are ktp_match_stats.half=0, further down.
+-- half and match_id may disagree: freeze-time events keep their half but are
+-- deliberately left untagged.
 -- ============================================================================
 
 SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -185,7 +190,9 @@ CREATE TABLE IF NOT EXISTS ktp_match_players (
 COMMENT='Players participating in KTP matches';
 
 -- Aggregated match statistics per player per half (computed from events)
--- half=0: full match total, half=1: 1st half, half=2: 2nd half, half=3+: OT rounds
+-- half=1: 1st half, half=2: 2nd half, half=3+: OT rounds. Unlike the event
+-- tables above, half=0 here IS a real full-match total, written at
+-- KTP_MATCH_END by summing this table's own half>0 rows.
 CREATE TABLE IF NOT EXISTS ktp_match_stats (
     id INT AUTO_INCREMENT,
     match_id VARCHAR(64) NOT NULL,
