@@ -17,8 +17,7 @@ written. Each claim below states a property instead, and § How to re-measure
 carries the queries that re-derive it.
 
 > **Companion change.** This document describes the state after the three
-> marker-handler correlation fixes and `sql/migrate_018_break_context_correlation.sql`
-> land (PR #27). Two entries below — `is_capout`'s nullability and what
+> marker-handler correlation fixes and migrations 018 and 019 land (PR #27). Two entries below — `is_capout`'s nullability and what
 > `frag_context_recorded` actually certifies — depend on that change; both say so
 > where they appear.
 
@@ -107,8 +106,11 @@ producing context.** Before this PR, the `headshot_kill` branch also set that
 flag while writing no context columns at all, so every row carrying it today
 comes from an instance running the **old** build, and carries default prone,
 scope, ammo and position. Those rows are on a single server id — not Denver
-27018, which has produced none of them. The flag is corrected in PR #27, the same change
-that adds migration 018; see `CHANGELOG.md` under 0.3.10.
+27018, which has produced none of them. The flag is corrected in PR #27, which also
+carries migration 019 to withdraw it from the rows already carrying it — keyed
+on the contradiction (flag set, every context column at its default) rather than
+on a date, so it stays correct whenever it runs. See `CHANGELOG.md` under
+0.3.10.
 
 | Stat | Column / table | Why it is not live yet |
 |---|---|---|
