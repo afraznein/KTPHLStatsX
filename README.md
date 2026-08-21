@@ -153,6 +153,11 @@ Schema migration:
   A pre-0.3.1 database starts with `sql/migrate_002_half_damage_score.sql`;
   newer databases start with their next unapplied number.
 
+**Why each stat is or is not logged** — which absences are honest (`NULL` or a
+reserved sentinel) versus which read as a measured false, what each deliberate
+omission was decided for, and the one action with no recorded decision behind
+it — is in [`docs/STAT_SET_RATIONALE.md`](docs/STAT_SET_RATIONALE.md).
+
 ---
 
 ## Files Modified
