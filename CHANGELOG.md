@@ -20,9 +20,13 @@
   the plugin measured and found was not a capout. Migration 018 makes it
   nullable and the daemon writes NULL when the property is absent.
   `contester_count` and `time_remaining` were already nullable but were being
-  coerced to 0 in Perl, and now pass NULL through as well. Existing rows are
-  deliberately not backfilled -- a stored 0 is genuinely ambiguous and nothing
-  in the row distinguishes the two cases, so a backfill would invent a fact.
+  coerced to 0 in Perl, and now pass NULL through as well. An empty quoted
+  field counts as unknown alongside an absent one, because `getProperties`
+  deliberately yields `""` rather than undef for `(key "")` -- so testing only
+  `defined` would have turned that case into the same false zero. Existing rows
+  are deliberately not backfilled -- a stored 0 is genuinely ambiguous and
+  nothing in the row distinguishes the two cases, so a backfill would invent a
+  fact.
 - Stop the `headshot_kill` branch setting `frag_context_recorded`. That flag is
   read as "the context columns hold real measurements", but this marker carries
   only killer, victim and weapon, so every row it touched certified context that

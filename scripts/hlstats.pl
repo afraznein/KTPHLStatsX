@@ -3457,15 +3457,19 @@ while ($loop = &getLine()) {
 						if ($ktp_buffered_player_id && $capBreakActionId) {
 							flushEventTable("PlayerActions");
 
-							# An absent property means the plugin could not determine the
-							# value. NULL records that; 0 would be indistinguishable from a
-							# real zero -- the false default that hid k_prone for nine seasons.
-							my $bc_contesters = defined($ev_properties{"contester_count"})
-								? int($ev_properties{"contester_count"}) : "NULL";
-							my $bc_remaining  = defined($ev_properties{"time_remaining"})
-								? ($ev_properties{"time_remaining"} + 0) : "NULL";
-							my $bc_capout     = defined($ev_properties{"is_capout"})
-								? ($ev_properties{"is_capout"} ? 1 : 0) : "NULL";
+							# An absent property means the plugin could not determine the value.
+							# NULL records that; 0 would be indistinguishable from a real zero --
+							# the false default that hid k_prone for nine seasons. getProperties
+							# yields "" for an empty quoted field, not undef, so both are unknown.
+							my $bc_raw_contesters = $ev_properties{"contester_count"};
+							my $bc_raw_remaining  = $ev_properties{"time_remaining"};
+							my $bc_raw_capout     = $ev_properties{"is_capout"};
+							my $bc_contesters = (defined($bc_raw_contesters) && $bc_raw_contesters =~ /\S/)
+								? int($bc_raw_contesters) : "NULL";
+							my $bc_remaining  = (defined($bc_raw_remaining) && $bc_raw_remaining =~ /\S/)
+								? ($bc_raw_remaining + 0) : "NULL";
+							my $bc_capout     = (defined($bc_raw_capout) && $bc_raw_capout =~ /\S/)
+								? ($bc_raw_capout ? 1 : 0) : "NULL";
 
 							# Time-bounded for the same reason as frag_context's UPDATE
 							# above, but the window alone is not enough: a dropped cap_break
