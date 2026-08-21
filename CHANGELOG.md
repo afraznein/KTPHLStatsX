@@ -3,6 +3,53 @@
 ## [0.3.10] - Unreleased
 
 ### Fixed
+- Correlate `break_context` markers exactly once. The UPDATE that attaches
+  contester count, time remaining and capout state to a `cap_break` had no claim
+  guard, so a dropped `cap_break` UDP line whose context marker still arrived
+  would rewrite the player's PREVIOUS break inside the 60-second receipt window
+  with the new break's numbers. That UPDATE matched a row, so it reported
+  success and the existing `KTP_NO_ROW_MATCHED` diagnostic never fired -- wrong
+  data was indistinguishable from right data. Migration 018 adds
+  `break_context_recorded`, mirroring the Frags-side guard from migration 012.
+  Ordering stays newest-first rather than adopting the frag path's FIFO: that
+  path narrows to the exact producer second, this one has only the receipt
+  window, where the newest unclaimed break is the better pairing.
+- Record an unknown `is_capout` as NULL instead of 0. Migration 007 gave the
+  column `NOT NULL DEFAULT 0` while its two siblings defaulted to NULL, so a
+  break whose context marker never arrived was stored identically to a break
+  the plugin measured and found was not a capout. Migration 018 makes it
+  nullable. The column default is what resolves the ambiguity for a row that
+  was never correlated; the daemon's matching NULL write is defensive, since
+  the current producer emits all three properties unconditionally and only a
+  truncated datagram reaches that branch. ⚠️ Note the `MODIFY` changes the
+  default for **every** row of the table, not just `cap_break` -- the generic
+  event insert does not name `is_capout`, so all future action rows take NULL
+  where they took 0.
+- Treat a malformed or empty break-context property as unknown rather than
+  zero. `contester_count`, `time_remaining` and `is_capout` are validated
+  against the producer's own formats and bounded to their columns; anything
+  else is stored NULL and logged as `KTP_BAD_PROPERTY`. Previously a bare
+  `defined` test let `getProperties`' empty-field `""` -- and any non-numeric
+  value, via Perl numification -- land as a measured 0, silently, since this
+  daemon runs without warnings enabled. Bounding also stops an out-of-range
+  value aborting the whole UPDATE under strict mode.
+- Withdraw `frag_context_recorded` from rows that carry no context
+  (migration 019). Rows the `headshot_kill` branch flagged assert that their
+  context columns are real measurements when every one of them is still at its
+  default. The correction keys on that contradiction rather than on a date or a
+  server, so it stays correct whenever it runs; `headshot` is left untouched,
+  because it is the one thing those rows did measure and it feeds the ladder.
+  ⏳ Time-sensitive: today every flagged row came from the defective path, and
+  that stops being true once any instance emits `frag_context`.
+- Stop the `headshot_kill` branch setting `frag_context_recorded`. That flag is
+  read as "the context columns hold real measurements", but this marker carries
+  only killer, victim and weapon, so every row it touched certified context that
+  was never collected. The branch now sets `headshot` alone and uses
+  `headshot = 0` as its own claim guard -- in DoD the stock kill line never
+  carries a headshot property, so these markers are the column's only writer.
+  The neighbouring comment calling the branch dead code is corrected with it:
+  `headshot_kill` was retired in the plugin SOURCE only, and instances still
+  running the older `stats_logging` build emit it and never emit `frag_context`.
 - Do not report a false `Unresolved action` SQL error when a known action is
   deliberately disabled for the PlayerAction leg. The generic trigger
   dispatcher probes both action shapes, so victim-aware actions such as
