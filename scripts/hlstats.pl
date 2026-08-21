@@ -2870,21 +2870,19 @@ while ($loop = &getLine()) {
 							# Flush pending frags so the kill is in the DB
 							flushEventTable("Frags");
 
-							# Claim the oldest uncontextualized frag for this tuple,
-							# time-bounded for the same
-							# dropped-UDP-line reason as frag_context below (this
-							# branch is dead code, nothing emits headshot_kill
-							# anymore, but kept consistent rather than left as a
-							# latent copy of the bug it was fixed for).
+							# Time-bounded like frag_context below (dropped UDP lines).
+							# Must NOT set frag_context_recorded -- that flag means the
+							# context columns are real, and this marker collects none.
+							# headshot is its own claim guard; in DoD nothing else sets it.
 							my $hs_weapon = $ev_obj_c || "";
 							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
-								SET headshot = 1,
-									frag_context_recorded = 1
+								SET headshot = 1
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".int($ktp_actor_player_id)."
 								AND victimId = ".int($ktp_victim_player_id)."
 								AND weapon = '".quoteSQL($hs_weapon)."'
+								AND headshot = 0
 								AND frag_context_recorded = 0
 								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")
 								ORDER BY id ASC
@@ -2897,9 +2895,9 @@ while ($loop = &getLine()) {
 					}
 				} elsif ($ev_obj_a eq "frag_context") {
 					# KTP: Frag context marker from ktp_stats_capture.inc, fired on
-					# EVERY kill (this retired the old headshot-only "headshot_kill"
-					# marker above -- that branch is left in place as dead code,
-					# nothing emits it anymore, but nothing needs it removed either).
+					# EVERY kill. It supersedes headshot_kill in the plugin SOURCE only --
+					# instances still on the older stats_logging build emit headshot_kill
+					# and never this, so the branch above is live, not dead code.
 					# Same technique: flush the frag queue, then UPDATE the most
 					# recent matching row. ev_obj_b = victim player string,
 					# ev_obj_c = weapon, properties carry headshot/prone/scope/ammo.
@@ -3459,28 +3457,39 @@ while ($loop = &getLine()) {
 						if ($ktp_buffered_player_id && $capBreakActionId) {
 							flushEventTable("PlayerActions");
 
-							my $bc_contesters = $ev_properties{"contester_count"} // 0;
-							my $bc_remaining  = $ev_properties{"time_remaining"}  // 0;
-							my $bc_capout     = $ev_properties{"is_capout"}       // 0;
+							# An absent property means the plugin could not determine the
+							# value. NULL records that; 0 would be indistinguishable from a
+							# real zero -- the false default that hid k_prone for nine seasons.
+							my $bc_contesters = defined($ev_properties{"contester_count"})
+								? int($ev_properties{"contester_count"}) : "NULL";
+							my $bc_remaining  = defined($ev_properties{"time_remaining"})
+								? ($ev_properties{"time_remaining"} + 0) : "NULL";
+							my $bc_capout     = defined($ev_properties{"is_capout"})
+								? ($ev_properties{"is_capout"} ? 1 : 0) : "NULL";
 
-							# Time-bounded for the same reason as frag_context's
-							# UPDATE above -- a dropped cap_break UDP line would
-							# otherwise let this rewrite an older PlayerActions
-							# row for the same player instead of a no-op.
+							# Time-bounded for the same reason as frag_context's UPDATE
+							# above, but the window alone is not enough: a dropped cap_break
+							# line whose context still arrives would silently rewrite the
+							# player's PREVIOUS break with this break's numbers. The claim
+							# column makes that a logged no-op instead. DESC, not frag's ASC:
+							# frag narrows to the exact producer second, this has only the 60s
+							# receipt window, so the newest unclaimed break is the better pair.
 							my $bc_rv = &execNonQuery("
 								UPDATE hlstats_Events_PlayerActions
-								SET contester_count = ".int($bc_contesters).",
-									time_remaining = ".($bc_remaining + 0).",
-									is_capout = ".($bc_capout ? 1 : 0)."
+								SET contester_count = ".$bc_contesters.",
+									time_remaining = ".$bc_remaining.",
+									is_capout = ".$bc_capout.",
+									break_context_recorded = 1
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND playerId = ".int($ktp_buffered_player_id)."
 								AND actionId = ".int($capBreakActionId)."
+								AND break_context_recorded = 0
 								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 60).")
 								ORDER BY id DESC
 								LIMIT 1
 							");
 							if (defined($bc_rv) && $bc_rv == 0) {
-								&printEvent("KTP_NO_ROW_MATCHED", "break_context: no cap_break within 60s for player=".$ktp_buffered_player_id, 1, 1);
+								&printEvent("KTP_NO_ROW_MATCHED", "break_context: no unclaimed cap_break within 60s for player=".$ktp_buffered_player_id." -- likely a dropped UDP cap_break line", 1, 1);
 							}
 							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
 						}

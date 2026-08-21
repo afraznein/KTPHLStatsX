@@ -145,9 +145,10 @@ through `recordEvent`:
 
 Schema migration:
 - **Fresh install:** apply `sql/ktp_schema.sql`, then migrations 003 through
-  017 in numeric order. The base schema is not a roll-up of later migrations;
-  in particular, 016 creates `ktp_life_events` and 017 adds producer clocks and
-  `ktp_assist_events` required by daemon 0.3.10. Skip migration 002 on a fresh
+  018 in numeric order. The base schema is not a roll-up of later migrations;
+  in particular, 016 creates `ktp_life_events`, 017 adds producer clocks and
+  `ktp_assist_events`, and 018 adds the break-context claim column and makes
+  `is_capout` nullable -- all required by daemon 0.3.10. Skip migration 002 on a fresh
   install because its half-column changes are already in the base schema.
 - **Existing install:** apply every not-yet-applied migration in numeric order.
   A pre-0.3.1 database starts with `sql/migrate_002_half_damage_score.sql`;
@@ -182,12 +183,14 @@ cp scripts/HLstats.plib /opt/hlstatsx/scripts/
 # Create/upgrade the base KTP schema, then apply every later migration in order.
 # Fresh installs start at 003 because ktp_schema.sql already contains 002.
 mysql -u hlstatsx -p hlstatsx < sql/ktp_schema.sql
-for migration in sql/migrate_{003..017}_*.sql; do
+for migration in sql/migrate_{003..018}_*.sql; do
   mysql -u hlstatsx -p hlstatsx < "$migration"
 done
 
 # 016 and 017 must both complete before starting daemon 0.3.10 or deploying
-# the coordinated stats_logging.amxx producer.
+# the coordinated stats_logging.amxx producer. 018 must complete before that
+# daemon starts too -- it writes a NULL is_capout, which the pre-018 column
+# rejects outright (ERROR 1048), taking the whole break-context UPDATE with it.
 
 # Restart daemon
 sudo systemctl restart hlstatsx

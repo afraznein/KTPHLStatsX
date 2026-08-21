@@ -3,6 +3,35 @@
 ## [0.3.10] - Unreleased
 
 ### Fixed
+- Correlate `break_context` markers exactly once. The UPDATE that attaches
+  contester count, time remaining and capout state to a `cap_break` had no claim
+  guard, so a dropped `cap_break` UDP line whose context marker still arrived
+  would rewrite the player's PREVIOUS break inside the 60-second receipt window
+  with the new break's numbers. That UPDATE matched a row, so it reported
+  success and the existing `KTP_NO_ROW_MATCHED` diagnostic never fired -- wrong
+  data was indistinguishable from right data. Migration 018 adds
+  `break_context_recorded`, mirroring the Frags-side guard from migration 012.
+  Ordering stays newest-first rather than adopting the frag path's FIFO: that
+  path narrows to the exact producer second, this one has only the receipt
+  window, where the newest unclaimed break is the better pairing.
+- Record an unknown `is_capout` as NULL instead of 0. Migration 007 gave the
+  column `NOT NULL DEFAULT 0` while its two siblings defaulted to NULL, so a
+  break whose context marker never arrived was stored identically to a break
+  the plugin measured and found was not a capout. Migration 018 makes it
+  nullable and the daemon writes NULL when the property is absent.
+  `contester_count` and `time_remaining` were already nullable but were being
+  coerced to 0 in Perl, and now pass NULL through as well. Existing rows are
+  deliberately not backfilled -- a stored 0 is genuinely ambiguous and nothing
+  in the row distinguishes the two cases, so a backfill would invent a fact.
+- Stop the `headshot_kill` branch setting `frag_context_recorded`. That flag is
+  read as "the context columns hold real measurements", but this marker carries
+  only killer, victim and weapon, so every row it touched certified context that
+  was never collected. The branch now sets `headshot` alone and uses
+  `headshot = 0` as its own claim guard -- in DoD the stock kill line never
+  carries a headshot property, so these markers are the column's only writer.
+  The neighbouring comment calling the branch dead code is corrected with it:
+  `headshot_kill` was retired in the plugin SOURCE only, and instances still
+  running the older `stats_logging` build emit it and never emit `frag_context`.
 - Do not report a false `Unresolved action` SQL error when a known action is
   deliberately disabled for the PlayerAction leg. The generic trigger
   dispatcher probes both action shapes, so victim-aware actions such as
