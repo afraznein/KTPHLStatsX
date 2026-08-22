@@ -2911,6 +2911,27 @@ while ($loop = &getLine()) {
 							flushEventTable("Frags");
 
 							my $fc_weapon   = $ev_obj_c || "";
+							# DODX reports the precise alternate-fire weapon while the
+							# stock DoD log records the owning/base weapon.  Keep the
+							# association exact on server, actors and producer second,
+							# but accept only these documented one-way aliases.  A broad
+							# weapon fallback could steal an unrelated frag after loss.
+							my %fc_stock_weapon_alias = (
+								"brit_knife"     => "amerknife",
+								"garandbutt"     => "garand",
+								"bayonet"        => "kar",
+								"fcarbine"       => "m1carbine",
+								"scoped_fg42"    => "fg42",
+								"k43butt"        => "k43",
+								"scoped_enfield" => "enfield",
+								"enf_bayonet"    => "enfield",
+							);
+							my @fc_weapon_candidates = ($fc_weapon);
+							push @fc_weapon_candidates, $fc_stock_weapon_alias{$fc_weapon}
+								if exists $fc_stock_weapon_alias{$fc_weapon};
+							my $fc_weapon_where = join(", ", map {
+								"'".quoteSQL($_)."'"
+							} @fc_weapon_candidates);
 							my $fc_headshot = $ev_properties_hash{"headshot"} // 0;
 							my $fc_k_prone  = $ev_properties_hash{"k_prone"}  // 0;
 							my $fc_v_prone  = $ev_properties_hash{"v_prone"}  // 0;
@@ -2985,7 +3006,7 @@ while ($loop = &getLine()) {
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".int($ktp_actor_player_id)."
 								AND victimId = ".int($ktp_victim_player_id)."
-								AND weapon = '".quoteSQL($fc_weapon)."'
+								AND weapon IN ($fc_weapon_where)
 								AND frag_context_recorded = 0
 								$fc_time_where
 								ORDER BY id ASC
