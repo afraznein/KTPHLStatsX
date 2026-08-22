@@ -280,6 +280,21 @@ like($frag_branch, qr/ktpResolveValidatedProducerEventContext/,
 like($frag_branch,
     qr/eventTime >= FROM_UNIXTIME.*?eventTime < FROM_UNIXTIME/s,
     'authoritative frag association is bounded to one producer second');
+for my $alias_pair (
+    [qw(brit_knife amerknife)], [qw(garandbutt garand)],
+    [qw(bayonet kar)], [qw(fcarbine m1carbine)],
+    [qw(scoped_fg42 fg42)], [qw(k43butt k43)],
+    [qw(scoped_enfield enfield)], [qw(enf_bayonet enfield)],
+) {
+    my ($producer, $stock) = @$alias_pair;
+    like($frag_branch,
+        qr/\Q"$producer"\E\s*=>\s*\Q"$stock"\E/,
+        "frag association explicitly maps DODX $producer to stock $stock");
+}
+like($frag_branch, qr/AND weapon IN \(\$fc_weapon_where\)/,
+    'frag association uses only its explicit producer/base weapon candidates');
+unlike($frag_branch, qr/OR\s+weapon\s*=/,
+    'frag association has no unconstrained weapon fallback');
 like($frag_branch, qr/\$fc_clock_sql = "".*?legacy receipt window/s,
     'legacy frag tactical facts remain while authoritative clocks stay NULL');
 my ($damage_branch) = ($source =~
