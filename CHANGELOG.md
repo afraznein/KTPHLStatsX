@@ -1,5 +1,15 @@
 # KTP HLStatsX Changelog
 
+## [0.3.11] - Unreleased
+
+### Fixed
+- Correlate DODX's precise DoD alternate-fire names (rifle butts, bayonets,
+  folding/scoped variants, and the British knife) with the owning weapon name
+  emitted by the stock game log. Correlation remains fail-closed on the exact
+  server, killer, victim, and producer second; only an explicit one-way weapon
+  alias is accepted, so a missing ordinary frag cannot shift context onto an
+  unrelated row.
+
 ## [0.3.10] - Unreleased
 
 ### Fixed
