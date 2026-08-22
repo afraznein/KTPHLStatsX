@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # Focused regression for side-effect-free buffered identity parsing, producer
-# clocks/half validation, event-time context resolution, and migrations 016/017.
+# clocks/half validation, event-time context resolution, and capture migrations.
 use strict;
 use warnings;
 use Test::More;
@@ -11,6 +11,7 @@ $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION16 = $SCRIPT_DIR . '../sql/migrate_016_life_events.sql';
 my $MIGRATION17 = $SCRIPT_DIR . '../sql/migrate_017_capture_clocks_and_assists.sql';
+my $MIGRATION20 = $SCRIPT_DIR . '../sql/migrate_020_capture_observability.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -326,6 +327,12 @@ unlike($position_branch, qr/lookupPlayer|getPlayerInfo/,
     'position_sample persists by durable player id without live-state lookup');
 like($position_branch, qr/doEvent_KTPPosition\(\s*\$ktp_buffered_player_id/s,
     'position_sample passes the durable id to its ledger');
+my ($position_ledger) = ($source =~
+    /sub doEvent_KTPPosition\s*\{(.*?)\n\}/s);
+like($position_ledger, qr/ktpResolveValidatedProducerEventContext/,
+    'position ledger uses event-time producer context when present');
+like($break_branch, qr/Break context dropped: cap_break action is unavailable/,
+    'break context rejects missing generic cap-break action');
 like($source, qr/\$has_explicit_context\s*=\s*ktpHasExplicitProducerContext.*?elsif \(\$has_explicit_context\)/s,
     'damage silently bypasses validation/warnings for absent sentinel context');
 like($source, qr/\$count % 1000/s,
@@ -366,5 +373,19 @@ like($migration17, qr/idx_frag_producer_context \(producer_match_id, producer_ha
     'frag producer-context analytics path is indexed');
 like($migration17, qr/idx_damage_producer_context \(producer_match_id, producer_half, event_epoch\)/,
     'damage producer-context analytics path is indexed');
+
+my $migration20 = slurp($MIGRATION20);
+like($migration20, qr/CREATE TABLE IF NOT EXISTS ktp_capture_manifests/,
+    'migration 020 creates producer manifest ledger');
+like($migration20, qr/CREATE TABLE IF NOT EXISTS ktp_capture_health/,
+    'migration 020 creates producer-daemon reconciliation ledger');
+for my $column (qw(producer_sequence break_victim_id break_incident_id flag_index flag_name)) {
+    like($migration20, qr/\b\Q$column\E\b/,
+        "migration 020 includes $column observability field");
+}
+like($source, qr/^sub ktpObserveCaptureMarker/m,
+    'daemon tracks globally monotonic producer sequences');
+like($source, qr/^sub doEvent_KTPCaptureHealth/m,
+    'daemon persists per-type capture health reconciliation');
 
 done_testing();
