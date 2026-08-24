@@ -20,6 +20,8 @@ jobs:
         run: perl scripts/selftest-getproperties.pl
       - name: Frag-context certification and marker claim rules
         run: perl scripts/selftest-frag-context.pl
+      - name: Damage-absence distinction
+        run: perl scripts/selftest-damage-absence.pl
 
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
