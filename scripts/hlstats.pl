@@ -2877,6 +2877,9 @@ while ($loop = &getLine()) {
 							# writes it, on a substring match over the raw property tail; DoD kill
 							# lines carry no such property, so it never fires here. If a future
 							# build appends frag properties to the kill line, this guard mis-targets.
+							# Newest-first, unlike frag_context's FIFO: this marker fires only on
+							# headshot kills, so the oldest unclaimed frag in the window can be an
+							# unrelated body shot. ksc_emit_frag_context's header documents DESC too.
 							my $hs_weapon = $ev_obj_c || "";
 							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
@@ -2888,7 +2891,7 @@ while ($loop = &getLine()) {
 								AND headshot = 0
 								AND frag_context_recorded = 0
 								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")
-								ORDER BY id ASC
+								ORDER BY id DESC
 								LIMIT 1
 							");
 							if (defined($hs_rv) && $hs_rv == 0) {
@@ -2932,16 +2935,44 @@ while ($loop = &getLine()) {
 							my $fc_weapon_where = join(", ", map {
 								"'".quoteSQL($_)."'"
 							} @fc_weapon_candidates);
-							my $fc_headshot = $ev_properties_hash{"headshot"} // 0;
-							my $fc_k_prone  = $ev_properties_hash{"k_prone"}  // 0;
-							my $fc_v_prone  = $ev_properties_hash{"v_prone"}  // 0;
-							my $fc_k_scope  = $ev_properties_hash{"k_scope"}  // 0;
-							my $fc_v_scope  = $ev_properties_hash{"v_scope"}  // 0;
-							my $fc_k_clip   = $ev_properties_hash{"k_clip"}   // -1;
-							my $fc_k_ammo   = $ev_properties_hash{"k_ammo"}   // -1;
-							my $fc_v_clip   = $ev_properties_hash{"v_clip"}   // -1;
-							my $fc_v_ammo   = $ev_properties_hash{"v_ammo"}   // -1;
-							my $fc_last_flag_def = $ev_properties_hash{"is_last_flag_defense"} // 0;
+							# frag_context_recorded is the exactly-once claim guard, so it cannot also
+							# vouch for what was claimed: getProperties yields "" for an empty field,
+							# Perl numifies that to a measured-looking 0, and these columns are NOT NULL.
+							# Bounds are the column's own, so a bad value cannot abort the whole UPDATE.
+							# k_prone is the raw pronestate, richer than the 0/1/2 migration 005 lists.
+							# BEGIN KTP FRAG CONTEXT PAYLOAD
+							my @fc_context_spec = (
+								["headshot",              0,  0,     1],
+								["k_prone",               0, -128, 127],
+								["v_prone",               0, -128, 127],
+								["k_scope",               0,  0,     1],
+								["v_scope",               0,  0,     1],
+								["k_clip",               -1, -1, 32767],
+								["k_ammo",               -1, -1, 32767],
+								["v_clip",               -1, -1, 32767],
+								["v_ammo",               -1, -1, 32767],
+								["is_last_flag_defense",  0,  0,     1],
+							);
+							my (%fc_context, @fc_unusable);
+							foreach my $fc_field (@fc_context_spec) {
+								my ($fc_name, $fc_unknown, $fc_min, $fc_max) = @{$fc_field};
+								my $fc_raw = $ev_properties_hash{$fc_name};
+								if (defined($fc_raw) && $fc_raw =~ /^-?\d+$/
+									&& $fc_raw >= $fc_min && $fc_raw <= $fc_max) {
+									$fc_context{$fc_name} = int($fc_raw);
+								} else {
+									$fc_context{$fc_name} = $fc_unknown;
+									push(@fc_unusable, $fc_name."=".
+										(defined($fc_raw) ? "'".$fc_raw."'" : "<absent>"));
+								}
+							}
+							# A partial payload still carries a real headshot, which feeds the ladder, so
+							# the row is written and claimed either way -- only the certification is held.
+							my $fc_certified = @fc_unusable ? 0 : 1;
+							if (@fc_unusable) {
+								&printEvent("KTP_BAD_PROPERTY", "frag_context: context not certified for killer=".$ktp_actor_player_id." victim=".$ktp_victim_player_id.", unusable: ".join(" ", @fc_unusable), 1, 1);
+							}
+							# END KTP FRAG CONTEXT PAYLOAD
 							my ($fc_half, $fc_map, $fc_context_source);
 							my $fc_context_error = "legacy producer context absent";
 							my $fc_has_explicit_context =
@@ -2976,6 +3007,8 @@ while ($loop = &getLine()) {
 							# same as assist/break positions) -- present only when the
 							# plugin-side origin read succeeded; Phase 5's positions
 							# guard (never fabricate 0 0 0) applies here too.
+							# Excluded from certification: these columns are nullable, so NULL already
+							# says unknown without spending the row's certification.
 							my $fc_pos_sql = "";
 							if (defined($ev_properties_hash{"k_position"}) && $ev_properties_hash{"k_position"} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
 								$fc_pos_sql .= ", pos_x = $1, pos_y = $2, pos_z = $3";
@@ -2990,17 +3023,18 @@ while ($loop = &getLine()) {
 							# tactical update, but those rows receive no producer clocks.
 							my $fc_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
-								SET headshot = ".($fc_headshot ? 1 : 0).",
-									k_prone = ".int($fc_k_prone).",
-									v_prone = ".int($fc_v_prone).",
-									k_scope = ".($fc_k_scope ? 1 : 0).",
-									v_scope = ".($fc_v_scope ? 1 : 0).",
-									k_clip = ".int($fc_k_clip).",
-									k_ammo = ".int($fc_k_ammo).",
-									v_clip = ".int($fc_v_clip).",
-									v_ammo = ".int($fc_v_ammo).",
-									is_last_flag_defense = ".($fc_last_flag_def ? 1 : 0).",
-									frag_context_recorded = 1
+								SET headshot = ".$fc_context{'headshot'}.",
+									k_prone = ".$fc_context{'k_prone'}.",
+									v_prone = ".$fc_context{'v_prone'}.",
+									k_scope = ".$fc_context{'k_scope'}.",
+									v_scope = ".$fc_context{'v_scope'}.",
+									k_clip = ".$fc_context{'k_clip'}.",
+									k_ammo = ".$fc_context{'k_ammo'}.",
+									v_clip = ".$fc_context{'v_clip'}.",
+									v_ammo = ".$fc_context{'v_ammo'}.",
+									is_last_flag_defense = ".$fc_context{'is_last_flag_defense'}.",
+									frag_context_recorded = 1,
+									frag_context_certified = ".$fc_certified."
 									$fc_pos_sql
 									$fc_clock_sql
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
