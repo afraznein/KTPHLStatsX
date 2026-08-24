@@ -1,5 +1,21 @@
 # KTP HLStatsX Changelog
 
+## [Unreleased]
+
+### Fixed — an absent damage ledger no longer publishes as a measured zero
+
+- **`ktp_match_stats.damage` was written as `0` for every player on every instance that does not
+  produce `ktp_damage_events`.** `COALESCE(dmg.damage, 0)` cannot tell *this player dealt no damage*
+  from *this half was never captured*, and the aggregate feeds the site, the export to ktpleague.gg,
+  and anything weighting on damage — so an absence was being published as a measurement.
+- The ledger is now probed per match/half before the aggregate is written. A half **with** ledger rows
+  keeps `COALESCE(..., 0)`, so a player who dealt no damage still records `0`. A half **without** any
+  ledger rows writes `NULL`, and a consumer can tell the two apart.
+- No migration: `ktp_match_stats.damage` is already nullable.
+- The decision is a named function (`ktpDamageExpr`) so it is testable in isolation;
+  `scripts/selftest-damage-absence.pl` executes it out of the source between markers, so a revert
+  fails the test rather than silently passing. Wired into `capture-contract-selftests`.
+
 ## [0.3.12] - Unreleased
 
 ### Added

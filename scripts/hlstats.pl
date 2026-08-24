@@ -5269,6 +5269,18 @@ sub ktpRefreshLateHeadshots
 # KTP: Handle KTP_MATCH_END event
 # Aggregates per-half and total stats from event tables into ktp_match_stats
 #
+# KTP_DAMAGE_EXPR_BEGIN
+# The per-hit ledger is produced by stats_logging.amxx, which is not on every
+# instance yet. A player with no ledger rows in a CAPTURED half genuinely dealt
+# no damage; a half with no ledger rows at all was never captured, and writing 0
+# there publishes an absence as a measurement.
+sub ktpDamageExpr
+{
+	my ($ledger_has_rows) = @_;
+	return $ledger_has_rows ? 'COALESCE(dmg.damage, 0)' : 'NULL';
+}
+# KTP_DAMAGE_EXPR_END
+
 sub doEvent_KTPMatchEnd
 {
 	my ($matchid, $map) = @_;
@@ -5310,6 +5322,18 @@ sub doEvent_KTPMatchEnd
 	# damage_capped is the competitive damage definition (actual useful HP,
 	# capped at 100 per hit), shared with composite_v2.
 	foreach my $half_num (@halves) {
+		my $ledger = &doQuery("
+			SELECT 1 FROM ktp_damage_events
+			WHERE match_id = '$q_matchid' AND half = $half_num
+			LIMIT 1
+		");
+		my $ledger_has_rows = 0;
+		if ($ledger) {
+			$ledger_has_rows = 1 if ($ledger->fetchrow_array);
+			$ledger->finish();
+		}
+		my $damage_expr = &ktpDamageExpr($ledger_has_rows);
+
 		&execNonQuery("
 			INSERT INTO ktp_match_stats
 				(match_id, player_id, half, kills, deaths, headshots,
@@ -5318,7 +5342,7 @@ sub doEvent_KTPMatchEnd
 				'$q_matchid', p.playerId, $half_num,
 				COALESCE(k.kills, 0), COALESCE(d.deaths, 0),
 				COALESCE(k.headshots, 0), COALESCE(tk.team_kills, 0),
-				COALESCE(s.suicides, 0), COALESCE(dmg.damage, 0), 0
+				COALESCE(s.suicides, 0), $damage_expr, 0
 			FROM ktp_match_players mp
 			JOIN hlstats_Players p ON mp.player_id = p.playerId
 			LEFT JOIN (
