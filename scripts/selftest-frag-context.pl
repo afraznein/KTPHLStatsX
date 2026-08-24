@@ -18,6 +18,7 @@ my $SCRIPT_DIR = $0;
 $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION20 = $SCRIPT_DIR . '../sql/migrate_020_frag_context_certified.sql';
+my $MIGRATION19 = $SCRIPT_DIR . '../sql/migrate_019_clear_uncertified_frag_context.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -124,8 +125,9 @@ my ($headshot_branch) = ($source =~
 ok(defined($headshot_branch), 'headshot_kill branch is present');
 unlike($headshot_branch, qr/frag_context_(?:recorded|certified) = 1/,
     'headshot_kill certifies nothing -- it collects no context');
-like($headshot_branch, qr/ORDER BY id DESC/,
-    'headshot_kill claims the newest unclaimed frag, not the oldest');
+like($headshot_branch, qr/ORDER BY id ASC/,
+    'headshot_kill stays FIFO -- its emitter buffers the marker, so the newest '
+    . 'unclaimed frag is routinely a later kill');
 like($headshot_branch, qr/AND headshot = 0/,
     'headshot_kill keeps its own claim guard');
 
@@ -138,6 +140,10 @@ like($frag_branch, qr/AND frag_context_recorded = 0/,
     'the claim guard, not the certification, is what makes correlation exactly-once');
 unlike($frag_branch, qr/AND frag_context_certified = 0/,
     'certification must not gate the claim, or a partial payload becomes re-claimable');
+
+my $trailing_newline = resolve(%COMPLETE, k_ammo => "1" . chr(10));
+is($trailing_newline->{certified}, 0,
+    'a trailing newline is rejected -- the $ anchor would have allowed one');
 
 # A revert to the bare defined-or defaults is the failure mode this file guards.
 unlike($frag_branch, qr/\$ev_properties_hash\{"(?:k_prone|k_clip|is_last_flag_defense)"\}\s*\/\//,
@@ -153,5 +159,15 @@ unlike($migration20, qr/^\s*UPDATE\s+hlstats_Events_Frags/mi,
     'migration 020 runs no backfill -- certification cannot be re-derived from content');
 like($migration20, qr/must run before daemon/i,
     'migration 020 states its ordering against the daemon');
+
+# 019 reads "flag set, all context at default" as proof the flag is false. Once
+# 020 exists the daemon writes exactly that shape for an unusable payload, and a
+# certified kill can legitimately measure every default at once, so re-running
+# it would withdraw live claims.
+my $migration19 = slurp($MIGRATION19);
+like($migration19, qr/COLUMN_NAME = 'frag_context_certified'/,
+    'migration 019 is guarded on whether 020 has been applied');
+like($migration19, qr/IF\(\@certified_exists > 0, 'DO 0'/,
+    'migration 019 degrades to a no-op once certification exists');
 
 done_testing();

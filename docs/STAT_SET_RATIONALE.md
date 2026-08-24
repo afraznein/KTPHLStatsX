@@ -17,7 +17,7 @@ written. Each claim below states a property instead, and § How to re-measure
 carries the queries that re-derive it.
 
 > **Companion change.** The three marker-handler correlation fixes and
-> migrations 018 and 019 (PR #27) have landed, and this document has been
+> migrations 018 and 019 (`afraznein/KTPHLStatsX`#27) have landed, and this document has been
 > re-read against them — see the correction in § Class 2. The entry on what
 > certifies frag context now depends on migration 020 instead, which is not yet
 > applied; it says so where it appears.
@@ -119,7 +119,7 @@ reconstructed afterwards, and why migration 020 ships no backfill.
 
 🔻 **This block used to say the flagged rows all came from instances running the
 old build, on a server id that was not Denver 27018.** That described the defect
-PR #27 fixed — the `headshot_kill` branch setting the flag while writing no
+`afraznein/KTPHLStatsX`#27 fixed — the `headshot_kill` branch setting the flag while writing no
 context — and stopped being true the moment that fix and migration 019 were
 applied. Do not carry either shape forward: re-derive the split with the
 `frag_context_recorded` query in § How to re-measure, which now also breaks out

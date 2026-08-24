@@ -199,10 +199,11 @@ done
 # daemon starts too -- without it the break-context UPDATE names a column that
 # does not exist (ERROR 1054) and the whole statement is lost. 020 is the same
 # kind of precondition for daemon 0.3.12 and its frag_context UPDATE.
-# 019 is a data correction and is not a daemon precondition. Its header asks
-# for it before any instance emits frag_context; that window has closed, but
-# its predicate keys on content rather than on a date or a server, so it stays
-# a no-op on rows that carry real context. Read its pre-flight before running.
+# 019 is a data correction and is not a daemon precondition. Its window has
+# closed and 020 supersedes it: from 0.3.12 the daemon writes 019's own
+# "all defaults" shape for an unusable payload while still claiming the row, so
+# the predicate no longer identifies a false claim. 019 is guarded on 020 and
+# becomes a no-op once 020 is applied -- which is why it stays in the loop.
 
 # Restart daemon
 sudo systemctl restart hlstatsx

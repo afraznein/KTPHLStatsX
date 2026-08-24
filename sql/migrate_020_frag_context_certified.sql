@@ -16,11 +16,11 @@
 -- property is absent, empty or malformed. One column cannot carry both without
 -- reintroducing the double-claim defect migration 018 fixed on the break side.
 --
--- WHAT frag_context_certified = 1 MEANS. Every one of the ten NOT NULL context
--- properties the producer emits unconditionally (headshot, k/v_prone,
--- k/v_scope, k/v_clip, k/v_ammo, is_last_flag_defense) was present on the marker
--- and matched the producer's format. Positions are deliberately not part of it:
--- they are nullable, so NULL already reads as unknown.
+-- WHAT frag_context_certified = 1 MEANS. Every NOT NULL context property the
+-- producer emits unconditionally -- the set enumerated in the daemon's
+-- @fc_context_spec, which is the only place it is written down -- was present on
+-- the marker and matched the producer's format. Positions are deliberately not
+-- part of it: they are nullable, so NULL already reads as unknown.
 --
 -- WHAT 0 MEANS, AND WHY THAT IS THE WHOLE POINT. Three different things -- no
 -- marker was ever emitted for this row (the stock build on most of the fleet),
@@ -39,6 +39,9 @@
 -- under a write lock on the largest table in the schema. Apply in an idle
 -- window, and combine it into one ALTER with any other pending change to this
 -- table rather than running several in sequence.
+
+-- The database MUST be named on the command line: DATABASE() is NULL otherwise
+-- and the guard below reads as 'column absent'.
 
 -- hlstats_Events_Frags.frag_context_certified
 SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS

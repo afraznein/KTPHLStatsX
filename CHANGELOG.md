@@ -28,22 +28,31 @@
   empty magazine rather than the reserved read-failed sentinel. This is the same
   false-default the break-context path was corrected for, still live on the path
   that writes the very column that case is named after. Values are bounded to
-  their columns so a bad one cannot abort the UPDATE under strict mode, an
-  unusable property is reported as `KTP_BAD_PROPERTY` naming the field, and the
-  row is still written and claimed -- a partial payload can still carry a real
-  headshot, which feeds the ladder. Only the certification is withheld.
+  the narrower of the column and the producer's own range, so a bad one cannot
+  abort the UPDATE under strict mode; an unusable property is reported as
+  `KTP_BAD_PROPERTY` naming the field; and the row is still written and still
+  claimed, because a partial payload can carry a real headshot and that feeds
+  the ladder. Only the certification is withheld.
   Positions are excluded: those columns are nullable, so NULL already reads as
   unknown.
-- Claim the newest unclaimed frag from the `headshot_kill` branch, not the
-  oldest. That branch inherited `ORDER BY id ASC` from `frag_context`, where
-  FIFO is sound because a marker is emitted for every kill. `headshot_kill`
-  fires only on headshot kills, so the oldest unclaimed frag in the receipt
-  window can be an unrelated body shot by the same killer on the same victim
-  with the same weapon -- and the UPDATE matched a row, so it reported success
-  and `KTP_NO_ROW_MATCHED` stayed quiet. `ksc_emit_frag_context`'s own header
-  documents the technique as newest-first; the daemon disagreed with it. The
-  query in the PR body measures how often the fleet's frag stream presents that
-  ambiguity.
+- Keep the `headshot_kill` branch on FIFO, and record why, after nearly
+  changing it. Its emitter buffers the marker and flushes on a timer while the
+  engine's kill line reaches the daemon immediately, so the marker is
+  systematically late: "newest unclaimed" is routinely a kill that happened
+  *after* the one the marker describes. `ktp_stats_capture.inc`'s file header
+  documents the technique as newest-first for both markers, which is what
+  prompted the change and is not what the buffered emitter does. Neither
+  ordering is exact -- this marker fires per headshot rather than per kill, so
+  an earlier unmarked body shot can still absorb the flag, and no producer clock
+  reaches this branch to settle it. The aggregate `SUM(headshot)` feeding the
+  ladder is unaffected either way; what moves is which row carries the flag.
+- Guard migration 019 on whether 020 has been applied, and make it a no-op once
+  it has. 019 reads "flag set, every context column at its default" as proof the
+  flag is false. That inference does not survive this release: the daemon now
+  writes exactly that shape for an unusable payload while still claiming the
+  row, and a genuinely certified kill can legitimately measure every default at
+  once. Re-running it afterwards would withdraw live claims and re-open those
+  rows to correlation.
 
 ## [0.3.11] - Unreleased
 

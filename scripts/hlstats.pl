@@ -2877,9 +2877,9 @@ while ($loop = &getLine()) {
 							# writes it, on a substring match over the raw property tail; DoD kill
 							# lines carry no such property, so it never fires here. If a future
 							# build appends frag properties to the kill line, this guard mis-targets.
-							# Newest-first, unlike frag_context's FIFO: this marker fires only on
-							# headshot kills, so the oldest unclaimed frag in the window can be an
-							# unrelated body shot. ksc_emit_frag_context's header documents DESC too.
+							# FIFO, not newest-first: the emitting build buffers this marker for seconds
+							# while kill lines arrive immediately, so "newest unclaimed" is routinely a
+							# later kill. Still approximate -- no producer clock reaches this branch.
 							my $hs_weapon = $ev_obj_c || "";
 							my $hs_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
@@ -2891,7 +2891,7 @@ while ($loop = &getLine()) {
 								AND headshot = 0
 								AND frag_context_recorded = 0
 								AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")
-								ORDER BY id DESC
+								ORDER BY id ASC
 								LIMIT 1
 							");
 							if (defined($hs_rv) && $hs_rv == 0) {
@@ -2938,7 +2938,8 @@ while ($loop = &getLine()) {
 							# frag_context_recorded is the exactly-once claim guard, so it cannot also
 							# vouch for what was claimed: getProperties yields "" for an empty field,
 							# Perl numifies that to a measured-looking 0, and these columns are NOT NULL.
-							# Bounds are the column's own, so a bad value cannot abort the whole UPDATE.
+							# Bounds are the narrower of the column and the producer's own range, so a
+							# bad value cannot abort the whole UPDATE under strict mode.
 							# k_prone is the raw pronestate, richer than the 0/1/2 migration 005 lists.
 							# BEGIN KTP FRAG CONTEXT PAYLOAD
 							my @fc_context_spec = (
@@ -2957,7 +2958,7 @@ while ($loop = &getLine()) {
 							foreach my $fc_field (@fc_context_spec) {
 								my ($fc_name, $fc_unknown, $fc_min, $fc_max) = @{$fc_field};
 								my $fc_raw = $ev_properties_hash{$fc_name};
-								if (defined($fc_raw) && $fc_raw =~ /^-?\d+$/
+								if (defined($fc_raw) && $fc_raw =~ /^-?\d+\z/
 									&& $fc_raw >= $fc_min && $fc_raw <= $fc_max) {
 									$fc_context{$fc_name} = int($fc_raw);
 								} else {
