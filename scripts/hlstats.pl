@@ -2935,12 +2935,9 @@ while ($loop = &getLine()) {
 							my $fc_weapon_where = join(", ", map {
 								"'".quoteSQL($_)."'"
 							} @fc_weapon_candidates);
-							# frag_context_recorded is the exactly-once claim guard, so it cannot also
-							# vouch for what was claimed: getProperties yields "" for an empty field,
-							# Perl numifies that to a measured-looking 0, and these columns are NOT NULL.
-							# Bounds are the narrower of the column and the producer's own range, so a
-							# bad value cannot abort the whole UPDATE under strict mode.
-							# k_prone is the raw pronestate, richer than the 0/1/2 migration 005 lists.
+							# The claim guard cannot also vouch for what was claimed: getProperties yields
+							# "" for an empty field, which Perl numifies into a measured-looking 0. Bounds
+							# are the narrower of column and producer, so a bad value cannot abort the UPDATE.
 							# BEGIN KTP FRAG CONTEXT PAYLOAD
 							my @fc_context_spec = (
 								["headshot",              0,  0,     1],
@@ -3008,8 +3005,7 @@ while ($loop = &getLine()) {
 							# same as assist/break positions) -- present only when the
 							# plugin-side origin read succeeded; Phase 5's positions
 							# guard (never fabricate 0 0 0) applies here too.
-							# Excluded from certification: these columns are nullable, so NULL already
-							# says unknown without spending the row's certification.
+							# Not part of certification: nullable, so NULL already says unknown.
 							my $fc_pos_sql = "";
 							if (defined($ev_properties_hash{"k_position"}) && $ev_properties_hash{"k_position"} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
 								$fc_pos_sql .= ", pos_x = $1, pos_y = $2, pos_z = $3";
