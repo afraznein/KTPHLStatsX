@@ -1,5 +1,59 @@
 # KTP HLStatsX Changelog
 
+## [0.3.12] - Unreleased
+
+### Added
+- `frag_context_certified` (migration 020), separating "a marker consumed this
+  row" from "the context on this row can be trusted". `frag_context_recorded`
+  has to be set on every row a marker takes, or a second marker can rewrite one
+  the first already claimed -- the defect migration 018 fixed on the break side.
+  Certification asks the opposite question and the two answers diverge exactly
+  when a property arrives absent, blank or malformed, so one column cannot carry
+  both. Cutover and backfill queries want the new column.
+  ⚠️ Migration 020 must be applied before this daemon starts: its
+  frag_context UPDATE names the column, and a write to a column that does not
+  exist fails inside MySQL with the whole statement lost.
+  It ships no backfill. Certification is a claim made from what came off the
+  wire, and no query over rows already written can re-derive it: every context
+  default is also a legal reading -- `k_prone = 0` is standing, `k_clip = -1` is
+  a failed read, `is_last_flag_defense = 0` is not defending -- so a defaulted
+  column and a measured one are identical. The header carries the pre-flight and
+  the conditions under which an operator may fill it in by hand.
+
+### Fixed
+- Validate every frag-context property against the producer's format instead of
+  defaulting it with `//`. `getProperties` yields `""` for an empty field and
+  this daemon runs without warnings, so a blank or non-numeric value numified
+  silently into a measurement: `k_prone` became "standing", `k_clip` became an
+  empty magazine rather than the reserved read-failed sentinel. This is the same
+  false-default the break-context path was corrected for, still live on the path
+  that writes the very column that case is named after. Values are bounded to
+  the narrower of the column and the producer's own range, so a bad one cannot
+  abort the UPDATE under strict mode; an unusable property is reported as
+  `KTP_BAD_PROPERTY` naming the field; and the row is still written and still
+  claimed, because a partial payload can carry a real headshot and that feeds
+  the ladder. Only the certification is withheld.
+  Positions are excluded: those columns are nullable, so NULL already reads as
+  unknown.
+- Keep the `headshot_kill` branch on FIFO, and record why, after nearly
+  changing it. Its emitter buffers the marker and flushes on a timer while the
+  engine's kill line reaches the daemon immediately, so the marker is
+  systematically late: "newest unclaimed" is routinely a kill that happened
+  *after* the one the marker describes. `ktp_stats_capture.inc`'s file header
+  documents the technique as newest-first for both markers, which is what
+  prompted the change and is not what the buffered emitter does. Neither
+  ordering is exact -- this marker fires per headshot rather than per kill, so
+  an earlier unmarked body shot can still absorb the flag, and no producer clock
+  reaches this branch to settle it. The aggregate `SUM(headshot)` feeding the
+  ladder is unaffected either way; what moves is which row carries the flag.
+- Guard migration 019 on whether 020 has been applied, and make it a no-op once
+  it has. 019 reads "flag set, every context column at its default" as proof the
+  flag is false. That inference does not survive this release: the daemon now
+  writes exactly that shape for an unusable payload while still claiming the
+  row, and a genuinely certified kill can legitimately measure every default at
+  once. Re-running it afterwards would withdraw live claims and re-open those
+  rows to correlation.
+
 ## [0.3.11] - Unreleased
 
 ### Fixed
