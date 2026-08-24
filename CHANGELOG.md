@@ -1,5 +1,50 @@
 # KTP HLStatsX Changelog
 
+## [0.3.12] - Unreleased
+
+### Added
+- `frag_context_certified` (migration 020), separating "a marker consumed this
+  row" from "the context on this row can be trusted". `frag_context_recorded`
+  has to be set on every row a marker takes, or a second marker can rewrite one
+  the first already claimed -- the defect migration 018 fixed on the break side.
+  Certification asks the opposite question and the two answers diverge exactly
+  when a property arrives absent, blank or malformed, so one column cannot carry
+  both. Cutover and backfill queries want the new column.
+  ⚠️ Migration 020 must be applied before this daemon starts: its
+  frag_context UPDATE names the column, and a write to a column that does not
+  exist fails inside MySQL with the whole statement lost.
+  It ships no backfill. Certification is a claim made from what came off the
+  wire, and no query over rows already written can re-derive it: every context
+  default is also a legal reading -- `k_prone = 0` is standing, `k_clip = -1` is
+  a failed read, `is_last_flag_defense = 0` is not defending -- so a defaulted
+  column and a measured one are identical. The header carries the pre-flight and
+  the conditions under which an operator may fill it in by hand.
+
+### Fixed
+- Validate every frag-context property against the producer's format instead of
+  defaulting it with `//`. `getProperties` yields `""` for an empty field and
+  this daemon runs without warnings, so a blank or non-numeric value numified
+  silently into a measurement: `k_prone` became "standing", `k_clip` became an
+  empty magazine rather than the reserved read-failed sentinel. This is the same
+  false-default the break-context path was corrected for, still live on the path
+  that writes the very column that case is named after. Values are bounded to
+  their columns so a bad one cannot abort the UPDATE under strict mode, an
+  unusable property is reported as `KTP_BAD_PROPERTY` naming the field, and the
+  row is still written and claimed -- a partial payload can still carry a real
+  headshot, which feeds the ladder. Only the certification is withheld.
+  Positions are excluded: those columns are nullable, so NULL already reads as
+  unknown.
+- Claim the newest unclaimed frag from the `headshot_kill` branch, not the
+  oldest. That branch inherited `ORDER BY id ASC` from `frag_context`, where
+  FIFO is sound because a marker is emitted for every kill. `headshot_kill`
+  fires only on headshot kills, so the oldest unclaimed frag in the receipt
+  window can be an unrelated body shot by the same killer on the same victim
+  with the same weapon -- and the UPDATE matched a row, so it reported success
+  and `KTP_NO_ROW_MATCHED` stayed quiet. `ksc_emit_frag_context`'s own header
+  documents the technique as newest-first; the daemon disagreed with it. The
+  query in the PR body measures how often the fleet's frag stream presents that
+  ambiguity.
+
 ## [0.3.11] - Unreleased
 
 ### Fixed
