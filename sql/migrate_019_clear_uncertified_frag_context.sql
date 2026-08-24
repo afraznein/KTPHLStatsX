@@ -10,8 +10,21 @@
 -- measurements", so every row it touched asserts something false. This clears
 -- those assertions.
 --
--- ⏳ THIS IS TIME-SENSITIVE, AND THE WINDOW CLOSES ON ITS OWN. Today the fleet
--- runs a stats_logging build that emits headshot_kill and never frag_context, so
+-- ⛔ SUPERSEDED BY MIGRATION 020, AND SELF-DISABLING ONCE 020 IS APPLIED.
+-- The predicate below reads "flag set, every context column at its default" as
+-- proof the flag is false. That inference held while the headshot_kill branch
+-- was the only thing setting the flag with no context. It does not survive
+-- daemon 0.3.12, which writes defaults for an unusable payload AND claims the
+-- row, and where a genuinely certified kill can legitimately measure every
+-- default at once -- standing killer, standing victim, neither scoped, all four
+-- ammo reads failed, no last-flag defense, positions unreadable. Re-running it
+-- then would withdraw live claims and re-open those rows to correlation.
+-- frag_context_certified is the column that answers this question afterwards,
+-- so the UPDATE is guarded on 020 not being applied yet and becomes a no-op
+-- rather than a hazard. Do not remove that guard to "make it run".
+--
+-- ⏳ BEFORE 020 THIS IS TIME-SENSITIVE, AND THE WINDOW CLOSES ON ITS OWN.
+-- Today the fleet runs a stats_logging build that emits headshot_kill and never frag_context, so
 -- every flagged row came from the defective path and is exactly identifiable.
 -- The moment any instance takes a build that emits frag_context, legitimate
 -- rows start carrying the flag too. They are still distinguishable by content
@@ -50,6 +63,11 @@
 --   FROM hlstats_Events_Frags
 --   WHERE frag_context_recorded = 1;
 
+SET @certified_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS
+                         WHERE TABLE_SCHEMA = DATABASE()
+                         AND TABLE_NAME = 'hlstats_Events_Frags'
+                         AND COLUMN_NAME = 'frag_context_certified');
+SET @sql = IF(@certified_exists > 0, 'DO 0', '
 UPDATE hlstats_Events_Frags
 SET frag_context_recorded = 0
 WHERE frag_context_recorded = 1
@@ -63,7 +81,8 @@ WHERE frag_context_recorded = 1
   AND k_ammo = -1
   AND v_clip = -1
   AND v_ammo = -1
-  AND is_last_flag_defense = 0;
+  AND is_last_flag_defense = 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- headshot is deliberately left alone. It is the one thing those rows DID
 -- measure -- the marker's whole payload -- and the per-player SUM(headshot)

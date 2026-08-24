@@ -16,10 +16,11 @@ figure in the draft this document replaces had drifted within hours of being
 written. Each claim below states a property instead, and § How to re-measure
 carries the queries that re-derive it.
 
-> **Companion change.** This document describes the state after the three
-> marker-handler correlation fixes and migrations 018 and 019 land (PR #27). Two entries below — `is_capout`'s nullability and what
-> `frag_context_recorded` actually certifies — depend on that change; both say so
-> where they appear.
+> **Companion change.** The three marker-handler correlation fixes and
+> migrations 018 and 019 (`afraznein/KTPHLStatsX`#27) have landed, and this document has been
+> re-read against them — see the correction in § Class 2. The entry on what
+> certifies frag context now depends on migration 020 instead, which is not yet
+> applied; it says so where it appears.
 
 ## Citations
 
@@ -46,6 +47,7 @@ Schema claims cite table and column and are re-derivable from
 | `headshot` | `tinyint(1)` | **NO** | `0` |
 | `killerRole` | `varchar(64)` | **NO** | `''` |
 | `frag_context_recorded` | `tinyint(1)` | **NO** | `0` |
+| `frag_context_certified` | `tinyint(1)` | **NO** | `0` |
 
 **Position is honest.** It is nullable, so "never written" reads as `NULL`, which
 no query can mistake for a measurement.
@@ -101,16 +103,27 @@ was measured: the old build emits `headshot_kill` and never `frag_context`; the
 new build emits `frag_context` (with headshot as a *field*, not its own event),
 plus `position_sample`, and never `headshot_kill`.
 
-🔻 **Do not read `frag_context_recorded = 1` as evidence that the new plugin is
-producing context.** Before this PR, the `headshot_kill` branch also set that
-flag while writing no context columns at all, so every row carrying it today
-comes from an instance running the **old** build, and carries default prone,
-scope, ammo and position. Those rows are on a single server id — not Denver
-27018, which has produced none of them. The flag is corrected in PR #27, which also
-carries migration 019 to withdraw it from the rows already carrying it — keyed
-on the contradiction (flag set, every context column at its default) rather than
-on a date, so it stays correct whenever it runs. See `CHANGELOG.md` under
-0.3.10.
+🔻 **`frag_context_recorded` is a claim guard, not a quality signal — read
+`frag_context_certified` instead.** The first column exists so exactly one
+marker can consume a given frag row, which means it has to be set even when the
+marker's payload arrived incomplete. The second, added in migration 020, is the
+one that says every context property on the row was present and well-formed. A
+cutover query wants the second.
+
+⚠️ **Neither column's `= 0` says which of three things happened** — no marker
+was emitted (the stock build, on most of the fleet), a marker was emitted and
+lost, or a marker arrived unusable. All three leave the context columns holding
+defaults, and every default is a legal reading, so nothing in a row's content
+separates them. That is why certification is recorded at write time, cannot be
+reconstructed afterwards, and why migration 020 ships no backfill.
+
+🔻 **This block used to say the flagged rows all came from instances running the
+old build, on a server id that was not Denver 27018.** That described the defect
+`afraznein/KTPHLStatsX`#27 fixed — the `headshot_kill` branch setting the flag while writing no
+context — and stopped being true the moment that fix and migration 019 were
+applied. Do not carry either shape forward: re-derive the split with the
+`frag_context_recorded` query in § How to re-measure, which now also breaks out
+certification.
 
 | Stat | Column / table | Why it is not live yet |
 |---|---|---|
@@ -196,11 +209,12 @@ UNION ALL SELECT 'k_clip_measured', COUNT(*) FROM hlstats_Events_Frags WHERE k_c
 -- Positive control: must be large, or the probe itself is broken.
 UNION ALL SELECT 'CONTROL_frags',   COUNT(*) FROM hlstats_Events_Frags;
 
--- Which server ids carry frag_context_recorded, and does any real context come
--- with it? Rows with the flag but no context are the old build's headshot
--- marker, not the new build's frag_context.
+-- Which server ids carry claimed frag rows, and how many of those claims are
+-- certified. claimed > certified is the daemon reporting unusable properties;
+-- pair it with KTP_BAD_PROPERTY in the journal, which names the fields.
 SELECT serverId,
-       COUNT(*)                                    AS flagged,
+       COUNT(*)                                    AS claimed,
+       SUM(frag_context_certified = 1)             AS certified,
        SUM(headshot = 1)                           AS headshot,
        SUM(pos_x IS NOT NULL)                      AS with_position,
        SUM(k_prone = 1 OR k_scope = 1)             AS with_prone_or_scope
