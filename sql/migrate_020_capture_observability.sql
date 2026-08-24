@@ -67,16 +67,29 @@ SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHE
 SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE hlstats_Events_Frags ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER producer_half');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='producer_sequence');
-SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE hlstats_Events_PlayerActions ADD COLUMN producer_match_id VARCHAR(64) DEFAULT NULL, ADD COLUMN producer_half TINYINT UNSIGNED DEFAULT NULL, ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL, ADD COLUMN producer_event_epoch BIGINT UNSIGNED DEFAULT NULL, ADD COLUMN producer_game_time DECIMAL(10,2) DEFAULT NULL, ADD COLUMN flag_index TINYINT UNSIGNED DEFAULT NULL, ADD COLUMN flag_name VARCHAR(64) DEFAULT NULL, ADD COLUMN break_victim_id INT DEFAULT NULL, ADD COLUMN break_incident_id BIGINT UNSIGNED DEFAULT NULL');
+-- Guard every sibling independently. CONCAT_WS keeps this to one MyISAM
+-- rebuild while making a rerun repair any partially applied/manual state.
+SET @clauses := CONCAT_WS(', ',
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='producer_match_id'), 'ADD COLUMN producer_match_id VARCHAR(64) DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='producer_half'), 'ADD COLUMN producer_half TINYINT UNSIGNED DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='producer_sequence'), 'ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='producer_event_epoch'), 'ADD COLUMN producer_event_epoch BIGINT UNSIGNED DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='producer_game_time'), 'ADD COLUMN producer_game_time DECIMAL(10,2) DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='flag_index'), 'ADD COLUMN flag_index TINYINT UNSIGNED DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='flag_name'), 'ADD COLUMN flag_name VARCHAR(64) DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='break_victim_id'), 'ADD COLUMN break_victim_id INT DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='hlstats_Events_PlayerActions' AND COLUMN_NAME='break_incident_id'), 'ADD COLUMN break_incident_id BIGINT UNSIGNED DEFAULT NULL', NULL));
+SET @ddl := IF(@clauses IS NULL OR @clauses='', 'DO 0', CONCAT('ALTER TABLE hlstats_Events_PlayerActions ', @clauses));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_damage_events' AND COLUMN_NAME='producer_sequence');
 SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE ktp_damage_events ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER producer_half');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_position_samples' AND COLUMN_NAME='producer_sequence');
-SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE ktp_position_samples ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER game_time, ADD COLUMN event_epoch BIGINT UNSIGNED DEFAULT NULL AFTER producer_sequence');
+SET @clauses := CONCAT_WS(', ',
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_position_samples' AND COLUMN_NAME='producer_sequence'), 'ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER game_time', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_position_samples' AND COLUMN_NAME='event_epoch'), 'ADD COLUMN event_epoch BIGINT UNSIGNED DEFAULT NULL AFTER producer_sequence', NULL));
+SET @ddl := IF(@clauses IS NULL OR @clauses='', 'DO 0', CONCAT('ALTER TABLE ktp_position_samples ', @clauses));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_assist_events' AND COLUMN_NAME='producer_sequence');
@@ -87,12 +100,18 @@ SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHE
 SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE ktp_life_events ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER event_epoch');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_state_events' AND COLUMN_NAME='producer_sequence');
-SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE ktp_flag_state_events ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER game_time, ADD COLUMN event_epoch BIGINT UNSIGNED DEFAULT NULL AFTER producer_sequence');
+SET @clauses := CONCAT_WS(', ',
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_state_events' AND COLUMN_NAME='producer_sequence'), 'ADD COLUMN producer_sequence BIGINT UNSIGNED DEFAULT NULL AFTER game_time', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_state_events' AND COLUMN_NAME='event_epoch'), 'ADD COLUMN event_epoch BIGINT UNSIGNED DEFAULT NULL AFTER producer_sequence', NULL));
+SET @ddl := IF(@clauses IS NULL OR @clauses='', 'DO 0', CONCAT('ALTER TABLE ktp_flag_state_events ', @clauses));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @exists := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='last_producer_sequence');
-SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE ktp_flag_positions ADD COLUMN last_match_id VARCHAR(64) DEFAULT NULL, ADD COLUMN last_half TINYINT UNSIGNED DEFAULT NULL, ADD COLUMN last_producer_sequence BIGINT UNSIGNED DEFAULT NULL, ADD COLUMN last_event_epoch BIGINT UNSIGNED DEFAULT NULL');
+SET @clauses := CONCAT_WS(', ',
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='last_match_id'), 'ADD COLUMN last_match_id VARCHAR(64) DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='last_half'), 'ADD COLUMN last_half TINYINT UNSIGNED DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='last_producer_sequence'), 'ADD COLUMN last_producer_sequence BIGINT UNSIGNED DEFAULT NULL', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='last_event_epoch'), 'ADD COLUMN last_event_epoch BIGINT UNSIGNED DEFAULT NULL', NULL));
+SET @ddl := IF(@clauses IS NULL OR @clauses='', 'DO 0', CONCAT('ALTER TABLE ktp_flag_positions ', @clauses));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- A healthy completed half has eight rows, no producer drops, no daemon gaps,
