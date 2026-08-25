@@ -1,5 +1,27 @@
 # KTP HLStatsX Changelog
 
+## [0.3.14] - Unreleased
+
+### Fixed — an empty quoted field now parses as absent, not as a value
+
+- **`getProperties` stored `("")` fields as a present empty string**, which
+  defeated every `// default` downstream (defined-or sees `""` as defined) and
+  then numified to `0`: a blank `k_prone` read as "standing", a blank `k_clip`
+  as an empty magazine instead of the `-1` read-failed sentinel, and a half
+  with no real data read as a complete one — a phantom record, with nothing
+  erroring. Reachable without a malformed producer, because `formatex`
+  truncates markers tail-first.
+- An empty quoted field is now skipped: the key is absent from the returned
+  hash, indistinguishable from an omitted property — which is what an empty
+  field means. The frag-context certification path already renders this as
+  `<absent>` rather than `''` in `KTP_BAD_PROPERTY`; certification outcomes do
+  not change.
+- `scripts/selftest-getproperties-empty.pl` executes the real sub extracted
+  from `hlstats.pl` (no mirror), asserting the defect case, the consumer
+  defaults, quoted `"0"` staying a value, and the DoD:S `player_a`/`player_b`
+  rename surviving an empty first player. Fails 6 of 16 on the pre-fix code.
+  Wired into `capture-contract-selftests`.
+
 ## [0.3.13] - Unreleased
 
 ### Added
