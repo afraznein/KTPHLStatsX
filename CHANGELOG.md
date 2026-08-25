@@ -1,7 +1,18 @@
 # KTP HLStatsX Changelog
 
-## [Unreleased]
+## [0.3.13] - Unreleased
 
+### Added
+- Persist per-half capture manifests from `stats_logging` 1.17.0 and reconcile
+  producer attempted/enqueued/dropped/emitted counters against daemon receipts,
+  accepted rows, rejected rows, correlation failures, duplicate/reordered
+  markers, and global producer-sequence gaps (migration 021).
+- Persist producer sequence numbers across frag context, damage, position,
+  assist, life, objective-state, and cap-break facts. Cap breaks now retain the
+  exact flag, stopped victim, and producer incident id instead of requiring a
+  lower-bound grouping heuristic.
+- Retain the match that most recently refreshed each idempotent static flag
+  position, allowing objective metadata coverage to be verified per rollout.
 ### Fixed — an absent damage ledger no longer publishes as a measured zero
 
 - **`ktp_match_stats.damage` was written as `0` for every player on every instance that does not

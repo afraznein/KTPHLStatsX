@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # Focused regression for side-effect-free buffered identity parsing, producer
-# clocks/half validation, event-time context resolution, and migrations 016/017.
+# clocks/half validation, event-time context resolution, and capture migrations.
 use strict;
 use warnings;
 use Test::More;
@@ -11,6 +11,7 @@ $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION16 = $SCRIPT_DIR . '../sql/migrate_016_life_events.sql';
 my $MIGRATION17 = $SCRIPT_DIR . '../sql/migrate_017_capture_clocks_and_assists.sql';
+my $MIGRATION21 = $SCRIPT_DIR . '../sql/migrate_021_capture_observability.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -326,6 +327,12 @@ unlike($position_branch, qr/lookupPlayer|getPlayerInfo/,
     'position_sample persists by durable player id without live-state lookup');
 like($position_branch, qr/doEvent_KTPPosition\(\s*\$ktp_buffered_player_id/s,
     'position_sample passes the durable id to its ledger');
+my ($position_ledger) = ($source =~
+    /sub doEvent_KTPPosition\s*\{(.*?)\n\}/s);
+like($position_ledger, qr/ktpResolveValidatedProducerEventContext/,
+    'position ledger uses event-time producer context when present');
+like($break_branch, qr/Break context dropped: cap_break action is unavailable/,
+    'break context rejects missing generic cap-break action');
 like($source, qr/\$has_explicit_context\s*=\s*ktpHasExplicitProducerContext.*?elsif \(\$has_explicit_context\)/s,
     'damage silently bypasses validation/warnings for absent sentinel context');
 like($source, qr/\$count % 1000/s,
@@ -366,5 +373,52 @@ like($migration17, qr/idx_frag_producer_context \(producer_match_id, producer_ha
     'frag producer-context analytics path is indexed');
 like($migration17, qr/idx_damage_producer_context \(producer_match_id, producer_half, event_epoch\)/,
     'damage producer-context analytics path is indexed');
+
+my $migration21 = slurp($MIGRATION21);
+like($migration21, qr/CREATE TABLE IF NOT EXISTS ktp_capture_manifests/,
+    'migration 021 creates producer manifest ledger');
+like($migration21, qr/CREATE TABLE IF NOT EXISTS ktp_capture_health/,
+    'migration 021 creates producer-daemon reconciliation ledger');
+for my $column (qw(producer_sequence break_victim_id break_incident_id flag_index flag_name)) {
+    like($migration21, qr/\b\Q$column\E\b/,
+        "migration 021 includes $column observability field");
+}
+like($source, qr/^sub ktpObserveCaptureMarker/m,
+    'daemon tracks globally monotonic producer sequences');
+like($source, qr/^sub doEvent_KTPCaptureHealth/m,
+    'daemon persists per-type capture health reconciliation');
+my ($pending_life) = ($source =~
+    /sub ktpQueuePendingLife\s*\{(.*?)# BEGIN KTP LIFE BOUNDARY VALIDATION/s);
+unlike($pending_life, qr/getPlayerInfo/,
+    'pending life retry never mutates reconnect state');
+like($pending_life, qr/scalar\(keys %g_ktpPendingLife\)|keys %g_ktpPendingLife/,
+    'pending life retry has a process-lifetime bound');
+my ($health_handler) = ($source =~
+    /sub doEvent_KTPCaptureHealth\s*\{(.*?)\n\}/s);
+like($health_handler, qr/ktpDrainPendingLife.*?daemon_received/s,
+    'life retries finalize before health accepted/rejected reconciliation');
+my ($pending_damage) = ($source =~
+    /sub ktpQueuePendingDamage\s*\{(.*?)# BEGIN KTP LIFE BOUNDARY VALIDATION/s);
+unlike($pending_damage, qr/getPlayerInfo/,
+    'pending damage retry never mutates reconnect state');
+like($pending_damage, qr/total >= 4096/,
+    'pending damage retry has an explicit process-lifetime bound');
+like($health_handler, qr/ktpDrainPendingDamage.*?daemon_received/s,
+    'damage retries finalize before health accepted/rejected reconciliation');
+my %healthy = (
+    matchid => 'health-only-TEST', half => 1, event_type => 'life',
+    attempted => 1, enqueued => 1, dropped => 0, emitted => 1,
+    sequence_first => 1, sequence_last => 1, sequence => 2,
+    event_epoch => 1787616774,
+);
+is(ktpValidateCaptureHealthPayload(\%healthy), '',
+    'capture health accepts a normal nonnumeric match id');
+$healthy{matchid} = 'bad match id';
+like(ktpValidateCaptureHealthPayload(\%healthy), qr/matchid/,
+    'capture health rejects malformed match identity');
+$healthy{matchid} = 'health-only-TEST';
+$healthy{attempted} = 'not-a-number';
+like(ktpValidateCaptureHealthPayload(\%healthy), qr/attempted/,
+    'capture health validates counters as numeric fields');
 
 done_testing();

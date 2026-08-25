@@ -2065,6 +2065,9 @@ if ($g_global_chat == 1) {
 # and refresh on a later producer epoch. Failures are never cached.
 %g_ktpProducerContextCache = ();
 %g_ktpCaptureClockWarnings = ();
+%g_ktpCaptureSequences = ();
+%g_ktpPendingLife = ();
+%g_ktpPendingDamage = ();
 
 # KTP: actions seen in the log that resolve to no row in hlstats_Actions.
 # {game/action} => count. Keyed so each distinct action warns once and then
@@ -2829,6 +2832,10 @@ while ($loop = &getLine()) {
 			
 
 			if ($ev_verb eq "triggered") {  # it's either 'triggered' or 'triggered a'
+				if ($ev_obj_a =~ /^(assist|frag_context|damage)$/) {
+					my %sequence_type = (assist => "assist", frag_context => "frag", damage => "damage");
+					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties_hash);
+				}
 				# KTP capture markers can sit in the AMXX/log buffers across a
 				# reconnect. Resolve their stable player ids without getPlayerInfo(),
 				# whose supposedly read-only mode can disconnect a newer userid.
@@ -2840,6 +2847,16 @@ while ($loop = &getLine()) {
 					$ktp_actor_player_id = &ktpResolvePlayerIdentity($ktp_actor_identity);
 					$ktp_victim_player_id = &ktpResolvePlayerIdentity($ktp_victim_identity);
 				}
+				if ($ev_obj_a =~ /^(assist|frag_context|damage)$/ &&
+					(!$ktp_actor_player_id || !$ktp_victim_player_id)) {
+					my %sequence_type = (assist => "assist", frag_context => "frag", damage => "damage");
+					if ($ev_obj_a eq "damage" && $ktp_actor_identity && $ktp_victim_identity) {
+						ktpQueuePendingDamage($ktp_actor_identity, $ktp_victim_identity,
+							$ev_obj_c || "", \%ev_properties_hash);
+					} else {
+						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties_hash, 0);
+					}
+				}
 
 				# Keep the existing generic assist action/rating-neutral path below,
 				# and independently persist a canonical analytics row. Pure identity
@@ -2848,14 +2865,17 @@ while ($loop = &getLine()) {
 					defined($ev_properties_hash{"matchid"}) &&
 					$ev_properties_hash{"matchid"} ne "-") {
 					if ($ktp_actor_player_id && $ktp_victim_player_id) {
-						&doEvent_KTPAssist(
+						my $ktp_assist_status = &doEvent_KTPAssist(
 							$ktp_actor_player_id, $ktp_victim_player_id,
 							$ev_properties_hash{"matchid"},
 							$ev_properties_hash{"half"},
 							$ev_properties_hash{"event_epoch"},
 							$ev_properties_hash{"game_time"},
 							$ev_properties_hash{"assister_position"},
-							$ev_properties_hash{"victim_position"});
+							$ev_properties_hash{"victim_position"},
+							$ev_properties_hash{"sequence"});
+						ktpRejectCaptureMarker("assist", \%ev_properties_hash, 0)
+							if ($ktp_assist_status =~ /(?:dropped|failed)/i);
 					}
 				}
 
@@ -2992,7 +3012,8 @@ while ($loop = &getLine()) {
 								$fc_clock_sql = ", game_time = ".($ev_properties_hash{"game_time"} + 0).
 									", event_epoch = ".int($ev_properties_hash{"event_epoch"}).
 									", producer_match_id = '".quoteSQL($ev_properties_hash{"matchid"})."'".
-									", producer_half = ".int($fc_half);
+									", producer_half = ".int($fc_half).
+									", producer_sequence = ".int($ev_properties_hash{"sequence"} // 0);
 								$fc_time_where =
 									"AND eventTime >= FROM_UNIXTIME(".$fc_event_epoch.") ".
 									"AND eventTime < FROM_UNIXTIME(".($fc_event_epoch + 1).")";
@@ -3044,8 +3065,11 @@ while ($loop = &getLine()) {
 								LIMIT 1
 							");
 							if (defined($fc_rv) && $fc_rv == 0) {
+								ktpRejectCaptureMarker("frag", \%ev_properties_hash, 1);
 								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no $fc_match_description frag for killer=".$ktp_actor_player_id." victim=".$ktp_victim_player_id." weapon=$fc_weapon -- likely a dropped UDP frag line", 1, 1);
 							}
+							ktpRejectCaptureMarker("frag", \%ev_properties_hash, 0)
+								if (!defined($fc_rv));
 							if (defined($fc_rv) && $fc_rv > 0 &&
 								!defined($g_ktpMatchContext{$s_addr})) {
 								ktpRefreshLateHeadshots(
@@ -3074,8 +3098,11 @@ while ($loop = &getLine()) {
 								$ev_properties_hash{"game_time"} // 0,
 								$ev_properties_hash{"event_epoch"},
 								$ev_properties_hash{"matchid"},
-								$ev_properties_hash{"half"}
+								$ev_properties_hash{"half"},
+								$ev_properties_hash{"sequence"}
 							);
+							ktpRejectCaptureMarker("damage", \%ev_properties_hash, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 					}
 				} else {
 
@@ -3445,17 +3472,23 @@ while ($loop = &getLine()) {
 					);
 				}
 			} elsif ($ev_verb eq "triggered") {
+				if ($ev_obj_a =~ /^(life_boundary|cap_break|break_context|position_sample)$/) {
+					my %sequence_type = (life_boundary => "life", cap_break => "break",
+						break_context => "break", position_sample => "position");
+					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties);
+				}
 
 			    # in cs:s players dropp the bomb if they are the only ts
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
+				my $ktp_buffered_identity;
 			    if ($ev_obj_a =~ /^(?:life_boundary|cap_break|break_context|position_sample)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
 				  # still uses the stock rating-neutral generic action handler, with a
 				  # copied exact-live tuple selected by durable id.
-				  my $ktp_buffered_identity = &ktpParsePlayerIdentity($ev_player);
+				  $ktp_buffered_identity = &ktpParsePlayerIdentity($ev_player);
 				  $ktp_buffered_player_id = &ktpResolvePlayerIdentity($ktp_buffered_identity);
 				  $playerinfo = ($ev_obj_a eq "cap_break")
 					? &ktpIdentityForGenericAction($ktp_buffered_identity, $ktp_buffered_player_id)
@@ -3470,6 +3503,16 @@ while ($loop = &getLine()) {
 				# player cannot be resolved. That leaves an explicit BAD DATA/drop
 				# diagnostic instead of silently falling through as a stock action.
 				$ev_type = 611 if ($ev_obj_a eq "life_boundary");
+				if ($ev_obj_a =~ /^(life_boundary|cap_break|break_context|position_sample)$/ &&
+					!$ktp_buffered_player_id) {
+					my %sequence_type = (life_boundary => "life", cap_break => "break",
+						break_context => "break", position_sample => "position");
+					if ($ev_obj_a eq "life_boundary" && $ktp_buffered_identity) {
+						ktpQueuePendingLife($ktp_buffered_identity, \%ev_properties);
+					} else {
+						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties, 0);
+					}
+				}
 				if ($playerinfo) {
 					if ($ev_obj_a eq "life_boundary") {
 						# KTP: low-volume, durable life start/end marker from
@@ -3492,10 +3535,13 @@ while ($loop = &getLine()) {
 								$ev_properties{"slot"},
 								$ev_properties{"round_live"},
 								$ev_properties{"game_time"},
-								$ev_properties{"event_epoch"}
+								$ev_properties{"event_epoch"},
+								$ev_properties{"sequence"}
 							);
+							ktpRejectCaptureMarker("life", \%ev_properties, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						} else {
-							$ev_status = "Life boundary dropped: unresolved player " .
+							$ev_status = "Life boundary queued: unresolved player " .
 								$playerinfo->{"uniqueid"};
 						}
 					} elsif ($ev_obj_a eq "break_context") {
@@ -3528,6 +3574,9 @@ while ($loop = &getLine()) {
 								? ($bc_raw_remaining + 0) : "NULL";
 							my $bc_capout     = (defined($bc_raw_capout) && $bc_raw_capout =~ /^[01]$/)
 								? ($bc_raw_capout + 0) : "NULL";
+							my $bc_victim_identity = ktpParsePlayerIdentity($ev_properties{"victim"});
+							my $bc_victim_id = ktpResolvePlayerIdentity($bc_victim_identity);
+							my $bc_victim_sql = $bc_victim_id ? int($bc_victim_id) : "NULL";
 
 							# A present-but-unparseable value is a producer/transport fault. Silence
 							# here would store it as NULL and look identical to an absent marker.
@@ -3554,7 +3603,16 @@ while ($loop = &getLine()) {
 								SET contester_count = ".$bc_contesters.",
 									time_remaining = ".$bc_remaining.",
 									is_capout = ".$bc_capout.",
-									break_context_recorded = 1
+									break_context_recorded = 1,
+									producer_match_id = '".quoteSQL($ev_properties{"matchid"} // "")."',
+									producer_half = ".int($ev_properties{"half"} // 0).",
+									producer_sequence = ".int($ev_properties{"sequence"} // 0).",
+									producer_event_epoch = ".int($ev_properties{"event_epoch"} // 0).",
+									producer_game_time = ".($ev_properties{"game_time"} // 0).",
+									flag_index = ".int($ev_properties{"flag_index"} // 0).",
+									flag_name = '".quoteSQL($ev_properties{"flag"} // "")."',
+									break_victim_id = $bc_victim_sql,
+									break_incident_id = ".int($ev_properties{"sequence"} // 0)."
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND playerId = ".int($ktp_buffered_player_id)."
 								AND actionId = ".int($capBreakActionId)."
@@ -3564,9 +3622,15 @@ while ($loop = &getLine()) {
 								LIMIT 1
 							");
 							if (defined($bc_rv) && $bc_rv == 0) {
+								ktpRejectCaptureMarker("break", \%ev_properties, 1);
 								&printEvent("KTP_NO_ROW_MATCHED", "break_context: no unclaimed cap_break within 60s for player=".$ktp_buffered_player_id." -- likely a dropped UDP cap_break line", 1, 1);
 							}
+							ktpRejectCaptureMarker("break", \%ev_properties, 0)
+								if (!defined($bc_rv));
 							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
+						} elsif ($ktp_buffered_player_id) {
+							ktpRejectCaptureMarker("break", \%ev_properties, 1);
+							$ev_status = "Break context dropped: cap_break action is unavailable";
 						}
 					} elsif ($ev_obj_a eq "position_sample") {
 						# KTP: periodic roster-position sample from
@@ -3584,8 +3648,14 @@ while ($loop = &getLine()) {
 								$ktp_buffered_player_id,
 								$ev_properties{"team"} // 0,
 								$ev_properties{"position"} // "",
-								$ev_properties{"game_time"} // 0
+								$ev_properties{"game_time"} // 0,
+								$ev_properties{"event_epoch"},
+								$ev_properties{"matchid"},
+								$ev_properties{"half"},
+								$ev_properties{"sequence"}
 							);
+							ktpRejectCaptureMarker("position", \%ev_properties, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
 
@@ -4049,6 +4119,18 @@ while ($loop = &getLine()) {
 				$g_ktpMatchContext{$s_addr}{round_live} = 1;
 				&printEvent("KTP_DEBUG", "KTP_ROUND_LIVE: match=$g_ktpMatchContext{$s_addr}{match_id}", 1);
 			}
+		} elsif ($s_output =~ /^KTP_CAPTURE_MANIFEST\s+(.*)$/) {
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 612;
+			ktpObserveCaptureMarker("manifest", \%ev_properties);
+			$ev_status = &doEvent_KTPCaptureManifest(\%ev_properties);
+		} elsif ($s_output =~ /^KTP_CAPTURE_HEALTH\s+(.*)$/) {
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 613;
+			ktpObserveCaptureMarker("health", \%ev_properties);
+			$ev_status = &doEvent_KTPCaptureHealth(\%ev_properties);
 		} elsif ($s_output =~ /^KTP_FLAG_POSITION\s+(.*)$/) {
 			# KTP: static per-flag position from ktp_stats_capture.inc,
 			# fired once per map load (controlpoints_init) -- a bare marker,
@@ -4058,13 +4140,20 @@ while ($loop = &getLine()) {
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 607;  # KTP event type
+			ktpObserveCaptureMarker("flag_position", \%ev_properties);
 			$ev_status = &doEvent_KTPFlagPosition(
 				$ev_properties{"map"},
 				$ev_properties{"flag_index"},
 				$ev_properties{"flag_name"},
 				$ev_properties{"x"},
-				$ev_properties{"y"}
+				$ev_properties{"y"},
+				$ev_properties{"matchid"},
+				$ev_properties{"half"},
+				$ev_properties{"sequence"},
+				$ev_properties{"event_epoch"}
 			);
+			ktpRejectCaptureMarker("flag_position", \%ev_properties, 0)
+				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_FLAG_STATE\s+(.*)$/) {
 			# KTP: compact objective-ownership timeline. The plugin emits one
 			# baseline per flag when match context becomes available, then only
@@ -4073,14 +4162,21 @@ while ($loop = &getLine()) {
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 610;  # KTP flag-state marker
+			ktpObserveCaptureMarker("flag_state", \%ev_properties);
 			$ev_status = &doEvent_KTPFlagState(
 				$ev_properties{"map"},
 				$ev_properties{"flag_index"},
 				$ev_properties{"flag_name"},
 				$ev_properties{"owner"},
 				$ev_properties{"initial"},
-				$ev_properties{"game_time"}
+				$ev_properties{"game_time"},
+				$ev_properties{"matchid"},
+				$ev_properties{"half"},
+				$ev_properties{"sequence"},
+				$ev_properties{"event_epoch"}
 			);
+			ktpRejectCaptureMarker("flag_state", \%ev_properties, 0)
+				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -4585,6 +4681,124 @@ sub ktpIdentityForGenericAction
 }
 # END KTP SIDE-EFFECT-FREE PLAYER IDENTITY
 
+# A buffered life marker can overtake the ordinary connect/kill line that
+# creates its durable player row. Retain only the parsed immutable identity and
+# producer payload, then retry before health reconciliation. Never call
+# getPlayerInfo here: reconnect state must remain side-effect-free.
+sub ktpQueuePendingLife
+{
+	my ($identity, $properties) = @_;
+	return 0 if (!defined($identity) || !defined($properties));
+	my $matchid = $properties->{matchid};
+	my $half = $properties->{half};
+	return 0 if (!defined($matchid) || !defined($half));
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	my $total = 0;
+	$total += scalar(@{$g_ktpPendingLife{$_}}) for keys %g_ktpPendingLife;
+	if ($total >= 1024) {
+		ktpRejectCaptureMarker("life", $properties, 0);
+		&printEvent("KTP_LIFE_DROP", "Life retry queue full; match=$matchid half=$half", 1, 1);
+		return 0;
+	}
+	push @{$g_ktpPendingLife{$key}}, {
+		identity => { %{$identity} }, properties => { %{$properties} }
+	};
+	return 1;
+}
+
+sub ktpDrainPendingLife
+{
+	my ($matchid, $half, $final) = @_;
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	return 0 if (!defined($g_ktpPendingLife{$key}));
+	my @remaining;
+	my $accepted = 0;
+	for my $pending (@{$g_ktpPendingLife{$key}}) {
+		my $identity = $pending->{identity};
+		my $p = $pending->{properties};
+		my $player_id = ktpResolvePlayerIdentity($identity);
+		if ($player_id) {
+			my $status = doEvent_KTPLifeBoundary(
+				$player_id, $identity->{userid}, $p->{matchid}, $p->{half},
+				$p->{kind}, $p->{reason}, $p->{team}, $p->{class}, $p->{slot},
+				$p->{round_live}, $p->{game_time}, $p->{event_epoch}, $p->{sequence});
+			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
+				ktpRejectCaptureMarker("life", $p, 0);
+			} else {
+				$accepted++;
+			}
+		} elsif ($final) {
+			ktpRejectCaptureMarker("life", $p, 0);
+			&printEvent("KTP_LIFE_DROP",
+				"Life boundary unresolved at health finalization: ".$identity->{uniqueid},
+				1, 1);
+		} else {
+			push @remaining, $pending;
+		}
+	}
+	if (@remaining) {
+		$g_ktpPendingLife{$key} = \@remaining;
+	} else {
+		delete $g_ktpPendingLife{$key};
+	}
+	return $accepted;
+}
+
+# Damage can race the ordinary identity-creation log in exactly the same way as
+# a context-live life baseline. Keep immutable parsed identities and payloads,
+# then retry at end-of-half health reconciliation without mutating reconnect
+# state. The queue is bounded independently because damage is higher volume.
+sub ktpQueuePendingDamage
+{
+	my ($attacker, $victim, $weapon, $properties) = @_;
+	return 0 if (!defined($attacker) || !defined($victim) || !defined($properties));
+	my ($matchid, $half) = ($properties->{matchid}, $properties->{half});
+	return 0 if (!defined($matchid) || !defined($half));
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	my $total = 0;
+	$total += scalar(@{$g_ktpPendingDamage{$_}}) for keys %g_ktpPendingDamage;
+	if ($total >= 4096) {
+		ktpRejectCaptureMarker("damage", $properties, 0);
+		&printEvent("KTP_DAMAGE_DROP", "Damage retry queue full; match=$matchid half=$half", 1, 1);
+		return 0;
+	}
+	push @{$g_ktpPendingDamage{$key}}, {
+		attacker => { %{$attacker} }, victim => { %{$victim} },
+		weapon => $weapon, properties => { %{$properties} }
+	};
+	return 1;
+}
+
+sub ktpDrainPendingDamage
+{
+	my ($matchid, $half) = @_;
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	return 0 if (!defined($g_ktpPendingDamage{$key}));
+	my $accepted = 0;
+	for my $pending (@{$g_ktpPendingDamage{$key}}) {
+		my $p = $pending->{properties};
+		my $attacker_id = ktpResolvePlayerIdentity($pending->{attacker});
+		my $victim_id = ktpResolvePlayerIdentity($pending->{victim});
+		if ($attacker_id && $victim_id) {
+			my $status = doEvent_KTPDamage(
+				$attacker_id, $victim_id, $pending->{weapon},
+				$p->{damage} // 0, $p->{damage_capped} // 0, $p->{hitplace} // 0,
+				$p->{game_time} // 0, $p->{event_epoch}, $p->{matchid}, $p->{half},
+				$p->{sequence});
+			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
+				ktpRejectCaptureMarker("damage", $p, 0);
+			} else {
+				$accepted++;
+			}
+		} else {
+			ktpRejectCaptureMarker("damage", $p, 0);
+			&printEvent("KTP_DAMAGE_DROP", "Damage identities unresolved at health finalization", 1, 1);
+		}
+	}
+	delete $g_ktpPendingDamage{$key};
+	return $accepted;
+}
+
 # BEGIN KTP LIFE BOUNDARY VALIDATION
 # Keep this validation pure: scripts/selftest-life-boundary.pl extracts and
 # executes the shipped implementation directly, so the test cannot drift into
@@ -4776,12 +4990,191 @@ sub ktpWarnProducerClock
 		"$marker authoritative clocks suppressed ($count occurrences): $error; preserving legacy facts",
 		1, 1);
 }
+
+sub ktpObserveCaptureMarker
+{
+	my ($marker, $properties) = @_;
+	return if (!defined($properties) || ref($properties) ne "HASH");
+	my $matchid = $properties->{"matchid"};
+	my $half = $properties->{"half"};
+	my $sequence = $properties->{"sequence"};
+	return if (!defined($matchid) || $matchid eq "" || $matchid eq "-" ||
+		!defined($half) || $half !~ /^\d+$/ || $half < 1 || $half > 255 ||
+		!defined($sequence) || $sequence !~ /^\d+$/ || $sequence < 1);
+
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	%g_ktpCaptureSequences = ()
+		if ($marker eq "manifest" && scalar(keys %g_ktpCaptureSequences) >= 512 &&
+			!defined($g_ktpCaptureSequences{$key}));
+	if ($marker eq "manifest" || !defined($g_ktpCaptureSequences{$key})) {
+		$g_ktpCaptureSequences{$key} = {
+			first => undef, last => undef, gaps => 0, duplicate_or_reordered => 0,
+			received => 0, types => {}, rejected => {}, correlation_failures => {}
+		};
+	}
+	my $state = $g_ktpCaptureSequences{$key};
+	my $seq = int($sequence);
+	if (!defined($state->{first})) {
+		$state->{first} = $seq;
+		$state->{gaps} += $seq - 1 if ($seq > 1);
+		$state->{last} = $seq;
+	} elsif ($seq > $state->{last}) {
+		$state->{gaps} += $seq - $state->{last} - 1;
+		$state->{last} = $seq;
+	} else {
+		$state->{duplicate_or_reordered}++;
+	}
+
+	if ($marker ne "manifest" && $marker ne "health") {
+		$state->{received}++;
+		$state->{types}{$marker} = ($state->{types}{$marker} || 0) + 1;
+	}
+}
+
+sub ktpRejectCaptureMarker
+{
+	my ($marker, $properties, $correlation_failure) = @_;
+	return if (!defined($properties) || ref($properties) ne "HASH");
+	my ($matchid, $half) = ($properties->{matchid}, $properties->{half});
+	return if (!defined($matchid) || $matchid eq "" || $matchid eq "-" ||
+		!defined($half) || $half !~ /^\d+$/);
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	return if (!defined($g_ktpCaptureSequences{$key}));
+	my $state = $g_ktpCaptureSequences{$key};
+	$state->{rejected}{$marker} = ($state->{rejected}{$marker} || 0) + 1;
+	if ($correlation_failure) {
+		$state->{correlation_failures}{$marker} =
+			($state->{correlation_failures}{$marker} || 0) + 1;
+	}
+}
+
+sub doEvent_KTPCaptureManifest
+{
+	my ($p) = @_;
+	for my $required (qw(matchid half map producer producer_version schema
+		capabilities position_interval buffer_entries life_buffer_entries sequence event_epoch)) {
+		return "Capture manifest dropped: missing $required"
+			if (!defined($p->{$required}) || $p->{$required} eq "");
+	}
+	return "Capture manifest dropped: invalid numeric field"
+		if ($p->{half} !~ /^\d+$/ || $p->{schema} !~ /^\d+$/ ||
+			$p->{position_interval} !~ /^\d+(?:\.\d+)?$/ ||
+			$p->{buffer_entries} !~ /^\d+$/ || $p->{life_buffer_entries} !~ /^\d+$/ ||
+			$p->{sequence} !~ /^\d+$/ || $p->{event_epoch} !~ /^\d+$/);
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	delete $g_ktpPendingLife{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
+	delete $g_ktpPendingDamage{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_capture_manifests
+			(server_id, match_id, half, map_name, producer, producer_version,
+			 schema_version, capabilities, position_interval, buffer_entries,
+			 life_buffer_entries, producer_sequence, event_epoch, event_time)
+		VALUES (".int($server_id).", '".quoteSQL($p->{matchid})."', ".int($p->{half}).",
+			'".quoteSQL($p->{map})."', '".quoteSQL($p->{producer})."',
+			'".quoteSQL($p->{producer_version})."', ".int($p->{schema}).",
+			'".quoteSQL($p->{capabilities})."', ".($p->{position_interval} + 0).",
+			".int($p->{buffer_entries}).", ".int($p->{life_buffer_entries}).",
+			".int($p->{sequence}).", ".int($p->{event_epoch}).",
+			FROM_UNIXTIME(".int($p->{event_epoch})."))
+		ON DUPLICATE KEY UPDATE map_name=VALUES(map_name),
+			producer_version=VALUES(producer_version), schema_version=VALUES(schema_version),
+			capabilities=VALUES(capabilities), position_interval=VALUES(position_interval),
+			buffer_entries=VALUES(buffer_entries), life_buffer_entries=VALUES(life_buffer_entries),
+			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
+			event_time=VALUES(event_time)
+	");
+	return defined($rv) ? "Capture manifest recorded: match=$p->{matchid} half=$p->{half}" :
+		"Capture manifest SQL failed";
+}
+
+# BEGIN KTP CAPTURE HEALTH VALIDATION
+sub ktpValidateCaptureHealthPayload
+{
+	my ($p) = @_;
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position);
+	return "invalid matchid"
+		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
+			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
+	return "invalid event type"
+		if (!defined($p->{event_type}) || !$allowed{$p->{event_type}});
+	for my $required (qw(half attempted enqueued dropped emitted
+		sequence_first sequence_last sequence event_epoch)) {
+		return "invalid $required"
+			if (!defined($p->{$required}) || $p->{$required} !~ /^\d+$/);
+	}
+	return "invalid half" if ($p->{half} < 1 || $p->{half} > 255);
+	return "invalid sequence" if ($p->{sequence} < 1);
+	return "invalid event_epoch" if ($p->{event_epoch} < 1);
+	return "";
+}
+# END KTP CAPTURE HEALTH VALIDATION
+
+sub doEvent_KTPCaptureHealth
+{
+	my ($p) = @_;
+	my $validation_error = ktpValidateCaptureHealthPayload($p);
+	return "Capture health dropped: $validation_error"
+		if ($validation_error ne "");
+	ktpDrainPendingLife($p->{matchid}, $p->{half}, 1)
+		if ($p->{event_type} eq "life");
+	ktpDrainPendingDamage($p->{matchid}, $p->{half})
+		if ($p->{event_type} eq "damage");
+	my $key = join("\x1e", $s_addr, $p->{matchid}, int($p->{half}));
+	my $state = $g_ktpCaptureSequences{$key} || {};
+	my $daemon_received = (($state->{types} || {})->{$p->{event_type}} || 0);
+	my $daemon_rejected = (($state->{rejected} || {})->{$p->{event_type}} || 0);
+	my $daemon_accepted = $daemon_received - $daemon_rejected;
+	$daemon_accepted = 0 if ($daemon_accepted < 0);
+	my $correlation_failures =
+		(($state->{correlation_failures} || {})->{$p->{event_type}} || 0);
+	my $first_sql = defined($state->{first}) ? int($state->{first}) : "NULL";
+	my $last_sql = defined($state->{last}) ? int($state->{last}) : "NULL";
+	my $gaps = $state->{gaps} || 0;
+	my $duplicates = $state->{duplicate_or_reordered} || 0;
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_capture_health
+			(server_id, match_id, half, event_type, attempted, enqueued, dropped,
+			 emitted, daemon_received, daemon_accepted, daemon_rejected,
+			 correlation_failure_count, sequence_first, sequence_last,
+			 daemon_sequence_first, daemon_sequence_last, sequence_gap_count,
+			 duplicate_or_reordered_count, producer_sequence, event_epoch, event_time)
+		VALUES (".int($server_id).", '".quoteSQL($p->{matchid})."', ".int($p->{half}).",
+			'".quoteSQL($p->{event_type})."', ".int($p->{attempted}).",
+			".int($p->{enqueued}).", ".int($p->{dropped}).", ".int($p->{emitted}).",
+			".int($daemon_received).", ".int($daemon_accepted).",
+			".int($daemon_rejected).", ".int($correlation_failures).",
+			".int($p->{sequence_first}).",
+			".int($p->{sequence_last}).", $first_sql, $last_sql, ".int($gaps).",
+			".int($duplicates).", ".int($p->{sequence}).", ".int($p->{event_epoch}).",
+			FROM_UNIXTIME(".int($p->{event_epoch})."))
+		ON DUPLICATE KEY UPDATE attempted=VALUES(attempted), enqueued=VALUES(enqueued),
+			dropped=VALUES(dropped), emitted=VALUES(emitted),
+			daemon_received=VALUES(daemon_received), daemon_accepted=VALUES(daemon_accepted),
+			daemon_rejected=VALUES(daemon_rejected),
+			correlation_failure_count=VALUES(correlation_failure_count),
+			sequence_first=VALUES(sequence_first),
+			sequence_last=VALUES(sequence_last), daemon_sequence_first=VALUES(daemon_sequence_first),
+			daemon_sequence_last=VALUES(daemon_sequence_last),
+			sequence_gap_count=VALUES(sequence_gap_count),
+			duplicate_or_reordered_count=VALUES(duplicate_or_reordered_count),
+			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
+			event_time=VALUES(event_time)
+	");
+	delete $g_ktpCaptureSequences{$key}
+		if ($p->{event_type} eq "flag_position" && defined($rv));
+	return defined($rv) ? "Capture health recorded: match=$p->{matchid} half=$p->{half} type=$p->{event_type}" :
+		"Capture health SQL failed";
+}
 # END KTP LIFE BOUNDARY CONTEXT
 
 sub doEvent_KTPLifeBoundary
 {
 	my ($player_id, $engine_userid, $matchid, $producer_half, $kind, $reason, $team,
-		$player_class, $player_slot, $round_live, $game_time, $event_epoch) = @_;
+		$player_class, $player_slot, $round_live, $game_time, $event_epoch,
+		$producer_sequence) = @_;
 
 	my $validation_error = ktpValidateLifeBoundaryPayload(
 		$matchid, $producer_half, $kind, $reason, $team, $player_class, $player_slot,
@@ -4826,13 +5219,14 @@ sub doEvent_KTPLifeBoundary
 		INSERT IGNORE INTO ktp_life_events
 			(server_id, match_id, half, map_name, player_id, player_slot,
 			 engine_userid, boundary_kind, reason, team, player_class,
-			 round_live, game_time, event_epoch, event_time)
+			 round_live, game_time, event_epoch, producer_sequence, event_time)
 		VALUES
 			(".int($server_id).", '".&quoteSQL($matchid)."', ".int($half).",
 			 '".&quoteSQL($map)."', ".int($player_id).", $slot_sql,
 			 $userid_sql, '".&quoteSQL($kind)."', '".&quoteSQL($reason)."',
 			 ".int($team).", $class_sql, $round_live_sql,
-			 $normalized_game_time, $event_epoch, FROM_UNIXTIME($event_epoch))
+			 $normalized_game_time, $event_epoch, ".int($producer_sequence // 0).",
+			 FROM_UNIXTIME($event_epoch))
 	");
 
 	return "Life boundary SQL insert failed"
@@ -4845,7 +5239,7 @@ sub doEvent_KTPLifeBoundary
 sub doEvent_KTPAssist
 {
 	my ($assister_id, $victim_id, $matchid, $producer_half, $event_epoch,
-		$game_time, $assister_position, $victim_position) = @_;
+		$game_time, $assister_position, $victim_position, $producer_sequence) = @_;
 
 	my $validation_error = ktpValidateProducerEventClock(
 		$matchid, $producer_half, $game_time, $event_epoch);
@@ -4884,12 +5278,13 @@ sub doEvent_KTPAssist
 			(server_id, match_id, half, map_name, assister_id, victim_id,
 			 assister_pos_x, assister_pos_y, assister_pos_z,
 			 victim_pos_x, victim_pos_y, victim_pos_z,
-			 game_time, event_epoch, event_time)
+			 game_time, event_epoch, producer_sequence, event_time)
 		VALUES
 			(".int($server_id).", '".&quoteSQL($matchid)."', ".int($half).",
 			 '".&quoteSQL($map)."', ".int($assister_id).", ".int($victim_id).",
 			 $apos_x, $apos_y, $apos_z, $vpos_x, $vpos_y, $vpos_z,
-			 $normalized_game_time, $event_epoch, FROM_UNIXTIME($event_epoch))
+			 $normalized_game_time, $event_epoch, ".int($producer_sequence // 0).",
+			 FROM_UNIXTIME($event_epoch))
 	");
 
 	return "Canonical assist SQL insert failed" if (!defined($rv));
@@ -4909,7 +5304,8 @@ sub doEvent_KTPDamage
 	# this is a standalone KTP table. Same shape as doEvent_KTPMatchStart:
 	# direct execNonQuery, not a queue.
 	my ($attacker_id, $victim_id, $weapon, $damage, $damage_capped, $hitplace,
-		$game_time, $event_epoch, $producer_matchid, $producer_half) = @_;
+		$game_time, $event_epoch, $producer_matchid, $producer_half,
+		$producer_sequence) = @_;
 
 	return 0 if (!defined($attacker_id) || !defined($victim_id));
 
@@ -4953,28 +5349,30 @@ sub doEvent_KTPDamage
 		ktpWarnProducerClock("damage", $producer_context_error);
 	}
 
-	&execNonQuery("
+	my $rv = &execNonQuery("
 		INSERT INTO ktp_damage_events
 			(server_id, match_id, half, attacker_id, victim_id, weapon,
 			 damage, damage_capped, hitplace, producer_match_id, producer_half,
-			 game_time, event_epoch, event_time)
+			 producer_sequence, game_time, event_epoch, event_time)
 		VALUES
 			($server_id, $match_id_sql, $half, $attacker_id, $victim_id,
 			 '".quoteSQL($weapon)."', ".int($damage).", ".int($damage_capped).",
 			 ".int($hitplace).", $producer_match_sql, $producer_half_sql,
+			 ".int($producer_sequence // 0).",
 			 ".($game_time + 0).", $event_epoch_sql, $event_time_sql)
 	");
 
+	return "Damage SQL failed" if (!defined($rv));
 	return "Damage logged: attacker=$attacker_id victim=$victim_id weapon=$weapon damage=$damage capped=$damage_capped";
 }
 
 sub doEvent_KTPPosition
 {
-	# KTP: periodic roster-position sample. Same match_id/round_live gating
-	# recordEvent() and doEvent_KTPDamage use -- only tag with match_id while
-	# the round is live, so warmup/freeze-time samples land with match_id
-	# NULL rather than attributed to a match that isn't actually running.
-	my ($player_id, $team, $position, $game_time) = @_;
+	# KTP: periodic roster-position sample. New producers carry authoritative
+	# event-time context so buffered or reordered delivery cannot move a sample
+	# into another half. Legacy producers retain receipt-time attribution.
+	my ($player_id, $team, $position, $game_time, $event_epoch,
+		$producer_matchid, $producer_half, $producer_sequence) = @_;
 
 	return 0 if (!defined($player_id));
 
@@ -4982,7 +5380,17 @@ sub doEvent_KTPPosition
 
 	my $match_id_sql = "NULL";
 	my $half = 0;
-	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+	if (ktpHasExplicitProducerContext($producer_matchid)) {
+		my ($validated_half, $validated_map, $clock_error, $clock_source) =
+			ktpResolveValidatedProducerEventContext(
+				$producer_matchid, $producer_half, $game_time, $event_epoch);
+		if ($clock_error ne "") {
+			ktpWarnProducerClock("position", $clock_error);
+			return "Position sample dropped: $clock_error";
+		}
+		$match_id_sql = "'".quoteSQL($producer_matchid)."'";
+		$half = $validated_half;
+	} elsif (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
 		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
 			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
 			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
@@ -4999,15 +5407,17 @@ sub doEvent_KTPPosition
 	}
 	my ($x, $y, $z) = ($1, $2, $3);
 
-	&execNonQuery("
+	my $rv = &execNonQuery("
 		INSERT INTO ktp_position_samples
 			(server_id, match_id, half, player_id, team, pos_x, pos_y, pos_z,
-			 game_time, event_time)
+			 game_time, producer_sequence, event_epoch, event_time)
 		VALUES
 			($server_id, $match_id_sql, $half, $player_id, ".int($team).",
-			 $x, $y, $z, ".($game_time + 0).", NOW())
+			 $x, $y, $z, ".($game_time + 0).", ".int($producer_sequence // 0).",
+			 ".int($event_epoch // 0).", FROM_UNIXTIME(".int($event_epoch // 0)."))
 	");
 
+	return "Position sample SQL failed" if (!defined($rv));
 	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
 }
 
@@ -5050,31 +5460,42 @@ sub doEvent_KTPFlagPosition
 	# KTP: static per-flag position, upserted into ktp_flag_positions.
 	# Fires once per map load (controlpoints_init), including warmup and
 	# halftime reloads -- harmless, this is idempotent on the unique key.
-	my ($map, $flag_index, $flag_name, $x, $y) = @_;
+	my ($map, $flag_index, $flag_name, $x, $y, $matchid, $half,
+		$producer_sequence, $event_epoch) = @_;
 
 	return 0 if (!defined($map) || $map eq "" || !defined($flag_index));
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
-	&execNonQuery("
+	my $rv = &execNonQuery("
 		INSERT INTO ktp_flag_positions
-			(server_id, map_name, flag_index, flag_name, origin_x, origin_y)
+			(server_id, map_name, flag_index, flag_name, origin_x, origin_y,
+			 last_match_id, last_half, last_producer_sequence, last_event_epoch)
 		VALUES
 			($server_id, '".quoteSQL($map)."', ".int($flag_index).",
-			 '".quoteSQL($flag_name)."', ".int($x // 0).", ".int($y // 0)."
+			 '".quoteSQL($flag_name)."', ".int($x // 0).", ".int($y // 0).",
+			 ".(ktpHasExplicitProducerContext($matchid) ? "'".quoteSQL($matchid)."'" : "NULL").",
+			 ".int($half // 0).", ".int($producer_sequence // 0).",
+			 ".int($event_epoch // 0)."
 		)
 		ON DUPLICATE KEY UPDATE
 			flag_name = '".quoteSQL($flag_name)."',
 			origin_x = ".int($x // 0).",
-			origin_y = ".int($y // 0)."
+			origin_y = ".int($y // 0).",
+			last_match_id = ".(ktpHasExplicitProducerContext($matchid) ? "'".quoteSQL($matchid)."'" : "NULL").",
+			last_half = ".int($half // 0).",
+			last_producer_sequence = ".int($producer_sequence // 0).",
+			last_event_epoch = ".int($event_epoch // 0)."
 	");
 
+	return "Flag position SQL failed" if (!defined($rv));
 	return "Flag position recorded: map=$map flag_index=$flag_index name=$flag_name x=$x y=$y";
 }
 
 sub doEvent_KTPFlagState
 {
-	my ($map, $flag_index, $flag_name, $owner, $initial, $game_time) = @_;
+	my ($map, $flag_index, $flag_name, $owner, $initial, $game_time,
+		$explicit_matchid, $explicit_half, $producer_sequence, $event_epoch) = @_;
 
 	return "Flag state dropped: missing map or flag index"
 		if (!defined($map) || $map eq "" || !defined($flag_index));
@@ -5098,16 +5519,19 @@ sub doEvent_KTPFlagState
 	my $initial_sql = $initial ? 1 : 0;
 	my $game_time_sql = defined($game_time) ? ($game_time + 0) : 0;
 
-	&execNonQuery("
+	my $rv = &execNonQuery("
 		INSERT IGNORE INTO ktp_flag_state_events
 			(server_id, match_id, half, map_name, flag_index, flag_name,
-			 owner_team, is_initial, game_time, event_time)
+			 owner_team, is_initial, game_time, producer_sequence, event_epoch, event_time)
 		VALUES
 			($server_id, '".quoteSQL($match_id)."', ".int($half).",
 			 '".quoteSQL($map)."', ".int($flag_index).", $flag_sql,
-			 ".int($owner).", $initial_sql, $game_time_sql, NOW())
+			 ".int($owner).", $initial_sql, $game_time_sql,
+			 ".int($producer_sequence // 0).", ".int($event_epoch // 0).",
+			 FROM_UNIXTIME(".int($event_epoch // 0)."))
 	");
 
+	return "Flag state SQL failed" if (!defined($rv));
 	return "Flag state logged: match=$match_id half=$half flag=$flag_index owner=$owner initial=$initial_sql";
 }
 
