@@ -2067,6 +2067,7 @@ if ($g_global_chat == 1) {
 %g_ktpCaptureClockWarnings = ();
 %g_ktpCaptureSequences = ();
 %g_ktpPendingLife = ();
+%g_ktpPendingDamage = ();
 
 # KTP: actions seen in the log that resolve to no row in hlstats_Actions.
 # {game/action} => count. Keyed so each distinct action warns once and then
@@ -2849,7 +2850,12 @@ while ($loop = &getLine()) {
 				if ($ev_obj_a =~ /^(assist|frag_context|damage)$/ &&
 					(!$ktp_actor_player_id || !$ktp_victim_player_id)) {
 					my %sequence_type = (assist => "assist", frag_context => "frag", damage => "damage");
-					ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties_hash, 0);
+					if ($ev_obj_a eq "damage" && $ktp_actor_identity && $ktp_victim_identity) {
+						ktpQueuePendingDamage($ktp_actor_identity, $ktp_victim_identity,
+							$ev_obj_c || "", \%ev_properties_hash);
+					} else {
+						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties_hash, 0);
+					}
 				}
 
 				# Keep the existing generic assist action/rating-neutral path below,
@@ -4707,6 +4713,61 @@ sub ktpDrainPendingLife
 	return $accepted;
 }
 
+# Damage can race the ordinary identity-creation log in exactly the same way as
+# a context-live life baseline. Keep immutable parsed identities and payloads,
+# then retry at end-of-half health reconciliation without mutating reconnect
+# state. The queue is bounded independently because damage is higher volume.
+sub ktpQueuePendingDamage
+{
+	my ($attacker, $victim, $weapon, $properties) = @_;
+	return 0 if (!defined($attacker) || !defined($victim) || !defined($properties));
+	my ($matchid, $half) = ($properties->{matchid}, $properties->{half});
+	return 0 if (!defined($matchid) || !defined($half));
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	my $total = 0;
+	$total += scalar(@{$g_ktpPendingDamage{$_}}) for keys %g_ktpPendingDamage;
+	if ($total >= 4096) {
+		ktpRejectCaptureMarker("damage", $properties, 0);
+		&printEvent("KTP_DAMAGE_DROP", "Damage retry queue full; match=$matchid half=$half", 1, 1);
+		return 0;
+	}
+	push @{$g_ktpPendingDamage{$key}}, {
+		attacker => { %{$attacker} }, victim => { %{$victim} },
+		weapon => $weapon, properties => { %{$properties} }
+	};
+	return 1;
+}
+
+sub ktpDrainPendingDamage
+{
+	my ($matchid, $half) = @_;
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	return 0 if (!defined($g_ktpPendingDamage{$key}));
+	my $accepted = 0;
+	for my $pending (@{$g_ktpPendingDamage{$key}}) {
+		my $p = $pending->{properties};
+		my $attacker_id = ktpResolvePlayerIdentity($pending->{attacker});
+		my $victim_id = ktpResolvePlayerIdentity($pending->{victim});
+		if ($attacker_id && $victim_id) {
+			my $status = doEvent_KTPDamage(
+				$attacker_id, $victim_id, $pending->{weapon},
+				$p->{damage} // 0, $p->{damage_capped} // 0, $p->{hitplace} // 0,
+				$p->{game_time} // 0, $p->{event_epoch}, $p->{matchid}, $p->{half},
+				$p->{sequence});
+			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
+				ktpRejectCaptureMarker("damage", $p, 0);
+			} else {
+				$accepted++;
+			}
+		} else {
+			ktpRejectCaptureMarker("damage", $p, 0);
+			&printEvent("KTP_DAMAGE_DROP", "Damage identities unresolved at health finalization", 1, 1);
+		}
+	}
+	delete $g_ktpPendingDamage{$key};
+	return $accepted;
+}
+
 # BEGIN KTP LIFE BOUNDARY VALIDATION
 # Keep this validation pure: scripts/selftest-life-boundary.pl extracts and
 # executes the shipped implementation directly, so the test cannot drift into
@@ -4972,6 +5033,7 @@ sub doEvent_KTPCaptureManifest
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
 	delete $g_ktpPendingLife{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
+	delete $g_ktpPendingDamage{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_capture_manifests
 			(server_id, match_id, half, map_name, producer, producer_version,
@@ -5025,6 +5087,8 @@ sub doEvent_KTPCaptureHealth
 		if ($validation_error ne "");
 	ktpDrainPendingLife($p->{matchid}, $p->{half}, 1)
 		if ($p->{event_type} eq "life");
+	ktpDrainPendingDamage($p->{matchid}, $p->{half})
+		if ($p->{event_type} eq "damage");
 	my $key = join("\x1e", $s_addr, $p->{matchid}, int($p->{half}));
 	my $state = $g_ktpCaptureSequences{$key} || {};
 	my $daemon_received = (($state->{types} || {})->{$p->{event_type}} || 0);

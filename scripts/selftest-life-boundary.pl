@@ -397,6 +397,14 @@ my ($health_handler) = ($source =~
     /sub doEvent_KTPCaptureHealth\s*\{(.*?)\n\}/s);
 like($health_handler, qr/ktpDrainPendingLife.*?daemon_received/s,
     'life retries finalize before health accepted/rejected reconciliation');
+my ($pending_damage) = ($source =~
+    /sub ktpQueuePendingDamage\s*\{(.*?)# BEGIN KTP LIFE BOUNDARY VALIDATION/s);
+unlike($pending_damage, qr/getPlayerInfo/,
+    'pending damage retry never mutates reconnect state');
+like($pending_damage, qr/total >= 4096/,
+    'pending damage retry has an explicit process-lifetime bound');
+like($health_handler, qr/ktpDrainPendingDamage.*?daemon_received/s,
+    'damage retries finalize before health accepted/rejected reconciliation');
 my %healthy = (
     matchid => 'health-only-TEST', half => 1, event_type => 'life',
     attempted => 1, enqueued => 1, dropped => 0, emitted => 1,
