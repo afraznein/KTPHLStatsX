@@ -2009,10 +2009,9 @@ if ($g_stdin) {
 		LocalAddr=>"$s_ip",
 		LocalPort=>"$s_port"
 	) or die ("\nCan't setup UDP socket on $ip$s_port: $!\n");
-	# Match net.core.rmem_max (25MB, set in /etc/sysctl.d/98-ktp-dataserver.conf).
-	# Asking for 1MB was the actual drop: the ceiling was raised to 25MB and this
-	# request never was, so the socket got 1MB on a box configured for 25 and the
-	# ceiling looked like the fix while doing nothing.
+	# Match net.core.rmem_max (25MB, 98-ktp-dataserver.conf); the ceiling grants nothing
+	# by itself. 1MB buffered only a few thousand log lines, so any stall in this
+	# single-threaded daemon (a slow MySQL write, a lock) dropped frags with no other symptom.
 	my $want_rcvbuf = 26214400;
 	$s_socket->sockopt(SO_RCVBUF, $want_rcvbuf);
 	my $actual_rcvbuf = $s_socket->sockopt(SO_RCVBUF);
