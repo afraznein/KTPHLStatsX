@@ -1,4 +1,4 @@
--- KTP HLStatsX Migration 020: capture manifests, producer sequences and
+-- KTP HLStatsX Migration 021: capture manifests, producer sequences and
 -- end-of-half health reconciliation.
 -- Apply before stats_logging 1.17.0 and the paired hlstats.pl.
 --

@@ -145,13 +145,14 @@ through `recordEvent`:
 
 Schema migration:
 - **Fresh install:** apply `sql/ktp_schema.sql`, then migrations 003 through
-  020 in numeric order. The base schema is not a roll-up of later migrations;
+  021 in numeric order. The base schema is not a roll-up of later migrations;
   in particular, 016 creates `ktp_life_events`, 017 adds producer clocks and
   `ktp_assist_events`, and 018 adds the break-context claim column and makes
-  `is_capout` nullable -- all required by daemon 0.3.10. 019 is a data
+  `is_capout` nullable -- all required by daemon 0.3.10. 020 adds
+  `frag_context_certified` and is required by daemon 0.3.12. 019 is a data
   correction rather than a precondition, and is a no-op on a fresh install.
-  Migration 020 adds producer manifests, sequences, and health reconciliation.
-  Skip migration 002 on a fresh
+  Migration 021 adds producer manifests, sequences, and capture-health
+  reconciliation and is required by daemon 0.3.13. Skip migration 002 on a fresh
   install because its half-column changes are already in the base schema.
 - **Existing install:** apply every not-yet-applied migration in numeric order.
   A pre-0.3.1 database starts with `sql/migrate_002_half_damage_score.sql`;
@@ -191,18 +192,21 @@ cp scripts/HLstats.plib /opt/hlstatsx/scripts/
 # Create/upgrade the base KTP schema, then apply every later migration in order.
 # Fresh installs start at 003 because ktp_schema.sql already contains 002.
 mysql -u hlstatsx -p hlstatsx < sql/ktp_schema.sql
-for migration in sql/migrate_{003..020}_*.sql; do
+for migration in sql/migrate_{003..021}_*.sql; do
   mysql -u hlstatsx -p hlstatsx < "$migration"
 done
 
 # 016 and 017 must both complete before starting daemon 0.3.10 or deploying
 # the coordinated stats_logging.amxx producer. 018 must complete before that
 # daemon starts too -- without it the break-context UPDATE names a column that
-# does not exist (ERROR 1054) and the whole statement is lost.
-# 019 is a data correction and is not a daemon precondition, but it is
-# time-sensitive: run it BEFORE any instance takes a stats_logging build that
-# emits frag_context. See its header.
-# 020 must complete before daemon 0.3.12 and stats_logging 1.17.0 are deployed.
+# does not exist (ERROR 1054) and the whole statement is lost. 020 is the same
+# kind of precondition for daemon 0.3.12 and its frag_context UPDATE.
+# 019 is a data correction and is not a daemon precondition. Its window has
+# closed and 020 supersedes it: from 0.3.12 the daemon writes 019's own
+# "all defaults" shape for an unusable payload while still claiming the row, so
+# the predicate no longer identifies a false claim. 019 is guarded on 020 and
+# becomes a no-op once 020 is applied -- which is why it stays in the loop.
+# 021 must complete before daemon 0.3.13 and stats_logging 1.17.0 are deployed.
 
 # Restart daemon
 sudo systemctl restart hlstatsx

@@ -16,6 +16,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Producer-clock and buffered-identity regressions
         run: perl scripts/selftest-life-boundary.pl
+      - name: Property-tail parse regressions
+        run: perl scripts/selftest-getproperties.pl
+      - name: Frag-context certification and marker claim rules
+        run: perl scripts/selftest-frag-context.pl
+      - name: Damage-absence distinction
+        run: perl scripts/selftest-damage-absence.pl
 
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod

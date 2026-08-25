@@ -16,10 +16,11 @@ figure in the draft this document replaces had drifted within hours of being
 written. Each claim below states a property instead, and § How to re-measure
 carries the queries that re-derive it.
 
-> **Companion change.** This document describes the state after the three
-> marker-handler correlation fixes and migrations 018 and 019 land (PR #27). Two entries below — `is_capout`'s nullability and what
-> `frag_context_recorded` actually certifies — depend on that change; both say so
-> where they appear.
+> **Companion change.** The three marker-handler correlation fixes and
+> migrations 018 and 019 (`afraznein/KTPHLStatsX`#27) have landed, and this document has been
+> re-read against them — see the correction in § Class 2. The entry on what
+> certifies frag context now depends on migration 020 instead, which is not yet
+> applied; it says so where it appears.
 
 ## Citations
 
@@ -46,6 +47,7 @@ Schema claims cite table and column and are re-derivable from
 | `headshot` | `tinyint(1)` | **NO** | `0` |
 | `killerRole` | `varchar(64)` | **NO** | `''` |
 | `frag_context_recorded` | `tinyint(1)` | **NO** | `0` |
+| `frag_context_certified` | `tinyint(1)` | **NO** | `0` |
 
 **Position is honest.** It is nullable, so "never written" reads as `NULL`, which
 no query can mistake for a measurement.
@@ -101,16 +103,27 @@ was measured: the old build emits `headshot_kill` and never `frag_context`; the
 new build emits `frag_context` (with headshot as a *field*, not its own event),
 plus `position_sample`, and never `headshot_kill`.
 
-🔻 **Do not read `frag_context_recorded = 1` as evidence that the new plugin is
-producing context.** Before this PR, the `headshot_kill` branch also set that
-flag while writing no context columns at all, so every row carrying it today
-comes from an instance running the **old** build, and carries default prone,
-scope, ammo and position. Those rows are on a single server id — not Denver
-27018, which has produced none of them. The flag is corrected in PR #27, which also
-carries migration 019 to withdraw it from the rows already carrying it — keyed
-on the contradiction (flag set, every context column at its default) rather than
-on a date, so it stays correct whenever it runs. See `CHANGELOG.md` under
-0.3.10.
+🔻 **`frag_context_recorded` is a claim guard, not a quality signal — read
+`frag_context_certified` instead.** The first column exists so exactly one
+marker can consume a given frag row, which means it has to be set even when the
+marker's payload arrived incomplete. The second, added in migration 020, is the
+one that says every context property on the row was present and well-formed. A
+cutover query wants the second.
+
+⚠️ **Neither column's `= 0` says which of three things happened** — no marker
+was emitted (the stock build, on most of the fleet), a marker was emitted and
+lost, or a marker arrived unusable. All three leave the context columns holding
+defaults, and every default is a legal reading, so nothing in a row's content
+separates them. That is why certification is recorded at write time, cannot be
+reconstructed afterwards, and why migration 020 ships no backfill.
+
+🔻 **This block used to say the flagged rows all came from instances running the
+old build, on a server id that was not Denver 27018.** That described the defect
+`afraznein/KTPHLStatsX`#27 fixed — the `headshot_kill` branch setting the flag while writing no
+context — and stopped being true the moment that fix and migration 019 were
+applied. Do not carry either shape forward: re-derive the split with the
+`frag_context_recorded` query in § How to re-measure, which now also breaks out
+certification.
 
 | Stat | Column / table | Why it is not live yet |
 |---|---|---|
@@ -145,7 +158,7 @@ UPDATE and no diagnostic.
 | Raw uncapped per-hit damage as the consumer-facing figure | KTPR-facing consumers read `damage_capped`, not `damage` | `ktp_stats_capture.inc:44-52` (`KSC_DAMAGE_CAP`): DoD's raw per-hit value is the nominal weapon value with headshot and wallbang multipliers applied and is **not** clamped to a body's real 0–100 pool, so a single hit can log 400+. Uncapped it measures how strong a weapon-and-hitzone combination is on paper, not how much the hit mattered — the wrong quantity for a per-player stat, and the same convention CS2 uses. **Nothing is lost**: the raw value is stored alongside the capped one. A derived-metric shaping choice, not an omission. |
 | Control-point Z coordinate | Flag positions and the last-flag-defense proximity check are 2D only | `ktp_stats_capture.inc:828`: `dodx.inc` exposes no `CP_origin_z` native. An **engine/include limitation**, not a policy choice — listed apart from the operator decisions so it is not mistaken for one. |
 | Ninja-cap classification | Not computed anywhere, and will not be once `position_sample` is fleet-wide | `KTPInfrastructure/tests/e2e_stats/NEXT_PHASES.md` § Ninja-cap detection: explicit operator direction that capture stays *"raw facts only"* and classification happens entirely in the query layer, never judged in the engine. Deliberately deferred; no owner assigned. |
-| `dod_object_goal` | Action row exists (`reward_player = 4`, `for_PlayerActions = 1`), defined alongside `dod_control_point`/`dod_capture_area`, and has **no events in its entire history** | 🔴 **NO RECORDED DECISION.** It is referenced nowhere in `KTPAMXX` and nowhere in `KTPHLStatsX` — no migration created it, no handler mentions it — and the only mention in `TODO.md` is a bare measurement plus the card opened by this audit. Nobody has recorded whether DoD is expected to emit a line it would match, or whether it is inherited stock seed data that nothing in the KTP stack produces. This is precisely the class of gap the operator's directive names, and it is the single finding this document exists to surface. It should be wired up, explicitly retired, or explicitly logged as known-dormant and kept for schema compatibility. |
+| `dod_object_goal` | The action row itself, deleted from `hlstats_Actions` | ✅ **RULED 2026-08-22 — DELETED, not retired-in-place.** Measured at source before staging: **0** player-action events and **0** team-bonus events across its entire history, against controls of **142,213** for `dod_control_point` and **102,270** for `dod_capture_area` — a zero next to two six-figure siblings is a fact about the action, not about the query. Nothing in `KTPAMXX` or `KTPHLStatsX` emits it, and no migration created it: it is inherited stock seed data. Keeping it "known-dormant for schema compatibility" was the alternative and was rejected — a dormant row is indistinguishable from a stat we meant to collect and lost, which is the exact failure this document exists to prevent. Dropped by `migrations-to-apply/28_drop_dod_object_goal.sql`, which re-checks the event counts at run time and refuses rather than orphaning rows if any arrived after staging. |
 
 ## Open risks this document does not resolve
 
@@ -196,11 +209,12 @@ UNION ALL SELECT 'k_clip_measured', COUNT(*) FROM hlstats_Events_Frags WHERE k_c
 -- Positive control: must be large, or the probe itself is broken.
 UNION ALL SELECT 'CONTROL_frags',   COUNT(*) FROM hlstats_Events_Frags;
 
--- Which server ids carry frag_context_recorded, and does any real context come
--- with it? Rows with the flag but no context are the old build's headshot
--- marker, not the new build's frag_context.
+-- Which server ids carry claimed frag rows, and how many of those claims are
+-- certified. claimed > certified is the daemon reporting unusable properties;
+-- pair it with KTP_BAD_PROPERTY in the journal, which names the fields.
 SELECT serverId,
-       COUNT(*)                                    AS flagged,
+       COUNT(*)                                    AS claimed,
+       SUM(frag_context_certified = 1)             AS certified,
        SUM(headshot = 1)                           AS headshot,
        SUM(pos_x IS NOT NULL)                      AS with_position,
        SUM(k_prone = 1 OR k_scope = 1)             AS with_prone_or_scope

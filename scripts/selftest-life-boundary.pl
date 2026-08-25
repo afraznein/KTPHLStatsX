@@ -11,7 +11,7 @@ $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION16 = $SCRIPT_DIR . '../sql/migrate_016_life_events.sql';
 my $MIGRATION17 = $SCRIPT_DIR . '../sql/migrate_017_capture_clocks_and_assists.sql';
-my $MIGRATION20 = $SCRIPT_DIR . '../sql/migrate_020_capture_observability.sql';
+my $MIGRATION21 = $SCRIPT_DIR . '../sql/migrate_021_capture_observability.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -374,14 +374,14 @@ like($migration17, qr/idx_frag_producer_context \(producer_match_id, producer_ha
 like($migration17, qr/idx_damage_producer_context \(producer_match_id, producer_half, event_epoch\)/,
     'damage producer-context analytics path is indexed');
 
-my $migration20 = slurp($MIGRATION20);
-like($migration20, qr/CREATE TABLE IF NOT EXISTS ktp_capture_manifests/,
-    'migration 020 creates producer manifest ledger');
-like($migration20, qr/CREATE TABLE IF NOT EXISTS ktp_capture_health/,
-    'migration 020 creates producer-daemon reconciliation ledger');
+my $migration21 = slurp($MIGRATION21);
+like($migration21, qr/CREATE TABLE IF NOT EXISTS ktp_capture_manifests/,
+    'migration 021 creates producer manifest ledger');
+like($migration21, qr/CREATE TABLE IF NOT EXISTS ktp_capture_health/,
+    'migration 021 creates producer-daemon reconciliation ledger');
 for my $column (qw(producer_sequence break_victim_id break_incident_id flag_index flag_name)) {
-    like($migration20, qr/\b\Q$column\E\b/,
-        "migration 020 includes $column observability field");
+    like($migration21, qr/\b\Q$column\E\b/,
+        "migration 021 includes $column observability field");
 }
 like($source, qr/^sub ktpObserveCaptureMarker/m,
     'daemon tracks globally monotonic producer sequences');
