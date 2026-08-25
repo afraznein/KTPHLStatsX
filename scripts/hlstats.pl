@@ -2066,6 +2066,7 @@ if ($g_global_chat == 1) {
 %g_ktpProducerContextCache = ();
 %g_ktpCaptureClockWarnings = ();
 %g_ktpCaptureSequences = ();
+%g_ktpPendingLife = ();
 
 # KTP: actions seen in the log that resolve to no row in hlstats_Actions.
 # {game/action} => count. Keyed so each distinct action warns once and then
@@ -3443,13 +3444,14 @@ while ($loop = &getLine()) {
 			    # in cs:s players dropp the bomb if they are the only ts
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
+				my $ktp_buffered_identity;
 			    if ($ev_obj_a =~ /^(?:life_boundary|cap_break|break_context|position_sample)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
 				  # still uses the stock rating-neutral generic action handler, with a
 				  # copied exact-live tuple selected by durable id.
-				  my $ktp_buffered_identity = &ktpParsePlayerIdentity($ev_player);
+				  $ktp_buffered_identity = &ktpParsePlayerIdentity($ev_player);
 				  $ktp_buffered_player_id = &ktpResolvePlayerIdentity($ktp_buffered_identity);
 				  $playerinfo = ($ev_obj_a eq "cap_break")
 					? &ktpIdentityForGenericAction($ktp_buffered_identity, $ktp_buffered_player_id)
@@ -3468,7 +3470,11 @@ while ($loop = &getLine()) {
 					!$ktp_buffered_player_id) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
 						break_context => "break", position_sample => "position");
-					ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties, 0);
+					if ($ev_obj_a eq "life_boundary" && $ktp_buffered_identity) {
+						ktpQueuePendingLife($ktp_buffered_identity, \%ev_properties);
+					} else {
+						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties, 0);
+					}
 				}
 				if ($playerinfo) {
 					if ($ev_obj_a eq "life_boundary") {
@@ -3498,7 +3504,7 @@ while ($loop = &getLine()) {
 							ktpRejectCaptureMarker("life", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						} else {
-							$ev_status = "Life boundary dropped: unresolved player " .
+							$ev_status = "Life boundary queued: unresolved player " .
 								$playerinfo->{"uniqueid"};
 						}
 					} elsif ($ev_obj_a eq "break_context") {
@@ -4638,6 +4644,69 @@ sub ktpIdentityForGenericAction
 }
 # END KTP SIDE-EFFECT-FREE PLAYER IDENTITY
 
+# A buffered life marker can overtake the ordinary connect/kill line that
+# creates its durable player row. Retain only the parsed immutable identity and
+# producer payload, then retry before health reconciliation. Never call
+# getPlayerInfo here: reconnect state must remain side-effect-free.
+sub ktpQueuePendingLife
+{
+	my ($identity, $properties) = @_;
+	return 0 if (!defined($identity) || !defined($properties));
+	my $matchid = $properties->{matchid};
+	my $half = $properties->{half};
+	return 0 if (!defined($matchid) || !defined($half));
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	my $total = 0;
+	$total += scalar(@{$g_ktpPendingLife{$_}}) for keys %g_ktpPendingLife;
+	if ($total >= 1024) {
+		ktpRejectCaptureMarker("life", $properties, 0);
+		&printEvent("KTP_LIFE_DROP", "Life retry queue full; match=$matchid half=$half", 1, 1);
+		return 0;
+	}
+	push @{$g_ktpPendingLife{$key}}, {
+		identity => { %{$identity} }, properties => { %{$properties} }
+	};
+	return 1;
+}
+
+sub ktpDrainPendingLife
+{
+	my ($matchid, $half, $final) = @_;
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	return 0 if (!defined($g_ktpPendingLife{$key}));
+	my @remaining;
+	my $accepted = 0;
+	for my $pending (@{$g_ktpPendingLife{$key}}) {
+		my $identity = $pending->{identity};
+		my $p = $pending->{properties};
+		my $player_id = ktpResolvePlayerIdentity($identity);
+		if ($player_id) {
+			my $status = doEvent_KTPLifeBoundary(
+				$player_id, $identity->{userid}, $p->{matchid}, $p->{half},
+				$p->{kind}, $p->{reason}, $p->{team}, $p->{class}, $p->{slot},
+				$p->{round_live}, $p->{game_time}, $p->{event_epoch}, $p->{sequence});
+			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
+				ktpRejectCaptureMarker("life", $p, 0);
+			} else {
+				$accepted++;
+			}
+		} elsif ($final) {
+			ktpRejectCaptureMarker("life", $p, 0);
+			&printEvent("KTP_LIFE_DROP",
+				"Life boundary unresolved at health finalization: ".$identity->{uniqueid},
+				1, 1);
+		} else {
+			push @remaining, $pending;
+		}
+	}
+	if (@remaining) {
+		$g_ktpPendingLife{$key} = \@remaining;
+	} else {
+		delete $g_ktpPendingLife{$key};
+	}
+	return $accepted;
+}
+
 # BEGIN KTP LIFE BOUNDARY VALIDATION
 # Keep this validation pure: scripts/selftest-life-boundary.pl extracts and
 # executes the shipped implementation directly, so the test cannot drift into
@@ -4902,6 +4971,7 @@ sub doEvent_KTPCaptureManifest
 			$p->{sequence} !~ /^\d+$/ || $p->{event_epoch} !~ /^\d+$/);
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
+	delete $g_ktpPendingLife{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_capture_manifests
 			(server_id, match_id, half, map_name, producer, producer_version,
@@ -4925,17 +4995,36 @@ sub doEvent_KTPCaptureManifest
 		"Capture manifest SQL failed";
 }
 
-sub doEvent_KTPCaptureHealth
+# BEGIN KTP CAPTURE HEALTH VALIDATION
+sub ktpValidateCaptureHealthPayload
 {
 	my ($p) = @_;
 	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position);
-	return "Capture health dropped: invalid event type"
+	return "invalid matchid"
+		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
+			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
+	return "invalid event type"
 		if (!defined($p->{event_type}) || !$allowed{$p->{event_type}});
-	for my $required (qw(matchid half attempted enqueued dropped emitted
+	for my $required (qw(half attempted enqueued dropped emitted
 		sequence_first sequence_last sequence event_epoch)) {
-		return "Capture health dropped: invalid $required"
+		return "invalid $required"
 			if (!defined($p->{$required}) || $p->{$required} !~ /^\d+$/);
 	}
+	return "invalid half" if ($p->{half} < 1 || $p->{half} > 255);
+	return "invalid sequence" if ($p->{sequence} < 1);
+	return "invalid event_epoch" if ($p->{event_epoch} < 1);
+	return "";
+}
+# END KTP CAPTURE HEALTH VALIDATION
+
+sub doEvent_KTPCaptureHealth
+{
+	my ($p) = @_;
+	my $validation_error = ktpValidateCaptureHealthPayload($p);
+	return "Capture health dropped: $validation_error"
+		if ($validation_error ne "");
+	ktpDrainPendingLife($p->{matchid}, $p->{half}, 1)
+		if ($p->{event_type} eq "life");
 	my $key = join("\x1e", $s_addr, $p->{matchid}, int($p->{half}));
 	my $state = $g_ktpCaptureSequences{$key} || {};
 	my $daemon_received = (($state->{types} || {})->{$p->{event_type}} || 0);

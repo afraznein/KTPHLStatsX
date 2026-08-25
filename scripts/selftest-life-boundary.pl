@@ -387,5 +387,30 @@ like($source, qr/^sub ktpObserveCaptureMarker/m,
     'daemon tracks globally monotonic producer sequences');
 like($source, qr/^sub doEvent_KTPCaptureHealth/m,
     'daemon persists per-type capture health reconciliation');
+my ($pending_life) = ($source =~
+    /sub ktpQueuePendingLife\s*\{(.*?)# BEGIN KTP LIFE BOUNDARY VALIDATION/s);
+unlike($pending_life, qr/getPlayerInfo/,
+    'pending life retry never mutates reconnect state');
+like($pending_life, qr/scalar\(keys %g_ktpPendingLife\)|keys %g_ktpPendingLife/,
+    'pending life retry has a process-lifetime bound');
+my ($health_handler) = ($source =~
+    /sub doEvent_KTPCaptureHealth\s*\{(.*?)\n\}/s);
+like($health_handler, qr/ktpDrainPendingLife.*?daemon_received/s,
+    'life retries finalize before health accepted/rejected reconciliation');
+my %healthy = (
+    matchid => 'health-only-TEST', half => 1, event_type => 'life',
+    attempted => 1, enqueued => 1, dropped => 0, emitted => 1,
+    sequence_first => 1, sequence_last => 1, sequence => 2,
+    event_epoch => 1787616774,
+);
+is(ktpValidateCaptureHealthPayload(\%healthy), '',
+    'capture health accepts a normal nonnumeric match id');
+$healthy{matchid} = 'bad match id';
+like(ktpValidateCaptureHealthPayload(\%healthy), qr/matchid/,
+    'capture health rejects malformed match identity');
+$healthy{matchid} = 'health-only-TEST';
+$healthy{attempted} = 'not-a-number';
+like(ktpValidateCaptureHealthPayload(\%healthy), qr/attempted/,
+    'capture health validates counters as numeric fields');
 
 done_testing();
