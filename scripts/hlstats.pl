@@ -1383,7 +1383,16 @@ sub getProperties
 					$key = "player_b";
 				}
 			}
-			$properties{$key} = $2;
+			if ($2 eq "") {
+				# An EMPTY quoted field is ABSENT, not a value. Storing ""
+				# defeats every `// default` downstream (defined-or sees ""),
+				# and numifies to 0 -- k_prone "" read as "standing" and
+				# k_clip "" as an empty magazine instead of the -1 sentinel,
+				# and a half with no data read as a complete one. Reachable
+				# without a malformed producer: formatex truncates tail-first.
+			} else {
+				$properties{$key} = $2;
+			}
 		} elsif (defined($3)) {
 			$properties{$key} = $3;
 		} else {

@@ -18,6 +18,8 @@ jobs:
         run: perl scripts/selftest-life-boundary.pl
       - name: Property-tail parse regressions
         run: perl scripts/selftest-getproperties.pl
+      - name: Empty quoted field parses as absent
+        run: perl scripts/selftest-getproperties-empty.pl
       - name: Frag-context certification and marker claim rules
         run: perl scripts/selftest-frag-context.pl
       - name: Damage-absence distinction
