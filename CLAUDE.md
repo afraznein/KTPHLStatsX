@@ -193,3 +193,86 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 ## Related
 - KTPMatchHandler generates `KTP_MATCH_START` / `KTP_MATCH_END` events
 - DODX module calls `dodx_set_match_id()` to log match context
+
+# Data traps — measured, keep them
+
+*Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
+assistant's recall. Each was measured; the date it was measured is stated inline.*
+
+## "hlstatsx ran six migrations behind its own daemon and silently dropped every flag capture fleet-wide; schema ahead of code is harmless, code ahead of schema is data loss"
+
+**2026-08-15: hlstatsx had been deployed six migrations ahead of its schema and was losing every DoD flag
+capture, fleet-wide, for ~19 hours.** `hlstats.pl:4407` ran `INSERT INTO ktp_flag_captures` against a table
+that did not exist. 301 of 302 SQL errors were that one shape. The daemon is a UDP listener with no replay,
+so those captures are unrecoverable — and flag captures are a distinct number from frags that crowns a
+different club in several matches.
+
+Production sat at migrations 002/003/004 while the running daemon expected 005–011.
+
+**Why the asymmetry matters:** the AC API refuses to start on a pending migration (`SchemaSelfCheck`), so
+code-ahead-of-schema fails *loudly* there. hlstatsx has no such gate — it just logs and drops. **Extra
+tables are invisible to a running binary; missing tables are silent data loss.** Apply schema first,
+always.
+
+**How to apply:**
+- Before trusting any hlstatsx feature, check applied-vs-expected migrations — the repo is `KTPHLStatsX`,
+  and it builds from **`preprod`**, never `main` (`origin/main` was six migrations behind).
+- ⛔ **`CREATE TABLE IF NOT EXISTS` makes a "fix by re-running the migration" a silent no-op** over a
+  hand-made table with the wrong schema. Drop or `ALTER` to converge, then verify columns *and* indexes
+  against the migration file.
+- The base tables are **MyISAM**, so `ADD COLUMN` is a full table rebuild under a write lock, never MySQL
+  8's instant add. `hlstats_Events_Frags` is ~1.29M rows / ~209MB. Batch all columns into **one** ALTER
+  (the migrations issue them separately — nine rebuilds instead of one) and run it against an idle fleet.
+- `eventTime` is **not indexed**; `match_id` and `id` are. Window by `id` or a date-bounded query times out.
+- `EMPTY` is reserved in MySQL 8 — `AS empty` fails with a 1064 that looks like a broken predicate.
+
+Related: `cumulative-counter-under-windowed-headline`, `hlstatsx-udp-rcvbuf-too-small`,
+`abandoned-pending-empty-matchid-hlstats-corruption`
+
+## "hlstats_Events_PlayerActions has no `half` column - only Frags does; WHERE pa.half=N errors to stderr and returns empty, reading as \"this match has no captures\""
+
+`hlstats_Events_PlayerActions` has **no `half` column**. Half attribution exists only on
+`hlstats_Events_Frags`. A query with `WHERE pa.half = 1` errors to **stderr** and returns an empty
+set — which reads exactly like *"this match recorded no captures"*.
+
+**Why:** same shape as `wrong-game-event-name-reads-as-no-emission` and the `hlstats_Events_Deaths`
+trap (that table does not exist at all; frags ARE the death record). A nonexistent column and a
+genuinely empty result are indistinguishable at the call site unless stderr is read.
+
+**How to apply:** carry a positive control on every hlstatsx query — reproduce a known-good figure
+before believing a new one. Known-good: `hlstats_Servers` = 25 rows, and match `1773018654-ATL4`
+has 234 frags in h1 / 250 in h2. Never suppress stderr on a mysql call.
+
+Related: hlstatsx stores timestamps in **America/New_York**, not UTC (`timedatectl` on the data
+server reports EDT; MySQL `time_zone = SYSTEM`) — so anything loaded must carry ET, and an apparent
+skew is your own session's `time_zone`, per `ac-timestamps-are-et-not-utc`.
+
+## Dropped log packets produce rows that look like a real finding — hlstatsx role/map data before 2026-08-14 is forensically unusable
+
+Investigating how a restricted German MG was fired, the smoking gun looked perfect: five `mg42` frags
+whose `killerRole` read **`#class_allied_sniper`** — an *Allied* class credited with an *Axis* weapon.
+That reads as a class-limit bypass.
+
+**It was packet loss.** On that server that day `hlstats_Events_ChangeRole` has **0** rows while
+`hlstats_Events_Frags` logged **1,134**, and **653 of those 1,134** carry a corrupted `map` field.
+Cause is `hlstatsx-udp-rcvbuf-too-small` (see `ENGINE_BUG_POSTMORTEMS.md`) — a 1 MB UDP receive buffer
+that silently dropped log lines under any daemon stall. **Fixed 2026-08-14.**
+
+🔑 **So any forensic conclusion drawn from `killerRole` / `ChangeRole` before 2026-08-14 is unsafe** —
+the stale value simply persists on the row, and a *wrong* value is indistinguishable from a *missing*
+one. The corruption is partial, so most rows look fine.
+
+**Why this generalises:** a dropped write does not leave a gap you can see. It leaves whatever was
+there before, which reads as data. That is worse than a null, because a null prompts a question and a
+stale value answers one — wrongly.
+
+**How to apply:** before treating an anomalous row as a finding, check whether the *pipeline* was
+healthy in that window. Cheap tests: does a sibling table have rows for the same server/day? Is a
+field that should always be well-formed (a map name, an enum) well-formed across that window? Compare
+against a day you know was healthy.
+
+⚠️ Two independent signals agreed here and both were symptoms, not evidence — the role mismatch and
+the absent `Statsme` row for the same burst. **Corroboration between two outputs of the same broken
+pipe is not corroboration.** Related: `a-killed-probe-reads-as-a-clean-zero`,
+`durable-record-outranks-banner-and-log`.
+
