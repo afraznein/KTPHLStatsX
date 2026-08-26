@@ -24,6 +24,45 @@ jobs:
         run: perl scripts/selftest-frag-context.pl
       - name: Damage-absence distinction
         run: perl scripts/selftest-damage-absence.pl
+      - name: Schema-22 objective and grenade entity contracts
+        run: perl scripts/selftest-telemetry22.pl
+
+  migration-022-mysql:
+    name: Migration 022 on production-parity MySQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/ktp-runtime-test-base:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout canonical ephemeral-MySQL harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/KTPInfrastructure
+          ref: preprod
+          path: KTPInfrastructure
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build production-parity Lane B database image
+        run: |
+          docker pull "$BASE_IMAGE"
+          docker build \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            -t ktp-lane-b:ci \
+            -f KTPInfrastructure/build/lane-b/Dockerfile \
+            KTPInfrastructure/build/lane-b
+      - name: Migration 022 clean/rerun/repair/fail-closed contract
+        run: |
+          docker run --rm --network none \
+            -v "${PWD}:/daemon:ro" \
+            -v "${PWD}/KTPInfrastructure:/infra:ro" \
+            ktp-lane-b:ci \
+            python3 /daemon/scripts/selftest-migration22.py \
+              --infrastructure-root /infra
 
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod

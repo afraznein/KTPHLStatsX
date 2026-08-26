@@ -1,6 +1,6 @@
 # KTP HLStatsX
 
-**Version 0.3.14** | Modified HLStatsX:CE Perl daemon with KTP match integration
+**Version 0.3.15** | Modified HLStatsX:CE Perl daemon with KTP match integration
 
 A fork of [HLStatsX:CE](https://github.com/NomisCZ/hlstatsx-community-edition) that enables match-based statistics tracking for competitive play. Separates warmup/practice stats from official match stats by tagging events with match IDs from KTP Match Handler.
 
@@ -73,12 +73,30 @@ KTPMatchHandler → dodx_set_match_id() → DODX logs KTP_MATCH_START
 | 609 | `flag_capture` marker | `doEvent_KTPFlagCapture` | Per-player capture completion |
 | 610 | `KTP_FLAG_STATE` | `doEvent_KTPFlagState` | Flag-ownership baseline and owner changes |
 | 611 | `life_boundary` marker | `doEvent_KTPLifeBoundary` | Validated life start/end |
+| 612 | `KTP_CAPTURE_MANIFEST` | `doEvent_KTPCaptureManifest` | Validate and persist the paired producer contract |
+| 613 | `KTP_CAPTURE_HEALTH` | `doEvent_KTPCaptureHealth` | Reconcile producer and daemon counts by event type |
+| 614 | `KTP_OBJECTIVE_ATTEMPT` | `doEvent_KTPObjectiveAttempt` | Append factual capture start/complete/stop lifecycle rows |
+| 615 | `KTP_GRENADE_ENTITY` | `doEvent_KTPGrenadeEntity` | Append tracked/removed grenade entity facts |
 
-The 605–611 markers arrive on the AMXX buffered-marker path rather than as bare
-`KTP_*` verbs, and each writes its own table directly instead of going through
-`recordEvent`'s batching. The canonical `assist` fact (`doEvent_KTPAssist` →
+Types 605, 606, 608, and 611 arrive on the AMXX triggered/buffered-marker path;
+607, 610, and 612–615 are bare `KTP_*` verbs. Producer-side buffering can still
+delay either shape, so producer clocks rather than daemon receipt time are the
+authoritative join. Each writes its own table directly instead of going through
+`recordEvent`'s batching. Type 609 is parsed from the engine's ordinary
+`dod_capture_area` line. The canonical
+`assist` fact (`doEvent_KTPAssist` →
 `ktp_assist_events`) rides the generic PlayerPlayerAction path and has no
 dedicated type — the stock rating-neutral action still records alongside it.
+
+Schema-22 bare markers have a 1024-byte maximum and an exact ordered-property
+grammar. Objective and grenade events are accepted only after a successfully
+persisted schema-22 manifest authorized both capabilities for that exact
+server/match/half. Invalid manifests and unmanifested marker floods cannot
+allocate capture-sequence state. Authorization is tied to a canonical manifest
+fingerprint: a non-identical manifest for the same context revokes the old
+contract before validation or persistence, and a failed replacement leaves
+telemetry unauthorized. Only an exact accepted replay preserves the existing
+sequence/health state.
 
 **Log format:**
 ```
@@ -140,23 +158,49 @@ through `recordEvent`:
   is classified at query time, never stored
 - `ktp_life_events` — validated life starts and ends for survival analytics
 - `ktp_assist_events` — canonical producer-time assists
+- `ktp_objective_attempt_events` — append-only start/complete/stop facts. A
+  terminal without a received start is retained as left-censored; no start is
+  synthesized. Completed, aborted, and orphan classifications are query-time.
+- `ktp_grenade_entity_events` — append-only tracked/removed facts for hand,
+  stick, and Mills grenades. `removed` is not proof of detonation/explosion,
+  and this schema makes no grenade-to-damage correlation claim. Coordinates
+  are private analytics data and must not be copied to public reports.
+
+**Retention ownership:** migration 022 and the daemon never purge either new
+ledger. Before production rollout, KTPInfrastructure's match-type retention job
+must explicitly include `ktp_objective_attempt_events` and
+`ktp_grenade_entity_events`, joined by `match_id`/`half`, under the same policy
+as the other per-match ledgers.
 
 **Views:** `ktp_match_leaderboard`, `ktp_recent_matches`
 
 Schema migration:
 - **Fresh install:** apply `sql/ktp_schema.sql`, then migrations 003 through
-  021 in numeric order. The base schema is not a roll-up of later migrations;
+  022 in numeric order. The base schema is not a roll-up of later migrations;
   in particular, 016 creates `ktp_life_events`, 017 adds producer clocks and
   `ktp_assist_events`, and 018 adds the break-context claim column and makes
   `is_capout` nullable -- all required by daemon 0.3.10. 020 adds
   `frag_context_certified` and is required by daemon 0.3.12. 019 is a data
   correction rather than a precondition, and is a no-op on a fresh install.
   Migration 021 adds producer manifests, sequences, and capture-health
-  reconciliation and is required by daemon 0.3.13. Skip migration 002 on a fresh
-  install because its half-column changes are already in the base schema.
+  reconciliation and is required by daemon 0.3.13. Migration 022 adds the two
+  schema-22 telemetry ledgers and is required by daemon 0.3.15. Skip migration
+  002 on a fresh install because its half-column changes are already in the
+  base schema.
 - **Existing install:** apply every not-yet-applied migration in numeric order.
   A pre-0.3.1 database starts with `sql/migrate_002_half_damage_score.sql`;
   newer databases start with their next unapplied number.
+
+`scripts/selftest-migration22.py` is the standard executable contract; CI runs
+it against Infrastructure's production-parity ephemeral MySQL harness.
+
+Migration 022 is safe to rerun and repairs missing named indexes. Every existing
+named index must retain its expected uniqueness and complete ordered column
+list. If either new table has missing/incompatible required columns, an extra
+required/no-default column, a wrong same-name index, incompatible engine,
+primary key, or collation, it fails early with an `ERROR_022_*_partial_or_incompatible`
+sentinel. Restore the table definition—or drop it only after confirming it is
+empty—then rerun; the migration does not guess how to rewrite existing data.
 
 **Why each stat is or is not logged** — which absences are honest (`NULL` or a
 reserved sentinel) versus which read as a measured false, what each deliberate
@@ -192,7 +236,7 @@ cp scripts/HLstats.plib /opt/hlstatsx/scripts/
 # Create/upgrade the base KTP schema, then apply every later migration in order.
 # Fresh installs start at 003 because ktp_schema.sql already contains 002.
 mysql -u hlstatsx -p hlstatsx < sql/ktp_schema.sql
-for migration in sql/migrate_{003..021}_*.sql; do
+for migration in sql/migrate_{003..022}_*.sql; do
   mysql -u hlstatsx -p hlstatsx < "$migration"
 done
 
@@ -207,6 +251,8 @@ done
 # the predicate no longer identifies a false claim. 019 is guarded on 020 and
 # becomes a no-op once 020 is applied -- which is why it stays in the loop.
 # 021 must complete before daemon 0.3.13 and stats_logging 1.17.0 are deployed.
+# 022 must complete before daemon 0.3.15 and stats_logging 1.18.0 (schema 22)
+# are deployed. KTPInfrastructure owns retention for both new ledgers.
 
 # Restart daemon
 sudo systemctl restart hlstatsx

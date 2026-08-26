@@ -2074,6 +2074,7 @@ if ($g_global_chat == 1) {
 %g_ktpProducerContextCache = ();
 %g_ktpCaptureClockWarnings = ();
 %g_ktpCaptureSequences = ();
+%g_ktpAcceptedCaptureManifests = ();
 %g_ktpPendingLife = ();
 %g_ktpPendingDamage = ();
 
@@ -4129,16 +4130,108 @@ while ($loop = &getLine()) {
 			}
 		} elsif ($s_output =~ /^KTP_CAPTURE_MANIFEST\s+(.*)$/) {
 			$ev_properties = $1;
-			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 612;
-			ktpObserveCaptureMarker("manifest", \%ev_properties);
-			$ev_status = &doEvent_KTPCaptureManifest(\%ev_properties);
+			my ($manifest, $envelope_error) =
+				ktpParseCaptureMarkerEnvelope("manifest", $ev_properties);
+			if ($envelope_error ne "") {
+				$ev_status = "Capture manifest dropped: $envelope_error";
+			} else {
+				%ev_properties = %{$manifest};
+				# A replacement contract cannot inherit the previous contract's
+				# authority while it is being validated or persisted. Exact accepted
+				# replay is the sole exception and is identified canonically rather
+				# than by receipt-time or producer sequence alone.
+				ktpRevokeReplacedCaptureManifest(\%ev_properties);
+				$ev_status = &doEvent_KTPCaptureManifest(\%ev_properties);
+				if (defined($ev_status) && $ev_status =~ /recorded/i &&
+					ktpAuthorizeCaptureManifest(\%ev_properties)) {
+					ktpObserveCaptureMarker("manifest", \%ev_properties);
+				}
+			}
 		} elsif ($s_output =~ /^KTP_CAPTURE_HEALTH\s+(.*)$/) {
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 613;
 			ktpObserveCaptureMarker("health", \%ev_properties);
 			$ev_status = &doEvent_KTPCaptureHealth(\%ev_properties);
+		} elsif ($s_output =~ /^KTP_OBJECTIVE_ATTEMPT\s+(.*)$/) {
+			# Bare producer marker, although its delivery may have been delayed by
+			# the AMXX buffer. Attribution therefore uses only producer clocks and
+			# the persisted match interval, never daemon receipt-time context.
+			$ev_properties = $1;
+			$ev_type = 614;
+			my ($objective, $envelope_error) =
+				ktpParseCaptureMarkerEnvelope("objective_attempt", $ev_properties);
+			if ($envelope_error ne "") {
+				$ev_status = "Objective attempt dropped: $envelope_error";
+			} else {
+				%ev_properties = %{$objective};
+				my $payload_error = ktpValidateObjectiveAttemptPayload(\%ev_properties);
+				if ($payload_error ne "") {
+					ktpRejectUnobservedCaptureMarker(
+						"objective_attempt", \%ev_properties, 0)
+						if (ktpCaptureManifestAuthorizes(
+							\%ev_properties, "objective_attempt"));
+					$ev_status = "Objective attempt dropped: $payload_error";
+				} elsif (!ktpCaptureManifestAuthorizes(
+						\%ev_properties, "objective_attempt")) {
+					$ev_status = "Objective attempt dropped: no accepted schema-22 manifest";
+				} else {
+					ktpObserveCaptureMarker("objective_attempt", \%ev_properties);
+					$ev_status = &doEvent_KTPObjectiveAttempt(\%ev_properties);
+					ktpRejectCaptureMarker(
+						"objective_attempt", \%ev_properties,
+						$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+						if (!defined($ev_status) ||
+							$ev_status =~ /(?:dropped|failed|rejected)/i);
+				}
+			}
+		} elsif ($s_output =~ /^KTP_GRENADE_ENTITY\s+(.*)$/) {
+			# This is an entity lifecycle marker. "removed" is intentionally not
+			# called detonation/explosion: the producer has no honest removal cause.
+			$ev_properties = $1;
+			$ev_type = 615;
+			my ($grenade, $envelope_error) =
+				ktpParseCaptureMarkerEnvelope("grenade_entity", $ev_properties);
+			if ($envelope_error ne "") {
+				$ev_status = "Grenade entity dropped: $envelope_error";
+			} else {
+				%ev_properties = %{$grenade};
+				my $payload_error = ktpValidateGrenadeEntityPayload(\%ev_properties);
+				if ($payload_error ne "") {
+					ktpRejectUnobservedCaptureMarker(
+						"grenade_entity", \%ev_properties, 0)
+						if (ktpCaptureManifestAuthorizes(
+							\%ev_properties, "grenade_entity"));
+					$ev_status = "Grenade entity dropped: $payload_error";
+				} elsif (!ktpCaptureManifestAuthorizes(
+						\%ev_properties, "grenade_entity")) {
+					$ev_status = "Grenade entity dropped: no accepted schema-22 manifest";
+				} else {
+					# Full marker validation and manifest authorization deliberately
+					# precede durable owner lookup. Only a valid producer fact can
+					# become an identity-correlation failure in capture health.
+					ktpObserveCaptureMarker("grenade_entity", \%ev_properties);
+					my $owner_identity =
+						ktpParsePlayerIdentity($ev_properties{"owner"});
+					my $owner_player_id =
+						ktpResolvePlayerIdentity($owner_identity);
+					if (!$owner_identity || !$owner_player_id) {
+						$ev_status = "Grenade entity dropped: owner identity unresolved";
+						&printEvent("KTP_GRENADE_ENTITY_DROP", $ev_status, 1, 1);
+						ktpRejectCaptureMarker("grenade_entity", \%ev_properties, 1);
+					} else {
+						$ev_status = &doEvent_KTPGrenadeEntity(
+							\%ev_properties, $owner_player_id,
+							$owner_identity->{"userid"});
+						ktpRejectCaptureMarker(
+							"grenade_entity", \%ev_properties,
+							$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+							if (!defined($ev_status) ||
+								$ev_status =~ /(?:dropped|failed|rejected)/i);
+					}
+				}
+			}
 		} elsif ($s_output =~ /^KTP_FLAG_POSITION\s+(.*)$/) {
 			# KTP: static per-flag position from ktp_stats_capture.inc,
 			# fired once per map load (controlpoints_init) -- a bare marker,
@@ -4999,6 +5092,127 @@ sub ktpWarnProducerClock
 		1, 1);
 }
 
+# BEGIN KTP CAPTURE AUTHORIZATION
+# Parse the three bare schema-22 marker shapes with a bounded, exact grammar.
+# getProperties() is intentionally not used here: it is a permissive generic
+# legacy parser, whereas these markers are an authorization boundary.
+sub ktpParseCaptureMarkerEnvelope
+{
+	my ($marker, $raw) = @_;
+	return (undef, "missing marker payload") if (!defined($raw));
+	return (undef, "marker payload exceeds 1024 bytes") if (length($raw) > 1024);
+
+	my %expected = (
+		manifest => [qw(matchid half map producer producer_version schema
+			capabilities position_interval buffer_entries life_buffer_entries
+			sequence event_epoch)],
+		objective_attempt => [qw(kind matchid half map attempt_id flag_index
+			flag_name capturing_team owner_before allies_in_zone axis_in_zone
+			stop_reason game_time event_epoch sequence)],
+		grenade_entity => [qw(kind matchid half map entindex serial weapon_id
+			weapon_type owner position game_time event_epoch sequence)],
+	);
+	return (undef, "unknown marker envelope") if (!defined($expected{$marker}));
+
+	my (@keys, %properties);
+	pos($raw) = 0;
+	while ($raw =~ /\G\s*\(([a-z][a-z0-9_]*) "([^"\r\n]*)"\)/gc) {
+		my ($key, $value) = ($1, $2);
+		return (undef, "duplicate marker field $key")
+			if (exists($properties{$key}));
+		push @keys, $key;
+		$properties{$key} = $value;
+	}
+	my $parsed_to = pos($raw) // 0;
+	return (undef, "invalid marker grammar")
+		if (substr($raw, $parsed_to) !~ /^\s*$/);
+	return (undef, "marker field order/schema mismatch")
+		if (join("\x1f", @keys) ne join("\x1f", @{$expected{$marker}}));
+	return (\%properties, "");
+}
+
+sub ktpCaptureContextKey
+{
+	my ($p) = @_;
+	return undef if (!defined($p) || ref($p) ne "HASH" ||
+		!defined($p->{matchid}) || !defined($p->{half}) ||
+		$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/ ||
+		$p->{half} !~ /^\d+$/ || $p->{half} < 1 || $p->{half} > 255);
+	return join("\x1e", $s_addr, $p->{matchid}, int($p->{half}));
+}
+
+sub ktpCaptureManifestFingerprint
+{
+	my ($p) = @_;
+	return undef if (!defined($p) || ref($p) ne "HASH");
+	my @fields = qw(matchid half map producer producer_version schema
+		capabilities position_interval buffer_entries life_buffer_entries
+		sequence event_epoch);
+	my $fingerprint = "";
+	for my $field (@fields) {
+		return undef if (!defined($p->{$field}));
+		# Length-prefixing is unambiguous even if a future permitted value uses
+		# punctuation also present in another field.
+		$fingerprint .= length($p->{$field}).":".$p->{$field}.";";
+	}
+	return $fingerprint;
+}
+
+sub ktpRevokeReplacedCaptureManifest
+{
+	my ($p) = @_;
+	my $key = ktpCaptureContextKey($p);
+	my $fingerprint = ktpCaptureManifestFingerprint($p);
+	return 0 if (!defined($key) || !defined($fingerprint) ||
+		!defined($g_ktpAcceptedCaptureManifests{$key}));
+	my $accepted = $g_ktpAcceptedCaptureManifests{$key};
+	return 0 if (defined($accepted->{fingerprint}) &&
+		$accepted->{fingerprint} eq $fingerprint);
+	delete $g_ktpAcceptedCaptureManifests{$key};
+	delete $g_ktpCaptureSequences{$key};
+	return 1;
+}
+
+sub ktpAuthorizeCaptureManifest
+{
+	my ($p) = @_;
+	return 0 if (ktpValidateCaptureManifestPayload($p) ne "");
+	my $key = ktpCaptureContextKey($p);
+	my $fingerprint = ktpCaptureManifestFingerprint($p);
+	return 0 if (!defined($key) || !defined($fingerprint));
+	my %capabilities = map { $_ => 1 } split(/,/, $p->{capabilities});
+
+	# A valid manifest is the only allocator. Keep authorization and sequence
+	# state bounded together so even valid-but-hostile context churn cannot grow
+	# process-lifetime memory without limit.
+	if (scalar(keys %g_ktpAcceptedCaptureManifests) >= 512 &&
+		!defined($g_ktpAcceptedCaptureManifests{$key})) {
+		%g_ktpAcceptedCaptureManifests = ();
+		%g_ktpCaptureSequences = ();
+	}
+	$g_ktpAcceptedCaptureManifests{$key} = {
+		schema => 22,
+		fingerprint => $fingerprint,
+		objective_attempt => $capabilities{objective_attempt} ? 1 : 0,
+		grenade_entity => $capabilities{grenade_entity} ? 1 : 0,
+	};
+	return 1;
+}
+
+sub ktpCaptureManifestAuthorizes
+{
+	my ($p, $event_type) = @_;
+	return 0 if (!defined($event_type) ||
+		$event_type !~ /^(?:objective_attempt|grenade_entity)$/);
+	my $key = ktpCaptureContextKey($p);
+	return 0 if (!defined($key) ||
+		!defined($g_ktpAcceptedCaptureManifests{$key}));
+	my $manifest = $g_ktpAcceptedCaptureManifests{$key};
+	return $manifest->{schema} == 22 && $manifest->{$event_type};
+}
+# END KTP CAPTURE AUTHORIZATION
+
+# BEGIN KTP CAPTURE SEQUENCE OBSERVATION
 sub ktpObserveCaptureMarker
 {
 	my ($marker, $properties) = @_;
@@ -5011,10 +5225,17 @@ sub ktpObserveCaptureMarker
 		!defined($sequence) || $sequence !~ /^\d+$/ || $sequence < 1);
 
 	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	# Only a manifest that already passed schema/capability validation and SQL
+	# persistence may allocate state. Every other marker is observation-only;
+	# an unmanifested flood therefore leaves this hash empty.
+	return if ($marker ne "manifest" &&
+		!defined($g_ktpCaptureSequences{$key}));
+	return if ($marker eq "manifest" &&
+		!defined($g_ktpAcceptedCaptureManifests{$key}));
 	%g_ktpCaptureSequences = ()
 		if ($marker eq "manifest" && scalar(keys %g_ktpCaptureSequences) >= 512 &&
 			!defined($g_ktpCaptureSequences{$key}));
-	if ($marker eq "manifest" || !defined($g_ktpCaptureSequences{$key})) {
+	if ($marker eq "manifest" && !defined($g_ktpCaptureSequences{$key})) {
 		$g_ktpCaptureSequences{$key} = {
 			first => undef, last => undef, gaps => 0, duplicate_or_reordered => 0,
 			received => 0, types => {}, rejected => {}, correlation_failures => {}
@@ -5056,19 +5277,78 @@ sub ktpRejectCaptureMarker
 	}
 }
 
+# Semantic rejection after an exact envelope should appear in health without
+# trusting its sequence enough to move the gap/high-water state. This helper is
+# observation-only and cannot allocate an unmanifested context.
+sub ktpRejectUnobservedCaptureMarker
+{
+	my ($marker, $properties, $correlation_failure) = @_;
+	my $key = ktpCaptureContextKey($properties);
+	return if (!defined($key) || !defined($g_ktpCaptureSequences{$key}));
+	my $state = $g_ktpCaptureSequences{$key};
+	$state->{received}++;
+	$state->{types}{$marker} = ($state->{types}{$marker} || 0) + 1;
+	$state->{rejected}{$marker} = ($state->{rejected}{$marker} || 0) + 1;
+	if ($correlation_failure) {
+		$state->{correlation_failures}{$marker} =
+			($state->{correlation_failures}{$marker} || 0) + 1;
+	}
+}
+# END KTP CAPTURE SEQUENCE OBSERVATION
+
+# BEGIN KTP CAPTURE MANIFEST VALIDATION
+sub ktpValidateCaptureManifestPayload
+{
+	my ($p) = @_;
+	return "invalid payload" if (!defined($p) || ref($p) ne "HASH");
+	for my $required (qw(matchid half map producer producer_version schema
+		capabilities position_interval buffer_entries life_buffer_entries sequence event_epoch)) {
+		return "missing $required"
+			if (!defined($p->{$required}) || $p->{$required} eq "");
+	}
+	return "invalid matchid"
+		if (length($p->{matchid}) > 64 ||
+			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
+	return "invalid half"
+		if ($p->{half} !~ /^\d+$/ || $p->{half} < 1 || $p->{half} > 255);
+	return "invalid map"
+		if (length($p->{map}) > 32 ||
+			$p->{map} !~ /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/);
+	return "invalid producer" if ($p->{producer} ne "stats_logging");
+	return "invalid producer_version"
+		if ($p->{producer_version} !~ /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
+	return "unsupported schema"
+		if ($p->{schema} !~ /^\d+$/ || int($p->{schema}) != 22);
+	return "invalid position_interval"
+		if ($p->{position_interval} !~ /^\d+(?:\.\d+)?$/ ||
+			($p->{position_interval} + 0) != 2);
+	for my $field (qw(buffer_entries life_buffer_entries sequence event_epoch)) {
+		return "invalid $field"
+			if ($p->{$field} !~ /^[1-9]\d{0,18}$/);
+	}
+	return "invalid buffer_entries" if ($p->{buffer_entries} > 65535);
+	return "invalid life_buffer_entries" if ($p->{life_buffer_entries} > 65535);
+
+	my %capabilities;
+	for my $capability (split(/,/, $p->{capabilities}, -1)) {
+		return "invalid capabilities" if ($capability !~ /^[a-z][a-z0-9_]{0,31}$/);
+		return "duplicate capability $capability" if ($capabilities{$capability}++);
+	}
+	for my $required (qw(frag_context damage position assist life break
+		flag_state flag_position objective_attempt grenade_entity sequence health)) {
+		return "missing capability $required" if (!$capabilities{$required});
+	}
+	return "";
+}
+# END KTP CAPTURE MANIFEST VALIDATION
+
+# BEGIN KTP CAPTURE MANIFEST PERSISTENCE
 sub doEvent_KTPCaptureManifest
 {
 	my ($p) = @_;
-	for my $required (qw(matchid half map producer producer_version schema
-		capabilities position_interval buffer_entries life_buffer_entries sequence event_epoch)) {
-		return "Capture manifest dropped: missing $required"
-			if (!defined($p->{$required}) || $p->{$required} eq "");
-	}
-	return "Capture manifest dropped: invalid numeric field"
-		if ($p->{half} !~ /^\d+$/ || $p->{schema} !~ /^\d+$/ ||
-			$p->{position_interval} !~ /^\d+(?:\.\d+)?$/ ||
-			$p->{buffer_entries} !~ /^\d+$/ || $p->{life_buffer_entries} !~ /^\d+$/ ||
-			$p->{sequence} !~ /^\d+$/ || $p->{event_epoch} !~ /^\d+$/);
+	my $validation_error = ktpValidateCaptureManifestPayload($p);
+	return "Capture manifest dropped: $validation_error"
+		if ($validation_error ne "");
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
 	delete $g_ktpPendingLife{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
@@ -5095,12 +5375,367 @@ sub doEvent_KTPCaptureManifest
 	return defined($rv) ? "Capture manifest recorded: match=$p->{matchid} half=$p->{half}" :
 		"Capture manifest SQL failed";
 }
+# END KTP CAPTURE MANIFEST PERSISTENCE
+
+# BEGIN KTP TELEMETRY 22 VALIDATION AND LEDGERS
+sub ktpValidateObjectiveAttemptPayload
+{
+	my ($p) = @_;
+	return "invalid payload" if (!defined($p) || ref($p) ne "HASH");
+	for my $required (qw(kind matchid half map attempt_id flag_index flag_name
+		capturing_team owner_before allies_in_zone axis_in_zone game_time
+		event_epoch sequence)) {
+		return "missing $required"
+			if (!defined($p->{$required}) || $p->{$required} eq "");
+	}
+	my $clock_error = ktpValidateProducerEventClock(
+		$p->{matchid}, $p->{half}, $p->{game_time}, $p->{event_epoch});
+	return $clock_error if ($clock_error ne "");
+	return "invalid map"
+		if (length($p->{map}) > 32 ||
+			$p->{map} !~ /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/);
+	return "invalid event kind"
+		if ($p->{kind} !~ /^(?:start|complete|stop)$/);
+	return "invalid attempt_id"
+		if ($p->{attempt_id} !~ /^[1-9]\d{0,18}$/);
+	return "invalid sequence"
+		if ($p->{sequence} !~ /^[1-9]\d{0,18}$/);
+	return "invalid start attempt_id"
+		if ($p->{kind} eq "start" && $p->{attempt_id} != $p->{sequence});
+	return "invalid terminal attempt_id"
+		if ($p->{kind} ne "start" && $p->{attempt_id} >= $p->{sequence});
+	return "invalid flag_index"
+		if ($p->{flag_index} !~ /^\d+$/ || $p->{flag_index} > 31);
+	return "invalid flag_name"
+		if (length($p->{flag_name}) > 64 ||
+			$p->{flag_name} =~ /[\x00-\x1f\x7f\"]|^$/);
+	return "invalid capturing_team"
+		if ($p->{capturing_team} !~ /^[12]$/);
+	return "invalid owner_before"
+		if ($p->{owner_before} !~ /^[0-2]$/);
+	return "capturing team already owns objective"
+		if ($p->{owner_before} == $p->{capturing_team});
+	for my $field (qw(allies_in_zone axis_in_zone)) {
+		return "invalid $field"
+			if ($p->{$field} !~ /^\d+$/ || $p->{$field} > 32);
+	}
+	if ($p->{kind} ne "stop") {
+		return "stop_reason is only valid on stop"
+			if (defined($p->{stop_reason}) && $p->{stop_reason} ne "");
+	} else {
+		return "invalid stop_reason"
+			if (!defined($p->{stop_reason}) ||
+				$p->{stop_reason} !~ /^(?:capture_stopped|context_reset)$/);
+	}
+	if ($p->{kind} eq "start") {
+		my $capturing_count = $p->{capturing_team} == 1
+			? $p->{allies_in_zone} : $p->{axis_in_zone};
+		return "capturing team has no player in zone" if ($capturing_count < 1);
+	}
+	return "";
+}
+
+sub ktpValidateGrenadeEntityPayload
+{
+	my ($p) = @_;
+	return "invalid payload" if (!defined($p) || ref($p) ne "HASH");
+	for my $required (qw(kind matchid half map entindex serial weapon_id
+		weapon_type owner position game_time event_epoch sequence)) {
+		return "missing $required"
+			if (!defined($p->{$required}) || $p->{$required} eq "");
+	}
+	my $clock_error = ktpValidateProducerEventClock(
+		$p->{matchid}, $p->{half}, $p->{game_time}, $p->{event_epoch});
+	return $clock_error if ($clock_error ne "");
+	return "invalid map"
+		if (length($p->{map}) > 32 ||
+			$p->{map} !~ /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/);
+	return "invalid entity kind"
+		if ($p->{kind} !~ /^(?:tracked|removed)$/);
+	return "invalid entindex"
+		if ($p->{entindex} !~ /^[1-9]\d*$/ || $p->{entindex} > 8191);
+	return "invalid serial"
+		if ($p->{serial} !~ /^[1-9]\d*$/ || $p->{serial} > 2147483647);
+	return "invalid sequence"
+		if ($p->{sequence} !~ /^[1-9]\d{0,18}$/);
+	my %weapons = (13 => "handgrenade", 14 => "stickgrenade", 36 => "mills_bomb");
+	return "unsupported grenade weapon_id"
+		if ($p->{weapon_id} !~ /^\d+$/ || !exists($weapons{int($p->{weapon_id})}));
+	return "weapon id/type mismatch"
+		if ($p->{weapon_type} ne $weapons{int($p->{weapon_id})});
+	return "invalid owner marker"
+		if (length($p->{owner}) > 255 || $p->{owner} =~ /[\r\n\x00]/);
+	return "invalid position"
+		if ($p->{position} !~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/);
+	for my $coordinate ($1, $2, $3) {
+		return "position outside MEDIUMINT range"
+			if ($coordinate < -8388608 || $coordinate > 8388607);
+	}
+	return "";
+}
+
+sub ktpTelemetryValueEqual
+{
+	my ($field, $left, $right) = @_;
+	return 1 if (!defined($left) && !defined($right));
+	return 0 if (!defined($left) || !defined($right));
+	return sprintf("%.2f", $left + 0) eq sprintf("%.2f", $right + 0)
+		if ($field eq "game_time");
+	return int($left) == int($right)
+		if ($field =~ /^(?:half|attempt_id|lifecycle_slot|flag_index|capturing_team|owner_before|allies_in_zone|axis_in_zone|event_epoch|producer_sequence|entindex|serial|weapon_id|owner_player_id|owner_engine_userid|pos_x|pos_y|pos_z)$/);
+	return "$left" eq "$right";
+}
+
+sub ktpTelemetryRowEqual
+{
+	my ($row, $incoming, @fields) = @_;
+	for my $field (@fields) {
+		return 0 if (!ktpTelemetryValueEqual(
+			$field, $row->{$field}, $incoming->{$field}));
+	}
+	return 1;
+}
+
+sub ktpObjectiveExistingDisposition
+{
+	my ($server_id, $incoming) = @_;
+	my @all_fields = qw(match_id half map_name attempt_id event_kind lifecycle_slot
+		flag_index flag_name capturing_team owner_before allies_in_zone axis_in_zone
+		stop_reason game_time event_epoch producer_sequence);
+	my @stable_fields = qw(match_id half map_name attempt_id flag_index flag_name
+		capturing_team owner_before);
+	my $existing = &doQuery("
+		SELECT match_id, half, map_name, attempt_id, event_kind, lifecycle_slot,
+		       flag_index, flag_name, capturing_team, owner_before,
+		       allies_in_zone, axis_in_zone, stop_reason, game_time,
+		       event_epoch, producer_sequence
+		FROM ktp_objective_attempt_events
+		WHERE server_id = ".int($server_id)."
+		  AND match_id = '".&quoteSQL($incoming->{match_id})."'
+		  AND half = ".int($incoming->{half})."
+		  AND (attempt_id = ".int($incoming->{attempt_id})."
+		       OR producer_sequence = ".int($incoming->{producer_sequence}).")
+		ORDER BY lifecycle_slot
+	");
+	while (my $row = $existing->fetchrow_hashref()) {
+		if (ktpTelemetryValueEqual("producer_sequence",
+				$row->{producer_sequence}, $incoming->{producer_sequence}) ||
+			ktpTelemetryValueEqual("lifecycle_slot",
+				$row->{lifecycle_slot}, $incoming->{lifecycle_slot})) {
+			my $disposition = ktpTelemetryRowEqual($row, $incoming, @all_fields)
+				? "duplicate" : "slot_conflict";
+			$existing->finish();
+			return $disposition;
+		}
+		if (!ktpTelemetryRowEqual($row, $incoming, @stable_fields)) {
+			$existing->finish();
+			return "identity_conflict";
+		}
+	}
+	$existing->finish();
+	return "none";
+}
+
+sub ktpGrenadeExistingDisposition
+{
+	my ($server_id, $incoming) = @_;
+	my @all_fields = qw(match_id half map_name entity_kind lifecycle_slot entindex
+		serial weapon_id weapon_type owner_player_id owner_engine_userid pos_x pos_y pos_z
+		game_time event_epoch producer_sequence);
+	my @stable_fields = qw(match_id half map_name entindex serial weapon_id weapon_type
+		owner_player_id owner_engine_userid);
+	my $existing = &doQuery("
+		SELECT match_id, half, map_name, entity_kind, lifecycle_slot, entindex,
+		       serial, weapon_id, weapon_type, owner_player_id,
+		       owner_engine_userid, pos_x, pos_y, pos_z, game_time,
+		       event_epoch, producer_sequence
+		FROM ktp_grenade_entity_events
+		WHERE server_id = ".int($server_id)."
+		  AND match_id = '".&quoteSQL($incoming->{match_id})."'
+		  AND half = ".int($incoming->{half})."
+		  AND ((entindex = ".int($incoming->{entindex})."
+		        AND serial = ".int($incoming->{serial}).")
+		       OR producer_sequence = ".int($incoming->{producer_sequence}).")
+		ORDER BY lifecycle_slot
+	");
+	while (my $row = $existing->fetchrow_hashref()) {
+		if (ktpTelemetryValueEqual("producer_sequence",
+				$row->{producer_sequence}, $incoming->{producer_sequence}) ||
+			ktpTelemetryValueEqual("lifecycle_slot",
+				$row->{lifecycle_slot}, $incoming->{lifecycle_slot})) {
+			my $disposition = ktpTelemetryRowEqual($row, $incoming, @all_fields)
+				? "duplicate" : "slot_conflict";
+			$existing->finish();
+			return $disposition;
+		}
+		if (!ktpTelemetryRowEqual($row, $incoming, @stable_fields)) {
+			$existing->finish();
+			return "identity_conflict";
+		}
+	}
+	$existing->finish();
+	return "none";
+}
+
+sub doEvent_KTPObjectiveAttempt
+{
+	my ($p) = @_;
+	delete $p->{"_ktp_correlation_failure"} if (defined($p));
+	my $validation_error = ktpValidateObjectiveAttemptPayload($p);
+	if ($validation_error ne "") {
+		&printEvent("KTP_OBJECTIVE_ATTEMPT_DROP",
+			"Objective attempt dropped: $validation_error", 1, 1);
+		return "Objective attempt dropped: $validation_error";
+	}
+
+	my ($half, $map, $context_error, $context_source) =
+		ktpResolveValidatedProducerEventContext(
+			$p->{matchid}, $p->{half}, $p->{game_time}, $p->{event_epoch});
+	if ($context_error ne "" || $map ne $p->{map}) {
+		my $error = $context_error ne "" ? $context_error : "producer map disagrees with interval";
+		$p->{"_ktp_correlation_failure"} = 1;
+		&printEvent("KTP_OBJECTIVE_ATTEMPT_DROP",
+			"Objective attempt dropped: $error (match=$p->{matchid} attempt=$p->{attempt_id})",
+			1, 1);
+		return "Objective attempt dropped: $error";
+	}
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $slot = $p->{kind} eq "start" ? 0 : 1;
+	my $stop_reason = $p->{kind} eq "stop" ? $p->{stop_reason} : undef;
+	my %incoming = (
+		match_id => $p->{matchid}, half => int($half), map_name => $map,
+		attempt_id => int($p->{attempt_id}), event_kind => $p->{kind},
+		lifecycle_slot => $slot, flag_index => int($p->{flag_index}),
+		flag_name => $p->{flag_name}, capturing_team => int($p->{capturing_team}),
+		owner_before => int($p->{owner_before}),
+		allies_in_zone => int($p->{allies_in_zone}),
+		axis_in_zone => int($p->{axis_in_zone}), stop_reason => $stop_reason,
+		game_time => sprintf("%.2f", $p->{game_time} + 0),
+		event_epoch => int($p->{event_epoch}),
+		producer_sequence => int($p->{sequence}),
+	);
+	my $disposition = ktpObjectiveExistingDisposition($server_id, \%incoming);
+	return "Objective attempt duplicate ignored: match=$p->{matchid} half=$half attempt=$p->{attempt_id} kind=$p->{kind}"
+		if ($disposition eq "duplicate");
+	return "Objective attempt conflict rejected: immutable sequence or lifecycle slot differs"
+		if ($disposition eq "slot_conflict");
+	return "Objective attempt conflict rejected: lifecycle identity differs"
+		if ($disposition eq "identity_conflict");
+
+	my $stop_reason_sql = defined($stop_reason)
+		? "'".&quoteSQL($stop_reason)."'" : "NULL";
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_objective_attempt_events
+			(server_id, match_id, half, map_name, attempt_id, event_kind,
+			 lifecycle_slot, flag_index, flag_name, capturing_team, owner_before,
+			 allies_in_zone, axis_in_zone, stop_reason, game_time, event_epoch,
+			 producer_sequence, event_time)
+		VALUES
+			(".int($server_id).", '".&quoteSQL($p->{matchid})."', ".int($half).",
+			 '".&quoteSQL($map)."', ".int($p->{attempt_id}).",
+			 '".&quoteSQL($p->{kind})."', $slot, ".int($p->{flag_index}).",
+			 '".&quoteSQL($p->{flag_name})."', ".int($p->{capturing_team}).",
+			 ".int($p->{owner_before}).", ".int($p->{allies_in_zone}).",
+			 ".int($p->{axis_in_zone}).", $stop_reason_sql,
+			 ".sprintf("%.2f", $p->{game_time} + 0).", ".int($p->{event_epoch}).",
+			 ".int($p->{sequence}).", FROM_UNIXTIME(".int($p->{event_epoch})."))
+	");
+	if (!defined($rv)) {
+		# A second writer can win the unique-key race after the preselect. Re-read
+		# the complete immutable row before deciding whether the DB error was an
+		# exact replay or a real conflict/failure.
+		$disposition = ktpObjectiveExistingDisposition($server_id, \%incoming);
+		return "Objective attempt duplicate ignored after concurrent insert: match=$p->{matchid} half=$half attempt=$p->{attempt_id} kind=$p->{kind}"
+			if ($disposition eq "duplicate");
+		return "Objective attempt conflict rejected after concurrent insert"
+			if ($disposition ne "none");
+		return "Objective attempt SQL insert failed";
+	}
+	return "Objective attempt logged: match=$p->{matchid} half=$half attempt=$p->{attempt_id} kind=$p->{kind} context=$context_source";
+}
+
+sub doEvent_KTPGrenadeEntity
+{
+	my ($p, $owner_player_id, $owner_engine_userid) = @_;
+	delete $p->{"_ktp_correlation_failure"} if (defined($p));
+	my $validation_error = ktpValidateGrenadeEntityPayload($p);
+	if ($validation_error ne "") {
+		&printEvent("KTP_GRENADE_ENTITY_DROP",
+			"Grenade entity dropped: $validation_error", 1, 1);
+		return "Grenade entity dropped: $validation_error";
+	}
+	return "Grenade entity dropped: invalid resolved owner"
+		if (!defined($owner_player_id) || $owner_player_id !~ /^[1-9]\d*$/ ||
+			!defined($owner_engine_userid) || $owner_engine_userid !~ /^\d+$/);
+
+	my ($half, $map, $context_error, $context_source) =
+		ktpResolveValidatedProducerEventContext(
+			$p->{matchid}, $p->{half}, $p->{game_time}, $p->{event_epoch});
+	if ($context_error ne "" || $map ne $p->{map}) {
+		my $error = $context_error ne "" ? $context_error : "producer map disagrees with interval";
+		$p->{"_ktp_correlation_failure"} = 1;
+		&printEvent("KTP_GRENADE_ENTITY_DROP",
+			"Grenade entity dropped: $error (match=$p->{matchid} entity=$p->{entindex}/$p->{serial})",
+			1, 1);
+		return "Grenade entity dropped: $error";
+	}
+	$p->{position} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/;
+	my ($x, $y, $z) = (int($1), int($2), int($3));
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $slot = $p->{kind} eq "tracked" ? 0 : 1;
+	my %incoming = (
+		match_id => $p->{matchid}, half => int($half), map_name => $map,
+		entity_kind => $p->{kind}, lifecycle_slot => $slot,
+		entindex => int($p->{entindex}), serial => int($p->{serial}),
+		weapon_id => int($p->{weapon_id}), weapon_type => $p->{weapon_type},
+		owner_player_id => int($owner_player_id),
+		owner_engine_userid => int($owner_engine_userid),
+		pos_x => $x, pos_y => $y, pos_z => $z,
+		game_time => sprintf("%.2f", $p->{game_time} + 0),
+		event_epoch => int($p->{event_epoch}),
+		producer_sequence => int($p->{sequence}),
+	);
+	my $disposition = ktpGrenadeExistingDisposition($server_id, \%incoming);
+	return "Grenade entity duplicate ignored: match=$p->{matchid} half=$half entity=$p->{entindex}/$p->{serial} kind=$p->{kind}"
+		if ($disposition eq "duplicate");
+	return "Grenade entity conflict rejected: immutable sequence or lifecycle slot differs"
+		if ($disposition eq "slot_conflict");
+	return "Grenade entity conflict rejected: lifecycle identity differs"
+		if ($disposition eq "identity_conflict");
+
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_grenade_entity_events
+			(server_id, match_id, half, map_name, entity_kind, lifecycle_slot,
+			 entindex, serial, weapon_id, weapon_type, owner_player_id,
+			 owner_engine_userid, pos_x, pos_y, pos_z, game_time, event_epoch,
+			 producer_sequence, event_time)
+		VALUES
+			(".int($server_id).", '".&quoteSQL($p->{matchid})."', ".int($half).",
+			 '".&quoteSQL($map)."', '".&quoteSQL($p->{kind})."', $slot,
+			 ".int($p->{entindex}).", ".int($p->{serial}).", ".int($p->{weapon_id}).",
+			 '".&quoteSQL($p->{weapon_type})."', ".int($owner_player_id).",
+			 ".int($owner_engine_userid).", $x, $y, $z,
+			 ".sprintf("%.2f", $p->{game_time} + 0).", ".int($p->{event_epoch}).",
+			 ".int($p->{sequence}).", FROM_UNIXTIME(".int($p->{event_epoch})."))
+	");
+	if (!defined($rv)) {
+		$disposition = ktpGrenadeExistingDisposition($server_id, \%incoming);
+		return "Grenade entity duplicate ignored after concurrent insert: match=$p->{matchid} half=$half entity=$p->{entindex}/$p->{serial} kind=$p->{kind}"
+			if ($disposition eq "duplicate");
+		return "Grenade entity conflict rejected after concurrent insert"
+			if ($disposition ne "none");
+		return "Grenade entity SQL insert failed";
+	}
+	return "Grenade entity logged: match=$p->{matchid} half=$half entity=$p->{entindex}/$p->{serial} kind=$p->{kind} context=$context_source";
+}
+# END KTP TELEMETRY 22 VALIDATION AND LEDGERS
 
 # BEGIN KTP CAPTURE HEALTH VALIDATION
 sub ktpValidateCaptureHealthPayload
 {
 	my ($p) = @_;
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -5171,8 +5806,13 @@ sub doEvent_KTPCaptureHealth
 			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
 			event_time=VALUES(event_time)
 	");
-	delete $g_ktpCaptureSequences{$key}
-		if ($p->{event_type} eq "flag_position" && defined($rv));
+	# Producer schema 22 emits health rows in enum order with grenade_entity
+	# last. Keep reconciliation state until that final row has observed both new
+	# event types; clearing at the old flag_position tail would report zeros.
+	if ($p->{event_type} eq "grenade_entity" && defined($rv)) {
+		delete $g_ktpCaptureSequences{$key};
+		delete $g_ktpAcceptedCaptureManifests{$key};
+	}
 	return defined($rv) ? "Capture health recorded: match=$p->{matchid} half=$p->{half} type=$p->{event_type}" :
 		"Capture health SQL failed";
 }

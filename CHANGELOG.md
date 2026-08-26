@@ -1,5 +1,57 @@
 # KTP HLStatsX Changelog
 
+## [0.3.15] - Unreleased
+
+### Added - schema-22 objective and grenade entity facts
+
+- Accept only the paired stats producer schema 22 manifest at the audited
+  two-second position interval, with `objective_attempt` and `grenade_entity`
+  required in manifest capabilities and end-of-half capture health. Bare
+  telemetry uses an exact, 1024-byte-bounded grammar; only a successfully
+  persisted schema-22 manifest authorizes and allocates sequence state for its
+  exact server/match/half. Authorization stores a canonical manifest
+  fingerprint. Any non-identical same-context replacement revokes the prior
+  authorization and sequence state before validation or SQL; failure leaves it
+  revoked, while an exact accepted replay preserves accumulated health state.
+- Parse bare `KTP_OBJECTIVE_ATTEMPT` start/complete/stop markers using their
+  producer match, half, map, clocks, and sequence. Migration 022 creates the
+  append-only `ktp_objective_attempt_events` ledger with one immutable start
+  and at most one terminal per attempt. Identical replay is a no-op;
+  conflicting lifecycle facts fail closed. A terminal whose start was lost is
+  retained as left-censored rather than fabricating a start.
+- Parse bare `KTP_GRENADE_ENTITY` tracked/removed markers for weapon IDs 13,
+  14, and 36 only. Canonical weapon names and the cached owner identity must
+  validate, the owner resolves through the side-effect-free durable identity
+  path, and private XYZ coordinates remain in the database. Rockets, mortar,
+  other weapon IDs, and `detonated`/`exploded` kinds are rejected.
+- `removed` deliberately means only that a tracked `(entindex, serial)` entity
+  was removed. There is no detonation/explosion cause and no grenade-to-damage
+  correlation claim in this contract.
+- Migration 022 adds replay/lifecycle uniqueness and match timeline,
+  objective, entity, and owner indexes. It is rerunnable and repairs missing
+  named indexes using the MySQL/MariaDB-compatible information-schema pattern.
+  Existing named indexes must have the exact uniqueness and complete ordered
+  columns, and extra required/no-default columns are rejected because daemon
+  inserts could not populate them.
+  A pre-existing partial/incompatible table now fails before index ALTERs with
+  a ledger-specific actionable sentinel instead of being silently described as
+  repaired. The executable migration selftest covers clean apply, rerun, index
+  repair, wrong same-name index uniqueness, extra required columns, and both
+  partial-table failures in Infrastructure's ephemeral MySQL. A dedicated CI
+  job runs this entry point in the production-parity Lane B database image.
+- A duplicate-key race now reselects and compares the complete immutable row:
+  only an exact concurrent replay becomes a no-op; a differing row remains a
+  rejected conflict.
+- `scripts/selftest-telemetry22.pl` executes the shipped validators and ledger
+  handlers for validation boundaries, context failure, replay, reordering,
+  left-censored terminals, conflicting terminals, weapon rejection, and honest
+  removal terminology. It is wired into `capture-contract-selftests`.
+
+### Operations
+
+- The daemon and migration do not purge the new ledgers. KTPInfrastructure's
+  match-type retention job must include both tables before production rollout.
+
 ## [0.3.14] - Unreleased
 
 ### Fixed — an empty quoted field now parses as absent, not as a value
