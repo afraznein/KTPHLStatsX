@@ -158,6 +158,9 @@ through `recordEvent`:
   is classified at query time, never stored
 - `ktp_life_events` — validated life starts and ends for survival analytics
 - `ktp_assist_events` — canonical producer-time assists
+- `ktp_capture_manifests` — per-half producer version and capture capability manifest
+- `ktp_capture_health` — producer-vs-daemon end-of-half capture reconciliation by
+  event type
 - `ktp_objective_attempt_events` — append-only start/complete/stop facts. A
   terminal without a received start is retained as left-censored; no start is
   synthesized. Completed, aborted, and orphan classifications are query-time.
