@@ -24,12 +24,68 @@ jobs:
         run: perl scripts/selftest-frag-context.pl
       - name: Damage-absence distinction
         run: perl scripts/selftest-damage-absence.pl
+      - name: Schema-22 objective and grenade entity contracts
+        run: perl scripts/selftest-telemetry22.pl
+
+  migration-022-mysql:
+    name: Migration 022 on production-parity MySQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/ktp-runtime-test-base:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout canonical ephemeral-MySQL harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/KTPInfrastructure
+          ref: preprod
+          path: KTPInfrastructure
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build production-parity Lane B database image
+        run: |
+          docker pull "$BASE_IMAGE"
+          docker build \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            -t ktp-lane-b:ci \
+            -f KTPInfrastructure/build/lane-b/Dockerfile \
+            KTPInfrastructure/build/lane-b
+      - name: Migration 022 clean/rerun/repair/fail-closed contract
+        run: |
+          docker run --rm --network none \
+            -v "${PWD}:/daemon:ro" \
+            -v "${PWD}/KTPInfrastructure:/infra:ro" \
+            ktp-lane-b:ci \
+            python3 /daemon/scripts/selftest-migration22.py \
+              --infrastructure-root /infra
+
+  # Deliberately NOT a dependency of corpus-regression. Making the lane `needs:`
+  # this would leave the required `corpus-regression / Lane B` context skipped
+  # rather than failed, and a required check that never reports blocks the branch
+  # instead of reporting on it.
+  ref-pairing:
+    name: Lane B refs pair with the harness lineage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate discriminates in both directions
+        run: python3 scripts/check-lane-refs.py --selftest
+      - name: Every ref but daemon_ref is a literal on the harness lineage
+        run: python3 scripts/check-lane-refs.py
 
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
     with:
       lane: corpus
       infrastructure_ref: preprod
-      amxx_ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+      # Literal, not the PR's base ref. KTPAMXX is not the artifact under test
+      # here — it is part of the stack the harness assembles, so it has to come
+      # from the same lineage as the `uses:` pin. See scripts/check-lane-refs.py.
+      amxx_ref: preprod
       daemon_ref: ${{ github.event.pull_request.head.sha || github.sha }}
     secrets: inherit
