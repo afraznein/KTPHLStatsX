@@ -52,6 +52,21 @@
 - The daemon and migration do not purge the new ledgers. KTPInfrastructure's
   match-type retention job must include both tables before production rollout.
 
+### CI — Lane B's `amxx_ref` now comes from the harness lineage
+
+- `corpus-regression.yml` fed `amxx_ref` the pull request's base ref while the
+  harness is pinned `@preprod`. For a PR into `main` that paired a preprod
+  harness and preprod infrastructure with KTPAMXX `main` — three repositories
+  assembled from two lineages, and the lane then dies during artifact assembly
+  for a reason no pull request caused. `daemon_ref` stays an expression: this
+  repository is the artifact under test, and pinning it would leave the lane
+  reporting on code the PR never touched.
+- `scripts/check-lane-refs.py` enforces that pairing, with `--selftest` proving
+  it rejects each way a call can straddle lineages. Which input is under test is
+  per-repository, so this is not KTPAMXX's copy — pointing that one at this
+  workflow flags `daemon_ref`, the input that is correct here, and says nothing
+  about `amxx_ref`.
+
 ## [0.3.14] - Unreleased
 
 ### Fixed — an empty quoted field now parses as absent, not as a value

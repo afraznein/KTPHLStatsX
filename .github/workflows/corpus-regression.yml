@@ -64,11 +64,28 @@ jobs:
             python3 /daemon/scripts/selftest-migration22.py \
               --infrastructure-root /infra
 
+  # Deliberately NOT a dependency of corpus-regression. Making the lane `needs:`
+  # this would leave the required `corpus-regression / Lane B` context skipped
+  # rather than failed, and a required check that never reports blocks the branch
+  # instead of reporting on it.
+  ref-pairing:
+    name: Lane B refs pair with the harness lineage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate discriminates in both directions
+        run: python3 scripts/check-lane-refs.py --selftest
+      - name: Every ref but daemon_ref is a literal on the harness lineage
+        run: python3 scripts/check-lane-refs.py
+
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
     with:
       lane: corpus
       infrastructure_ref: preprod
-      amxx_ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+      # Literal, not the PR's base ref. KTPAMXX is not the artifact under test
+      # here — it is part of the stack the harness assembles, so it has to come
+      # from the same lineage as the `uses:` pin. See scripts/check-lane-refs.py.
+      amxx_ref: preprod
       daemon_ref: ${{ github.event.pull_request.head.sha || github.sha }}
     secrets: inherit
