@@ -229,11 +229,18 @@ always.
 Related: `cumulative-counter-under-windowed-headline`, `hlstatsx-udp-rcvbuf-too-small`,
 `abandoned-pending-empty-matchid-hlstats-corruption`
 
-## "hlstats_Events_PlayerActions has no `half` column - only Frags does; WHERE pa.half=N errors to stderr and returns empty, reading as \"this match has no captures\""
+## "hlstats_Events_PlayerActions has no `half` column; WHERE pa.half=N errors to stderr and returns empty, reading as \"this match has no captures\""
 
-`hlstats_Events_PlayerActions` has **no `half` column**. Half attribution exists only on
-`hlstats_Events_Frags`. A query with `WHERE pa.half = 1` errors to **stderr** and returns an empty
-set — which reads exactly like *"this match recorded no captures"*.
+`hlstats_Events_PlayerActions` has **no `half` column**. A query with `WHERE pa.half = 1` fails with
+MySQL **1054 `Unknown column`** on **stderr** and returns an empty set — which reads exactly like
+*"this match recorded no captures"*.
+
+⚠️ **Half attribution is not exclusive to `hlstats_Events_Frags`** — measured against the live schema
+2026-08-27. `hlstats_Events_PlayerActions` carries **`producer_half`** (`tinyint unsigned`, nullable),
+written only for rows ingested since the schema-22 producer telemetry landed; older rows are NULL. So
+it is a real column but not yet a usable half key — re-derive its coverage
+(`SELECT producer_half, COUNT(*) FROM hlstats_Events_PlayerActions GROUP BY producer_half`) before
+relying on it, and join to `hlstats_Events_Frags` on `match_id` for anything historical.
 
 **Why:** same shape as `wrong-game-event-name-reads-as-no-emission` and the `hlstats_Events_Deaths`
 trap (that table does not exist at all; frags ARE the death record). A nonexistent column and a
@@ -255,7 +262,8 @@ That reads as a class-limit bypass.
 
 **It was packet loss.** On that server that day `hlstats_Events_ChangeRole` has **0** rows while
 `hlstats_Events_Frags` logged **1,134**, and **653 of those 1,134** carry a corrupted `map` field.
-Cause is `hlstatsx-udp-rcvbuf-too-small` (see `ENGINE_BUG_POSTMORTEMS.md`) — a 1 MB UDP receive buffer
+Cause is `hlstatsx-udp-rcvbuf-too-small` — postmortem in `KTP Git Projects/ENGINE_BUG_POSTMORTEMS.md`
+at the private project root, **not in this repo**, so a clone will not have it. A 1 MB UDP receive buffer
 that silently dropped log lines under any daemon stall. **Fixed 2026-08-14.**
 
 🔑 **So any forensic conclusion drawn from `killerRole` / `ChangeRole` before 2026-08-14 is unsafe** —
