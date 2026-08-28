@@ -5,7 +5,7 @@ description: Use BEFORE modifying or deploying KTPHLStatsX — fork-discipline b
 
 # KTPHLStatsX Development
 
-Perl/PHP HLStatsX:CE fork running as a single daemon on the data server,
+Perl HLStatsX:CE fork running as a single daemon on the data server,
 consuming UDP log lines from all ~24 fleet game-server instances and writing
 to MySQL `hlstatsx`. It is the sole place that tags kills/deaths/objective
 events with a `match_id`, separating warmup noise from official match stats.
