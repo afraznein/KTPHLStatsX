@@ -1,6 +1,6 @@
 # KTP HLStatsX Changelog
 
-## [0.3.15] - Unreleased
+## [0.3.15] - 2026-08-27
 
 ### Added - schema-22 objective and grenade entity facts
 
@@ -67,7 +67,7 @@
   workflow flags `daemon_ref`, the input that is correct here, and says nothing
   about `amxx_ref`.
 
-## [0.3.14] - Unreleased
+## [0.3.14] - 2026-08-25
 
 ### Fixed — an empty quoted field now parses as absent, not as a value
 
@@ -89,7 +89,7 @@
   rename surviving an empty first player. Fails 6 of 16 on the pre-fix code.
   Wired into `capture-contract-selftests`.
 
-## [0.3.13] - Unreleased
+## [0.3.13] - 2026-08-25
 
 ### Added
 - Persist per-half capture manifests from `stats_logging` 1.17.0 and reconcile
@@ -116,7 +116,7 @@
   `scripts/selftest-damage-absence.pl` executes it out of the source between markers, so a revert
   fails the test rather than silently passing. Wired into `capture-contract-selftests`.
 
-## [0.3.12] - Unreleased
+## [0.3.12] - 2026-08-24
 
 ### Added
 - `frag_context_certified` (migration 020), separating "a marker consumed this
@@ -170,7 +170,7 @@
   once. Re-running it afterwards would withdraw live claims and re-open those
   rows to correlation.
 
-## [0.3.11] - Unreleased
+## [0.3.11] - 2026-08-22
 
 ### Fixed
 - Correlate DODX's precise DoD alternate-fire names (rifle butts, bayonets,
@@ -180,7 +180,7 @@
   alias is accepted, so a missing ordinary frag cannot shift context onto an
   unrelated row.
 
-## [0.3.10] - Unreleased
+## [0.3.10] - 2026-08-22
 
 ### Fixed
 - Correlate `break_context` markers exactly once. The UPDATE that attaches
