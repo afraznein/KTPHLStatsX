@@ -284,3 +284,31 @@ the absent `Statsme` row for the same burst. **Corroboration between two outputs
 pipe is not corroboration.** Related: `a-killed-probe-reads-as-a-clean-zero`,
 `durable-record-outranks-banner-and-log`.
 
+
+## DoD log event names — a wrong-game grep reads as "the engine emits nothing"
+
+*(Relocated 2026-08-29 from the operator's memory set — this repo is where the trap fires.)*
+
+A finding claimed **"objective events are not logged fleet-wide"** and stood for weeks. It was false.
+Production `hlstatsx` held **543,163** `Events_PlayerActions` and **1,645,086** `Events_TeamBonuses`
+rows; in one week `dod_capture_area` (28,311) and `dod_control_point` (21,844) fired on 9 distinct
+`serverId`s.
+
+**The probe grepped the wrong game's event names.** `Captured` and `Round_Win` are Counter-Strike/TFC
+strings. DoD writes:
+
+```
+"Player<66><STEAM_0:1:24850><Allies>" triggered a "dod_control_point" - "the cliffs"
+Team "Allies" triggered a "dod_capture_area" - "the alley"
+```
+
+Note the **`a`** — so even a generic `triggered "[^"]+"` census misses it.
+
+**Why it matters:** the finding would have sent someone to make DoD emit events it had been emitting
+all along. A grep for a string the engine never writes returns 0 and looks exactly like an engine that
+produces nothing.
+
+**How to apply:** when a census says a game engine emits nothing, confirm the *exact literal* against a
+raw log file before believing it. Also: `mp_logdetail` being unset is TRUE but governs
+**weapon-damage** detail, not objectives — two true facts sitting next to each other were read as a
+causal chain.
