@@ -99,7 +99,9 @@ my $loaded = eval "no strict 'vars';\n$clocks\n$manifest\n$manifest_persistence\
 die "cannot load shipped telemetry helpers: $@" unless $loaded;
 
 my $capabilities = join(',', qw(frag_context damage position assist life break
-    flag_state flag_position objective_attempt grenade_entity sequence health));
+    flag_state flag_position objective_attempt grenade_entity team_membership sequence health));
+my $schema21_capabilities = join(',', qw(frag_context damage position assist life break
+    flag_state flag_position team_membership sequence health));
 my %manifest_ok = (
     matchid => 'telemetry-TEST', half => 1, map => 'dod_anzio',
     producer => 'stats_logging', producer_version => '1.18.0', schema => 22,
@@ -109,7 +111,7 @@ my %manifest_ok = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest_ok), '',
     'schema-22 manifest accepts the two-second paired contract');
-for my $bad_schema (21, 23) {
+for my $bad_schema (23) {
     my %bad = (%manifest_ok, schema => $bad_schema);
     like(ktpValidateCaptureManifestPayload(\%bad), qr/schema/,
         "schema $bad_schema is rejected by the schema-22 receiver");
@@ -154,14 +156,22 @@ for my $n (1 .. 1000) {
 }
 is(scalar(keys %g_ktpCaptureSequences), 0,
     'unmanifested marker flood cannot allocate sequence state');
-my %schema21 = (%manifest_ok, schema => 21);
-ok(!ktpAuthorizeCaptureManifest(\%schema21),
-    'schema-21 manifest cannot authorize schema-22 telemetry');
+my %schema21 = (%manifest_ok, schema => 21, capabilities => $schema21_capabilities);
+is(ktpValidateCaptureManifestPayload(\%schema21), '',
+    'schema-21 partial manifest accepts its explicit capability contract');
+ok(ktpAuthorizeCaptureManifest(\%schema21),
+    'schema-21 manifest authorizes its membership-only contract');
 ktpObserveCaptureMarker('manifest', \%schema21);
-is(scalar(keys %g_ktpAcceptedCaptureManifests), 0,
-    'invalid schema manifest does not initialize authorization');
-is(scalar(keys %g_ktpCaptureSequences), 0,
-    'invalid schema manifest does not initialize sequence state');
+my $schema21_key = join("\x1e", $s_addr, 'telemetry-TEST', 1);
+ok(ktpCaptureManifestAuthorizes(\%schema21, 'team_membership'),
+    'schema-21 contract authorizes team-membership transitions');
+ok(!ktpCaptureManifestAuthorizes(\%schema21, 'objective_attempt') &&
+   !ktpCaptureManifestAuthorizes(\%schema21, 'grenade_entity'),
+    'schema-21 contract cannot authorize schema-22-only rich facts');
+is($g_ktpAcceptedCaptureManifests{$schema21_key}{schema}, 21,
+    'accepted manifest retains its exact schema version');
+%g_ktpAcceptedCaptureManifests = ();
+%g_ktpCaptureSequences = ();
 my %schema23 = (%manifest_ok, schema => 23);
 ok(!ktpAuthorizeCaptureManifest(\%schema23),
     'schema-23 manifest cannot authorize schema-22 telemetry');
@@ -174,8 +184,9 @@ is(scalar(keys %g_ktpCaptureSequences), 1,
 like($g_ktpAcceptedCaptureManifests{$accepted_key}{fingerprint},
     qr/^\d+:/, 'accepted authorization stores a canonical manifest fingerprint');
 ok(ktpCaptureManifestAuthorizes(\%manifest_ok, 'objective_attempt') &&
-   ktpCaptureManifestAuthorizes(\%manifest_ok, 'grenade_entity'),
-    'accepted capabilities authorize both new event types');
+   ktpCaptureManifestAuthorizes(\%manifest_ok, 'grenade_entity') &&
+   ktpCaptureManifestAuthorizes(\%manifest_ok, 'team_membership'),
+    'accepted capabilities authorize all contract event types');
 my %observed_objective = (matchid => 'telemetry-TEST', half => 1, sequence => 2);
 ktpObserveCaptureMarker('objective_attempt', \%observed_objective);
 ok(!ktpRevokeReplacedCaptureManifest(\%manifest_ok),
@@ -495,8 +506,8 @@ like($grenade_branch,
     qr/if \(\$payload_error ne ""\).*?ktpRejectUnobservedCaptureMarker\(\s*"grenade_entity".*?ktpCaptureManifestAuthorizes.*?\} elsif.*?ktpParsePlayerIdentity/s,
     'authorized invalid grenade payload is rejected before owner correlation');
 like($source,
-    qr/if \(\$p->\{event_type\} eq "grenade_entity".*?delete \$g_ktpCaptureSequences\{\$key\}.*?delete \$g_ktpAcceptedCaptureManifests\{\$key\}/s,
-    'schema-22 reconciliation state lives through the final health type');
+    qr/\$manifest->\{schema\} == 21.*?team_membership.*?\$manifest->\{schema\} == 22.*?grenade_entity/s,
+    'health finalization follows each accepted schema contract tail');
 
 my $migration22 = slurp($MIGRATION22);
 like($migration22, qr/CREATE TABLE IF NOT EXISTS ktp_objective_attempt_events/,
