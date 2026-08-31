@@ -12,7 +12,7 @@ my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION16 = $SCRIPT_DIR . '../sql/migrate_016_life_events.sql';
 my $MIGRATION17 = $SCRIPT_DIR . '../sql/migrate_017_capture_clocks_and_assists.sql';
 my $MIGRATION21 = $SCRIPT_DIR . '../sql/migrate_021_capture_observability.sql';
-my $MIGRATION23 = $SCRIPT_DIR . '../sql/migrate_023_team_membership_intervals.sql';
+my $MIGRATION24 = $SCRIPT_DIR . '../sql/migrate_024_team_membership_intervals.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -424,12 +424,12 @@ like($source, qr/^sub ktpObserveCaptureMarker/m,
     'daemon tracks globally monotonic producer sequences');
 like($source, qr/^sub doEvent_KTPCaptureHealth/m,
     'daemon persists per-type capture health reconciliation');
-my $migration23 = slurp($MIGRATION23);
-like($migration23, qr/CREATE TABLE IF NOT EXISTS ktp_team_membership_events/,
-    'migration 023 creates private team-membership ledger');
-like($migration23, qr/UNIQUE KEY uk_team_membership_sequence/,
+my $migration24 = slurp($MIGRATION24);
+like($migration24, qr/CREATE TABLE IF NOT EXISTS ktp_team_membership_events/,
+    'migration 024 creates private team-membership ledger');
+like($migration24, qr/UNIQUE KEY uk_team_membership_sequence/,
     'team-membership replay is idempotent by producer sequence');
-like($migration23, qr/idx_membership_player_timeline/,
+like($migration24, qr/idx_membership_player_timeline/,
     'team-membership interval derivation has a player timeline index');
 like($source, qr/^sub doEvent_KTPTeamMembership/m,
     'daemon has a dedicated team-transition ledger handler');

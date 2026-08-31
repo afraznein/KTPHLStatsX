@@ -521,10 +521,24 @@ the file it actually landed is `sql/migrate_023_headshot_observed_provenance.sql
 and has always been, `migrate_020_frag_context_certified.sql`. A reference to "migrate_020 headshot"
 points at a branch name that was never accurate, not at a file.
 
-⚠️ **Freshly discovered while verifying this, 2026-08-30: `migrate_023` is not even a stable name
+⚠️ **Discovered while verifying this, 2026-08-30: `migrate_023` was not even a stable name
 across this repo's own branches.** #57 based on and merged directly into `main` — not `preprod`, the
 usual integration branch (see § Branches) — landing `migrate_023_headshot_observed_provenance.sql`
 there. `preprod` already had its own, unrelated `migrate_023_team_membership_intervals.sql` (#58) at
-the same time. So as of this writing, `main`'s `migrate_023` and `preprod`'s `migrate_023` are two
-different migrations. Identify a migration here by its descriptive filename suffix and state which
-branch, never by number alone.
+the same time, so `main`'s `migrate_023` and `preprod`'s `migrate_023` were two different migrations
+and `preprod` could not be promoted without landing two `023`s on `main`.
+
+✅ **Resolved on `preprod` 2026-08-31 by renumbering the `preprod` side, because `main`'s `023` is the
+one that cannot move** — `hlstats_Events_Frags.headshot_observed` is applied to the production
+database, and renumbering an applied migration desyncs the file from the schema it already produced.
+`migrate_023_team_membership_intervals` became **`024`** and `migrate_024_position_state_map_revision`
+became **`025`**, in that order because `position_state` names team-membership as a prerequisite in
+its own header and ordinals here *are* apply order. 🔑 **Renumbering was safe only because both were
+already applied under their old names and nothing records applied-ness by filename:** there is no
+migration ledger for hlstatsx — `support_schema_migrations` belongs to the support app — so
+applied-ness is probed by schema effect, and a rename carries no database state. Both are idempotent
+guards, so a re-apply under the new name is a no-op either way.
+
+⛔ **The general rule survives the fix, because the two branches still disagree:** `main`'s `023` is
+headshot provenance and `preprod`'s is position-state's prerequisite chain. Identify a migration here
+by its descriptive filename suffix and state which branch, never by number alone.

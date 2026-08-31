@@ -1,4 +1,4 @@
--- KTP HLStatsX Migration 023: authoritative player team-membership transitions.
+-- KTP HLStatsX Migration 024: authoritative player team-membership transitions.
 -- Apply before enabling a producer that advertises the `team_membership`
 -- schema-22 capability. This is private raw telemetry; no public artifact may
 -- expose the match id, player id, game clock, or source event sequence.

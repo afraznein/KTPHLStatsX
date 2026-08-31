@@ -1,5 +1,5 @@
--- KTP HLStatsX Migration 024: explicit position state and captured BSP revision.
--- Apply after migrations 021 (capture manifests), 023 (team membership), and
+-- KTP HLStatsX Migration 025: explicit position state and captured BSP revision.
+-- Apply after migrations 021 (capture manifests), 024 (team membership), and
 -- before stats_logging 1.19.0 / daemon 0.3.16 schema-23 capture is enabled.
 --
 -- All new columns are nullable for legacy compatibility. Schema-23 ingestion
