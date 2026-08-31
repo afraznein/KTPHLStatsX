@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise migration 024 clean apply, rerun, legacy NULLs, and repair."""
+"""Exercise migration 025 clean apply, rerun, legacy NULLs, and repair."""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,7 @@ def main() -> int:
         "--migration",
         type=Path,
         default=Path(__file__).resolve().parents[1]
-        / "sql" / "migrate_024_position_state_map_revision.sql",
+        / "sql" / "migrate_025_position_state_map_revision.sql",
     )
     args = parser.parse_args()
     if not args.infrastructure_root:
@@ -35,7 +35,7 @@ def main() -> int:
     sys.path.insert(0, str(helper_dir))
     from ephemeral_mysql import EphemeralMysql  # type: ignore
 
-    db = EphemeralMysql.start(database="hlstatsx_migration24")
+    db = EphemeralMysql.start(database="hlstatsx_migration25")
     try:
         db.sql(
             "CREATE TABLE ktp_capture_manifests ("
@@ -93,7 +93,7 @@ def main() -> int:
             ) == 1,
             "rerun did not repair the missing state column",
         )
-        print("migration 024: clean apply, rerun, legacy NULLs, and repair passed")
+        print("migration 025: clean apply, rerun, legacy NULLs, and repair passed")
         return 0
     finally:
         db.stop()

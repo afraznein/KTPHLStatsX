@@ -202,8 +202,8 @@ Schema migration:
   correction rather than a precondition, and is a no-op on a fresh install.
   Migration 021 adds producer manifests, sequences, and capture-health
   reconciliation and is required by daemon 0.3.13. Migration 022 adds the two
-  schema-22 telemetry ledgers and is required by daemon 0.3.15. Migration 023
-  adds authoritative team transitions. Migration 024 adds nullable legacy-safe
+  schema-22 telemetry ledgers and is required by daemon 0.3.15. Migration 024
+  adds authoritative team transitions. Migration 025 adds nullable legacy-safe
   position state and map-revision columns and is required by daemon 0.3.16 and
   stats_logging 1.19.0 (schema 23). Skip migration
   002 on a fresh install because its half-column changes are already in the
@@ -215,7 +215,7 @@ Schema migration:
 `scripts/selftest-migration22.py` is the standard executable contract; CI runs
 it against Infrastructure's production-parity ephemeral MySQL harness.
 
-Migration 024 is independently idempotent: every new column and its query
+Migration 025 is independently idempotent: every new column and its query
 index is guarded through `information_schema`. Existing rows remain `NULL` and
 are explicitly legacy/unavailable; the daemon only authorizes schema-23
 position rows whose alive/spectator bits and SHA-256 match the accepted
@@ -280,8 +280,8 @@ done
 # 021 must complete before daemon 0.3.13 and stats_logging 1.17.0 are deployed.
 # 022 must complete before daemon 0.3.15 and stats_logging 1.18.0 (schema 22)
 # are deployed. KTPInfrastructure owns retention for both new ledgers.
-# 023 then 024 must complete before daemon 0.3.16 and stats_logging 1.19.0
-# (schema 23) are deployed. 024 is nullable for legacy rows but schema-23
+# 024 then 025 must complete before daemon 0.3.16 and stats_logging 1.19.0
+# (schema 23) are deployed. 025 is nullable for legacy rows but schema-23
 # authorization fails closed when explicit state or captured revision is absent.
 
 # Restart daemon

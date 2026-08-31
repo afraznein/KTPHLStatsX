@@ -9,7 +9,7 @@ my $SCRIPT_DIR = $0;
 $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION22 = $SCRIPT_DIR . '../sql/migrate_022_objective_attempts_grenade_entities.sql';
-my $MIGRATION24 = $SCRIPT_DIR . '../sql/migrate_024_position_state_map_revision.sql';
+my $MIGRATION25 = $SCRIPT_DIR . '../sql/migrate_025_position_state_map_revision.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -585,14 +585,14 @@ like($migration22,
     qr/GROUP_CONCAT\(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ','\).*?MIN\(NON_UNIQUE\)=0.*?MIN\(NON_UNIQUE\)=1/s,
     'migration verifies exact ordered columns and uniqueness of named indexes');
 
-my $migration24 = slurp($MIGRATION24);
+my $migration25 = slurp($MIGRATION25);
 for my $column (qw(map_revision_algorithm map_revision_sha256 is_alive is_spectator)) {
-    like($migration24, qr/information_schema\.COLUMNS.*?COLUMN_NAME='\Q$column\E'/s,
-        "migration 024 idempotently guards $column");
+    like($migration25, qr/information_schema\.COLUMNS.*?COLUMN_NAME='\Q$column\E'/s,
+        "migration 025 idempotently guards $column");
 }
-like($migration24, qr/idx_position_map_revision/,
-    'migration 024 adds a revision-quality query index');
-like($migration24, qr/nullable for legacy compatibility/i,
-    'migration 024 documents legacy NULL semantics');
+like($migration25, qr/idx_position_map_revision/,
+    'migration 025 adds a revision-quality query index');
+like($migration25, qr/nullable for legacy compatibility/i,
+    'migration 025 documents legacy NULL semantics');
 
 done_testing();

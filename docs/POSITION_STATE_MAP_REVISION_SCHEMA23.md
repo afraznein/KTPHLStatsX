@@ -1,6 +1,6 @@
 # Schema 23 position-state and map-revision contract
 
-Migration 024 is the persistence prerequisite for `stats_logging` 1.19.0 and
+Migration 025 is the persistence prerequisite for `stats_logging` 1.19.0 and
 daemon 0.3.16. It adds nullable columns to the existing manifest and position
 tables so historical rows remain valid and visibly unavailable rather than
 being rewritten with invented state.
@@ -16,7 +16,7 @@ to the existing `position` daemon-rejected health counter.
 Schema 21 and 22 manifests remain readable for their prior capabilities, but
 neither authorizes this position contract. Existing `NULL` state or revision
 columns are legacy evidence only and cannot satisfy Infrastructure readiness.
-Migration 024 can be rerun: each column and the revision lookup index is added
+Migration 025 can be rerun: each column and the revision lookup index is added
 only when absent.
 
 This contract is capture and provenance only. It does not classify positions
