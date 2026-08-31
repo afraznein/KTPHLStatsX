@@ -280,3 +280,9 @@ LIMIT 50;
 -- WHERE match_id = 'KTP-1734355200-dod_charlie'
 -- GROUP BY killerId
 -- ORDER BY kills DESC;
+
+-- KTP extension note: this base schema intentionally is not a roll-up of
+-- additive telemetry migrations. Apply migrations through 025 in order.
+-- Migration 025 adds nullable legacy-compatible position state and captured
+-- BSP revision columns; daemon schema-23 authorization requires populated,
+-- manifest-matching values on every new position sample.

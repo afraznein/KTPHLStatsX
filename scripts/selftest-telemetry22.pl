@@ -9,6 +9,7 @@ my $SCRIPT_DIR = $0;
 $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION22 = $SCRIPT_DIR . '../sql/migrate_022_objective_attempts_grenade_entities.sql';
+my $MIGRATION25 = $SCRIPT_DIR . '../sql/migrate_025_position_state_map_revision.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -99,7 +100,12 @@ my $loaded = eval "no strict 'vars';\n$clocks\n$manifest\n$manifest_persistence\
 die "cannot load shipped telemetry helpers: $@" unless $loaded;
 
 my $capabilities = join(',', qw(frag_context damage position assist life break
-    flag_state flag_position objective_attempt grenade_entity sequence health));
+    flag_state flag_position objective_attempt grenade_entity team_membership sequence health));
+my $schema23_capabilities = join(',', qw(frag_context damage position assist life break
+    flag_state flag_position objective_attempt grenade_entity team_membership
+    position_state map_revision sequence health));
+my $schema21_capabilities = join(',', qw(frag_context damage position assist life break
+    flag_state flag_position team_membership sequence health));
 my %manifest_ok = (
     matchid => 'telemetry-TEST', half => 1, map => 'dod_anzio',
     producer => 'stats_logging', producer_version => '1.18.0', schema => 22,
@@ -109,11 +115,21 @@ my %manifest_ok = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest_ok), '',
     'schema-22 manifest accepts the two-second paired contract');
-for my $bad_schema (21, 23) {
+for my $bad_schema (24) {
     my %bad = (%manifest_ok, schema => $bad_schema);
     like(ktpValidateCaptureManifestPayload(\%bad), qr/schema/,
-        "schema $bad_schema is rejected by the schema-22 receiver");
+        "schema $bad_schema is rejected by the schema-23 receiver");
 }
+my %manifest23 = (
+    %manifest_ok, producer_version => '1.19.0', schema => 23,
+    capabilities => $schema23_capabilities,
+    map_revision_algorithm => 'sha256', map_revision => ('a' x 64),
+);
+is(ktpValidateCaptureManifestPayload(\%manifest23), '',
+    'schema-23 manifest requires explicit position state and BSP revision capabilities');
+my %bad_revision = (%manifest23, map_revision => 'A' x 64);
+like(ktpValidateCaptureManifestPayload(\%bad_revision), qr/map_revision/,
+    'schema-23 manifest rejects noncanonical revision text');
 my %bad_interval = (%manifest_ok, position_interval => '1.0');
 like(ktpValidateCaptureManifestPayload(\%bad_interval), qr/position_interval/,
     'one-second manifest is rejected by the two-second contract');
@@ -133,7 +149,20 @@ my ($parsed_manifest, $envelope_error) =
     ktpParseCaptureMarkerEnvelope('manifest', $manifest_wire);
 is($envelope_error, '', 'bounded exact manifest grammar parses');
 is_deeply($parsed_manifest, \%manifest_ok,
-    'manifest envelope preserves the exact producer fields');
+    'legacy manifest envelope remains parseable without revision fields');
+my $manifest23_wire = join(' ',
+    '(matchid "telemetry-TEST")', '(half "1")', '(map "dod_anzio")',
+    '(producer "stats_logging")', '(producer_version "1.19.0")',
+    '(schema "23")', qq{(capabilities "$schema23_capabilities")},
+    '(position_interval "2.0")', '(buffer_entries "128")',
+    '(life_buffer_entries "64")', '(map_revision_algorithm "sha256")',
+    '(map_revision "'.('a' x 64).'")', '(sequence "1")',
+    '(event_epoch "1787616774")');
+my ($parsed_manifest23, $schema23_envelope_error) =
+    ktpParseCaptureMarkerEnvelope('manifest', $manifest23_wire);
+is($schema23_envelope_error, '', 'bounded exact schema-23 manifest grammar parses');
+is_deeply($parsed_manifest23, \%manifest23,
+    'schema-23 envelope preserves exact captured map revision');
 my ($ignored, $too_long) = ktpParseCaptureMarkerEnvelope(
     'manifest', $manifest_wire . (' ' x 1100));
 like($too_long, qr/exceeds 1024/, 'oversized bare marker is rejected before state');
@@ -154,17 +183,36 @@ for my $n (1 .. 1000) {
 }
 is(scalar(keys %g_ktpCaptureSequences), 0,
     'unmanifested marker flood cannot allocate sequence state');
-my %schema21 = (%manifest_ok, schema => 21);
-ok(!ktpAuthorizeCaptureManifest(\%schema21),
-    'schema-21 manifest cannot authorize schema-22 telemetry');
+my %schema21 = (%manifest_ok, schema => 21, capabilities => $schema21_capabilities);
+is(ktpValidateCaptureManifestPayload(\%schema21), '',
+    'schema-21 partial manifest accepts its explicit capability contract');
+ok(ktpAuthorizeCaptureManifest(\%schema21),
+    'schema-21 manifest authorizes its membership-only contract');
 ktpObserveCaptureMarker('manifest', \%schema21);
-is(scalar(keys %g_ktpAcceptedCaptureManifests), 0,
-    'invalid schema manifest does not initialize authorization');
-is(scalar(keys %g_ktpCaptureSequences), 0,
-    'invalid schema manifest does not initialize sequence state');
+my $schema21_key = join("\x1e", $s_addr, 'telemetry-TEST', 1);
+ok(ktpCaptureManifestAuthorizes(\%schema21, 'team_membership'),
+    'schema-21 contract authorizes team-membership transitions');
+ok(!ktpCaptureManifestAuthorizes(\%schema21, 'objective_attempt') &&
+   !ktpCaptureManifestAuthorizes(\%schema21, 'grenade_entity'),
+    'schema-21 contract cannot authorize schema-22-only rich facts');
+is($g_ktpAcceptedCaptureManifests{$schema21_key}{schema}, 21,
+    'accepted manifest retains its exact schema version');
+%g_ktpAcceptedCaptureManifests = ();
+%g_ktpCaptureSequences = ();
 my %schema23 = (%manifest_ok, schema => 23);
 ok(!ktpAuthorizeCaptureManifest(\%schema23),
-    'schema-23 manifest cannot authorize schema-22 telemetry');
+    'incomplete schema-23 manifest cannot authorize telemetry');
+ok(ktpAuthorizeCaptureManifest(\%manifest23),
+    'complete schema-23 manifest authorizes its exact context');
+ok(ktpCaptureManifestAuthorizes(\%manifest23, 'position'),
+    'schema-23 manifest authorizes explicit-state position samples');
+%g_ktpAcceptedCaptureManifests = ();
+ok(ktpAuthorizeCaptureManifest(\%manifest_ok),
+    'schema-22 manifest remains accepted for its legacy contract');
+ok(!ktpCaptureManifestAuthorizes(\%manifest_ok, 'position'),
+    'schema-22 manifest cannot authorize schema-23 position samples');
+%g_ktpAcceptedCaptureManifests = ();
+%g_ktpCaptureSequences = ();
 ok(ktpAuthorizeCaptureManifest(\%manifest_ok),
     'accepted schema-22 manifest authorizes its exact context');
 ktpObserveCaptureMarker('manifest', \%manifest_ok);
@@ -174,8 +222,9 @@ is(scalar(keys %g_ktpCaptureSequences), 1,
 like($g_ktpAcceptedCaptureManifests{$accepted_key}{fingerprint},
     qr/^\d+:/, 'accepted authorization stores a canonical manifest fingerprint');
 ok(ktpCaptureManifestAuthorizes(\%manifest_ok, 'objective_attempt') &&
-   ktpCaptureManifestAuthorizes(\%manifest_ok, 'grenade_entity'),
-    'accepted capabilities authorize both new event types');
+   ktpCaptureManifestAuthorizes(\%manifest_ok, 'grenade_entity') &&
+   ktpCaptureManifestAuthorizes(\%manifest_ok, 'team_membership'),
+    'accepted capabilities authorize all contract event types');
 my %observed_objective = (matchid => 'telemetry-TEST', half => 1, sequence => 2);
 ktpObserveCaptureMarker('objective_attempt', \%observed_objective);
 ok(!ktpRevokeReplacedCaptureManifest(\%manifest_ok),
@@ -186,10 +235,10 @@ is($g_ktpCaptureSequences{$accepted_key}{received}, 1,
 is($g_ktpCaptureSequences{$accepted_key}{last}, 2,
     'an exact manifest replay preserves the sequence high-water mark');
 
-ok(ktpRevokeReplacedCaptureManifest(\%schema23),
+ok(ktpRevokeReplacedCaptureManifest(\%manifest23),
     'non-identical schema-23 replacement revokes accepted schema-22 contract');
 ok(!ktpCaptureManifestAuthorizes(\%manifest_ok, 'objective_attempt'),
-    'schema-23 replacement leaves telemetry unauthorized when validation fails');
+    'schema-23 replacement leaves telemetry unauthorized until persistence');
 ok(!exists($g_ktpCaptureSequences{$accepted_key}),
     'schema-23 replacement revokes its sequence state before validation');
 ktpObserveCaptureMarker('objective_attempt', \%observed_objective);
@@ -495,8 +544,14 @@ like($grenade_branch,
     qr/if \(\$payload_error ne ""\).*?ktpRejectUnobservedCaptureMarker\(\s*"grenade_entity".*?ktpCaptureManifestAuthorizes.*?\} elsif.*?ktpParsePlayerIdentity/s,
     'authorized invalid grenade payload is rejected before owner correlation');
 like($source,
-    qr/if \(\$p->\{event_type\} eq "grenade_entity".*?delete \$g_ktpCaptureSequences\{\$key\}.*?delete \$g_ktpAcceptedCaptureManifests\{\$key\}/s,
-    'schema-22 reconciliation state lives through the final health type');
+    qr/\$manifest->\{schema\} == 21.*?team_membership.*?schema\} == 22.*?schema\} == 23.*?grenade_entity/s,
+    'health finalization follows each accepted schema contract tail');
+like($manifest_persistence, qr/map_revision_algorithm.*?map_revision_sha256/s,
+    'manifest persistence retains captured BSP revision provenance');
+like($source, qr/Position sample dropped: no accepted schema-23 manifest/,
+    'position persistence is fail-closed without schema-23 authorization');
+like($source, qr/is_alive, is_spectator, map_revision_sha256/,
+    'position rows persist explicit state and captured revision');
 
 my $migration22 = slurp($MIGRATION22);
 like($migration22, qr/CREATE TABLE IF NOT EXISTS ktp_objective_attempt_events/,
@@ -529,5 +584,15 @@ like($migration22,
 like($migration22,
     qr/GROUP_CONCAT\(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ','\).*?MIN\(NON_UNIQUE\)=0.*?MIN\(NON_UNIQUE\)=1/s,
     'migration verifies exact ordered columns and uniqueness of named indexes');
+
+my $migration25 = slurp($MIGRATION25);
+for my $column (qw(map_revision_algorithm map_revision_sha256 is_alive is_spectator)) {
+    like($migration25, qr/information_schema\.COLUMNS.*?COLUMN_NAME='\Q$column\E'/s,
+        "migration 025 idempotently guards $column");
+}
+like($migration25, qr/idx_position_map_revision/,
+    'migration 025 adds a revision-quality query index');
+like($migration25, qr/nullable for legacy compatibility/i,
+    'migration 025 documents legacy NULL semantics');
 
 done_testing();

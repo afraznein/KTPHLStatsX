@@ -12,6 +12,7 @@ my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION16 = $SCRIPT_DIR . '../sql/migrate_016_life_events.sql';
 my $MIGRATION17 = $SCRIPT_DIR . '../sql/migrate_017_capture_clocks_and_assists.sql';
 my $MIGRATION21 = $SCRIPT_DIR . '../sql/migrate_021_capture_observability.sql';
+my $MIGRATION24 = $SCRIPT_DIR . '../sql/migrate_024_team_membership_intervals.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -45,14 +46,19 @@ my $validator = between_markers($source,
 my $resolver = between_markers($source,
     '# BEGIN KTP LIFE BOUNDARY CONTEXT',
     '# END KTP LIFE BOUNDARY CONTEXT');
+my $team_membership = between_markers($source,
+    '# BEGIN KTP TEAM MEMBERSHIP INTERVALS',
+    '# END KTP TEAM MEMBERSHIP INTERVALS');
 
 our (%g_servers, %g_ktpMatchContext, %g_ktpProducerContextCache,
      %g_ktpCaptureClockWarnings,
-     $s_addr, $g_mode, @query_rows, $last_query, $query_count,
+     %g_ktpCaptureSequences, $s_addr, $g_mode, @query_rows, $last_query, $query_count,
+     $last_insert, $exec_return,
      $durable_player_id_lookups);
 $s_addr = '127.0.0.1:27015';
 $g_mode = 'Normal';
 %g_servers = ($s_addr => { id => 42, srv_players => {} });
+$exec_return = 1;
 
 sub botidcheck { return defined($_[0]) && $_[0] =~ /^BOT(?::|$)/ ? 1 : 0; }
 sub quoteSQL {
@@ -85,8 +91,10 @@ sub doQuery {
     $last_query = $query;
     return LifeBoundaryFakeResult->new(\@query_rows);
 }
+sub execNonQuery { $last_insert = $_[0]; return $exec_return; }
+sub printEvent { return 1; }
 
-my $loaded = eval "no strict 'vars';\n$identity\n$validator\n$resolver\n1;";
+my $loaded = eval "no strict 'vars';\n$identity\n$validator\n$resolver\n$team_membership\n1;";
 die "cannot load shipped capture helpers: $@" unless $loaded;
 
 # Delayed old-userid marker while the same Steam identity is connected under a
@@ -154,6 +162,16 @@ like(ktpValidateLifeBoundaryPayload(
         'KTP-42', 2, 'start', 'spawn', 1, 1, 1, undef, 1, 0),
     qr/event_epoch/, 'non-positive producer epoch is rejected');
 
+is(ktpValidateTeamMembershipPayload(
+        'KTP-42', 2, 2, 1, '123.45', 1787154601, 12), '',
+    'representative team transition validates');
+like(ktpValidateTeamMembershipPayload(
+        'KTP-42', 2, 1, 1, '123.45', 1787154601, 12),
+    qr/unchanged team/, 'non-transition is rejected');
+like(ktpValidateTeamMembershipPayload(
+        'KTP-42', 2, 2, 1, '123.45', 1787154601, 0),
+    qr/sequence/, 'team transition requires a positive producer sequence');
+
 %g_ktpProducerContextCache = ();
 @query_rows = ({ match_id => 'KTP-42', half => 2, map_name => 'dod_anzio',
     start_epoch => 1787154500, end_epoch => 1787154700, proof_epoch => 1787154800 });
@@ -196,6 +214,25 @@ is($query_count, $open_queries + 1,
 is($query_count, $open_queries + 2,
     'open interval refreshes when producer epoch exceeds DB proof horizon');
 is($error, '', 'refreshed open interval still validates exact context');
+
+%g_ktpProducerContextCache = ();
+%g_ktpCaptureSequences = ();
+@query_rows = ({ match_id => 'KTP-42', half => 2, map_name => 'dod_anzio',
+    start_epoch => 1787154500, end_epoch => 1787154700, proof_epoch => 1787154800 });
+is(doEvent_KTPTeamMembership(9001, 7, 'KTP-42', 2, 2, 1,
+        '123.45', 1787154601, 12),
+    'Team membership logged: match=KTP-42 half=2 player=9001 context=event-time-interval',
+    'team transition is persisted with event-time context proof');
+like($last_insert, qr/INSERT IGNORE INTO ktp_team_membership_events/,
+    'team transition writes only to the private membership ledger');
+like($last_insert, qr/,\s+2,\s+1,\s+123\.45,\s+1787154601,\s+12,/s,
+    'team transition preserves old/new team and producer clock');
+my $membership_key = join("\x1e", $s_addr, 'KTP-42', 2);
+$g_ktpCaptureSequences{$membership_key} = { team_membership_last_sequence => 12 };
+is(doEvent_KTPTeamMembership(9001, 7, 'KTP-42', 2, 1, 2,
+        '124.00', 1787154602, 11),
+    'Team membership rejected: producer sequence out of order',
+    'lower membership sequence fails closed');
 
 %g_ktpProducerContextCache = ();
 @query_rows = ();
@@ -387,6 +424,17 @@ like($source, qr/^sub ktpObserveCaptureMarker/m,
     'daemon tracks globally monotonic producer sequences');
 like($source, qr/^sub doEvent_KTPCaptureHealth/m,
     'daemon persists per-type capture health reconciliation');
+my $migration24 = slurp($MIGRATION24);
+like($migration24, qr/CREATE TABLE IF NOT EXISTS ktp_team_membership_events/,
+    'migration 024 creates private team-membership ledger');
+like($migration24, qr/UNIQUE KEY uk_team_membership_sequence/,
+    'team-membership replay is idempotent by producer sequence');
+like($migration24, qr/idx_membership_player_timeline/,
+    'team-membership interval derivation has a player timeline index');
+like($source, qr/^sub doEvent_KTPTeamMembership/m,
+    'daemon has a dedicated team-transition ledger handler');
+like($source, qr/team_membership.*?ktpCaptureManifestAuthorizes/s,
+    'team transition requires its advertised capture-manifest capability');
 my ($pending_life) = ($source =~
     /sub ktpQueuePendingLife\s*\{(.*?)# BEGIN KTP LIFE BOUNDARY VALIDATION/s);
 unlike($pending_life, qr/getPlayerInfo/,

@@ -285,6 +285,31 @@ pipe is not corroboration.** Related: `a-killed-probe-reads-as-a-clean-zero`,
 `durable-record-outranks-banner-and-log`.
 
 
+## A death-rate query that skips `hlstats_Events_Teamkills` returns a uniformly-low number that reads as a baseline difference, not a bug
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`, which was a second, drifting copy of schema
+knowledge that belongs here instead.)*
+
+**A player's true death count is `hlstats_Events_Frags` (killed by an opponent) UNION
+`hlstats_Events_Teamkills` (killed by a teammate), both keyed on `victimId`.** Querying deaths from
+`hlstats_Events_Frags` alone omits every teamkill death. Verified against production 2026-08-30:
+`hlstats_Events_Teamkills` is roughly **2%** the size of `hlstats_Events_Frags`, so the omission
+skews every derived death rate (and therefore K/D) low by roughly that same margin, **uniformly
+across players** — because every player takes teamkill deaths at roughly the same background rate.
+
+**Why it is dangerous:** a uniform skew does not fail a sanity check. It looks like a plausible
+baseline difference between two datasets rather than a missing UNION, so it survives review that
+only checks for outliers.
+
+**How to apply:** any query computing deaths, K/D, or a per-player death rate must union both
+tables on `victimId`. A K/D or death-rate figure computed against `hlstats_Events_Frags` alone is
+wrong, not approximately right.
+
+Related: `ktp_match_stats.half = 0` is the correct match-total row on that table (see the callout in
+`README.md` § Database Schema) — the two traps were found on the same afternoon rebuilding an
+external leaderboard tool, but they are independent: one is a wrong filter, this one is a missing
+UNION.
+
 ## DoD log event names — a wrong-game grep reads as "the engine emits nothing"
 
 *(Relocated 2026-08-29 from the operator's memory set — this repo is where the trap fires.)*
@@ -312,3 +337,208 @@ produces nothing.
 raw log file before believing it. Also: `mp_logdetail` being unset is TRUE but governs
 **weapon-damage** detail, not objectives — two true facts sitting next to each other were read as a
 causal chain.
+
+## Stat columns lie about absence two different ways — `NOT NULL DEFAULT 0` vs a reserved sentinel
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`. The full derivation — the nullability table and the
+Class 1/2/3 rollout rationale — already lives in `docs/STAT_SET_RATIONALE.md`; this entry is a pointer,
+not a restatement.)*
+
+`hlstats_Events_Frags.k_prone`, `k_scope` and `is_last_flag_defense` are `NOT NULL DEFAULT 0`, so a row
+nothing ever measured reads identically to a row that was checked and came back false — a query for
+"kills while prone" against untouched data returns a clean zero and looks like a result.
+`k_clip`/`k_ammo` dodge that trap with a reserved `-1` sentinel (a real empty magazine reads `clip=0`
+through the same native, so `-1` unambiguously means "could not read"), and `pos_x`/`pos_victim_x` are
+nullable. Both of those are honest: absence reads as absence, never as a measured zero. Do not group the
+sentinel/nullable columns with the `DEFAULT 0` ones — only the latter are ambiguous.
+
+Related: the teamkills-union trap above and `ktp_match_stats.half = 0` in `README.md` are the same
+"a default reads as a real measurement" shape, on different tables.
+
+## Spine rows support per-half rates, never per-half splits — there is no `half` column to split on
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* Verified against `information_schema` 2026-08-30:
+`hlstats_Events_PlayerPlayerActions` (assists) and `hlstats_Events_PlayerActions` (cap-breaks,
+objectives — see the entry above on its missing `half`) both carry `match_id` but no `half` column.
+`ktp_assist_events` has the `half` column a per-half split would actually need, and **zero rows** —
+schema-ahead, no writer yet.
+
+**So a match-sum ÷ number-of-halves RATE is safe to compute from these tables; a per-half SPLIT is not
+achievable from them at all.** A consumer that accepts a `by="half"` parameter against spine data must
+**raise**, not silently return the per-match total relabeled as one half — a relabeled total reads
+exactly like a real per-half number and is not one.
+
+**How to apply:** before building a per-half breakdown on top of `PlayerPlayerActions` or
+`PlayerActions`, check whether the split is actually stored anywhere (`ktp_assist_events`,
+`PlayerActions.producer_half`) rather than assuming `WHERE half = N` will work.
+
+## `ktpDamageExpr`'s `COALESCE(dmg.damage, 0)` is the fix, not the bug
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* `scripts/hlstats.pl`'s `ktpDamageExpr` is one line:
+
+```perl
+sub ktpDamageExpr
+{
+	my ($ledger_has_rows) = @_;
+	return $ledger_has_rows ? 'COALESCE(dmg.damage, 0)' : 'NULL';
+}
+```
+
+It returns `NULL` — not `0` — when the per-hit damage ledger has no rows for the match, so "damage not
+captured for this era" and "captured, and it measured zero" stay distinguishable downstream. ⛔ A
+string grep for `COALESCE(dmg.damage, 0)` cannot tell this fix from the bug it replaced — read the
+whole sub, including the branch that returns `NULL`.
+
+**The probe for whether this is working is `SUM(damage IS NULL)`, never `SUM(damage > 0)`.** The `> 0`
+form cannot distinguish "the expression correctly returned NULL for an uncaptured match" from "the
+expression is broken and returning 0 for everything" — both read as zero rows with `damage > 0`. Count
+the `NULL`s instead.
+
+## The Perl footgun behind the `k_prone`/`k_clip` false-zero risk — already fixed, still worth knowing
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* `hlstats.pl` has `use strict` but no
+`use warnings`, and its `//` (defined-or) defaulting reads an **empty string** the same as a present
+value. `getProperties` used to store `""` for an empty quoted property, which numifies to `0` on the
+next `//`-defaulted read — `k_prone ""` read as "standing", `k_clip ""` as "empty magazine" instead of
+the `-1` read-failed sentinel.
+
+**This is already fixed, and the fix documents itself.** `getProperties`'s parsing loop drops an empty
+quoted value instead of storing it (the `if ($2 eq "")` branch), with an inline comment naming this
+exact failure mode. Nothing to change here; keep the comment if this code ever moves. The general shape
+— defined-or plus no `use warnings` — is still live everywhere else in the file, so a *new*
+frag-context-style field added without the same "empty means absent" handling would reintroduce this
+class of bug.
+
+## The headshot marker's `ORDER BY id ASC` is FIFO and must stay — the producer's own header says the opposite, and is wrong
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* `hlstats.pl`'s `headshot_kill` branch and its
+`frag_context` branch both claim the **oldest** unclaimed frag (`ORDER BY id ASC LIMIT 1`), not the
+newest. That is deliberate: the emitting plugin buffers the marker and flushes it from a repeating task
+— `client_death` runs inside `SV_RunCmd` postthink, where synchronous log I/O would stall the frame —
+while the engine's own kill log line is not buffered. The marker therefore arrives systematically
+**late**, so "newest unclaimed frag" is routinely a *later*, unrelated kill; the oldest unclaimed one is
+the better match. `scripts/selftest-frag-context.pl` pins this with the reason in the assertion name
+(`'headshot_kill stays FIFO -- its emitter buffers the marker, so the newest unclaimed frag is
+routinely a later kill'`) so a future reader does not "fix" it back to `DESC`.
+
+⚠️ **KTPAMXX's own header comment is wrong about this.** `plugins/dod/ktp_stats_capture.inc`'s header
+describes the shared headshot_kill/frag_context technique as "the daemon flushes and UPDATEs the
+just-inserted Frags row … `ORDER BY id DESC LIMIT 1`" — the daemon does no such thing for either
+marker; both use `ASC`. Confirmed against `KTPAMXX` `origin/main` 2026-08-30. Do not use that comment
+as a spec when changing either side; fix the comment instead if you're in there.
+
+## Migration 019 self-disables on purpose — never remove the guard to "make it run"
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* `sql/migrate_019_clear_uncertified_frag_context.sql`
+clears `frag_context_recorded` on rows whose context columns are all still at their defaults, on the
+inference that a flag set with no real context is a false claim. That inference stopped being sound
+once migration 020 (`frag_context_certified`) shipped: from daemon 0.3.12 the daemon can legitimately
+write "flag set, every context column at default" for a **certified** kill (standing killer, standing
+victim, neither scoped, all four ammo reads failed, no last-flag defense, position unreadable) — those
+are real measurements, not absence. Re-running 019 after 020 is applied would withdraw those live
+claims.
+
+The file guards itself: it checks `information_schema.COLUMNS` for `frag_context_certified` and
+degrades to `DO 0` (no-op) once that column exists, rather than re-running its old predicate. **Do not
+remove that guard** — the migration's own header explains the full reasoning; this entry exists so the
+guard is not "cleaned up" by someone who has not read it first.
+
+## Any headshot rate over the whole table is silently wrong — scope `headshot_observed = 1`
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* `hlstats_Events_Frags` carries a
+`headshot_observed` column (`sql/migrate_023_headshot_observed_provenance.sql` on `main` — see the
+migration-numbering note below) recording whether the frag stream actually carried headshot
+information for that row, as opposed to `headshot` simply defaulting to `0` for "never checked".
+Re-verified live against production 2026-08-30 (figures move slightly as the table grows; the shape
+does not):
+
+| | |
+|---|---|
+| total `hlstats_Events_Frags` rows | 1,439,027 |
+| `headshot_observed = 0` | 730,645 (~51%) |
+| headshot rate, scoped to `headshot_observed = 1` | ~14.9% |
+| headshot rate, unscoped (whole table) | ~8.3% |
+
+**Every headshot rate, leaderboard, or per-player split must scope `headshot_observed = 1`** — over
+half the table has no observation at all, and folding those rows in as "not a headshot" understates the
+true rate by roughly 44%.
+
+**The cheapest regression tripwire:** an hourly `SUM(headshot = 1)` (better yet, scoped to
+`headshot_observed = 1`) is the cheapest "capture emitter not loaded" check — it drops to a clean 0
+while raw frag counts look completely normal, because a missing emitter does not stop kills from
+happening, only from being annotated.
+
+## `corpus-regression` / Lane B tests parsing of committed fixtures, not emission — and its gate checks fewer fields than it reports
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`; the board's supporting figures — `'headshot': 0,
+'damage': 0` — do **not** reproduce against the current fixtures and are corrected below. Verify the
+mechanism, not an old quote.)*
+
+The `corpus` lane of `KTPInfrastructure`'s `lane-b-stats-e2e.yml` (called from this repo's
+`corpus-regression.yml`) replays three committed, gzipped, real match logs through `hlstats.pl` in a
+disposable database — no game server, no bots, and (`build_stats_lane_artifacts.py --no-plugin`) the
+**capture plugin is never built or run** for this lane. Green means "the daemon parses this fixed input
+the same way it always has," not "the current plugin/daemon pair actually emits and captures these
+markers."
+
+⚠️ **And the comparison it runs is narrower than what it reports.** `scripts/replay_corpus.py`'s
+`_COMPARED` tuple only diffs `emitted.{kills,assist,cap_break,suicide}` and
+`rows.{frags,players,suicides,assist.ppa,cap_break.pa}` against
+`tests/e2e_stats/corpus/expected.json`. The current baseline's `emitted.headshot` (47/48/45 across the
+three fixtures) is computed and printed but **never compared** — a daemon regression that zeroed out
+headshot marking entirely would not fail this gate. There is no `damage` field anywhere in the report,
+so the per-hit damage ledger has no coverage here at all.
+
+**How to apply:** treat a green `corpus-regression / Lane B` as evidence only for the fields actually
+listed in `_COMPARED`. To make it mean more, widen `_COMPARED` (and the baseline) rather than trusting a
+field just because the report happens to print it.
+
+## Adding a Lane-B migration is six edits, not two
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* A new `sql/migrate_0NN_*.sql` file in this repo is
+invisible to Lane B until three other places in `KTPInfrastructure` name it too (its own
+`tests/unit/test_lane_b_schema_list_drift.py` documents this as the reason it exists):
+
+1. `tests/e2e_stats/artifacts.py`'s `DEFAULT_SCHEMA_FILES` tuple (which files get extracted into
+   `artifacts/sql/` from the daemon commit under test)
+2. `.github/workflows/lane-b-stats-e2e.yml`'s **full**-lane `--schema` block
+3. the same workflow's **corpus**-lane `--schema` block
+
+...plus two test pins in `tests/e2e_stats/test_artifacts.py` that hard-code the tuple's tail and will
+fail — correctly — until updated: `test_default_schema_sequence_includes_retention_through_telemetry22`'s
+`DEFAULT_SCHEMA_FILES[-9:] == (...)` literal, and a hard-coded `assert len(arts.schema_sql) == 19`
+elsewhere in the same file. So: the `sql/` file itself, plus those five, is six edits for one migration.
+`test_lane_b_schema_list_drift.py` catches (1)-(3) drifting from each other, but it cannot see a
+migration that exists in this repo and nowhere in `KTPInfrastructure` — that half of the change still
+has to be done by hand, and `cap_break` has zero production rows, so the corpus lane is the *only*
+place that code path is exercised at all if the list quietly trails.
+
+## `migrate_020` is not the headshot migration — and migration numbers are not stable across branches either
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`, and re-verified the same day because the fact moved
+under it.)* `afraznein/KTPHLStatsX`#57's *branch* was named `feat/migrate-020-headshot-observed`, but
+the file it actually landed is `sql/migrate_023_headshot_observed_provenance.sql`. `migrate_020` is,
+and has always been, `migrate_020_frag_context_certified.sql`. A reference to "migrate_020 headshot"
+points at a branch name that was never accurate, not at a file.
+
+⚠️ **Discovered while verifying this, 2026-08-30: `migrate_023` was not even a stable name
+across this repo's own branches.** #57 based on and merged directly into `main` — not `preprod`, the
+usual integration branch (see § Branches) — landing `migrate_023_headshot_observed_provenance.sql`
+there. `preprod` already had its own, unrelated `migrate_023_team_membership_intervals.sql` (#58) at
+the same time, so `main`'s `migrate_023` and `preprod`'s `migrate_023` were two different migrations
+and `preprod` could not be promoted without landing two `023`s on `main`.
+
+✅ **Resolved on `preprod` 2026-08-31 by renumbering the `preprod` side, because `main`'s `023` is the
+one that cannot move** — `hlstats_Events_Frags.headshot_observed` is applied to the production
+database, and renumbering an applied migration desyncs the file from the schema it already produced.
+`migrate_023_team_membership_intervals` became **`024`** and `migrate_024_position_state_map_revision`
+became **`025`**, in that order because `position_state` names team-membership as a prerequisite in
+its own header and ordinals here *are* apply order. 🔑 **Renumbering was safe only because both were
+already applied under their old names and nothing records applied-ness by filename:** there is no
+migration ledger for hlstatsx — `support_schema_migrations` belongs to the support app — so
+applied-ness is probed by schema effect, and a rename carries no database state. Both are idempotent
+guards, so a re-apply under the new name is a no-op either way.
+
+⛔ **The general rule survives the fix, because the two branches still disagree:** `main`'s `023` is
+headshot provenance and `preprod`'s is position-state's prerequisite chain. Identify a migration here
+by its descriptive filename suffix and state which branch, never by number alone.
