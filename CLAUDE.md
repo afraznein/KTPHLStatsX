@@ -285,6 +285,31 @@ pipe is not corroboration.** Related: `a-killed-probe-reads-as-a-clean-zero`,
 `durable-record-outranks-banner-and-log`.
 
 
+## A death-rate query that skips `hlstats_Events_Teamkills` returns a uniformly-low number that reads as a baseline difference, not a bug
+
+*(Moved 2026-08-30 from the KTP board's `TODO.md`, which was a second, drifting copy of schema
+knowledge that belongs here instead.)*
+
+**A player's true death count is `hlstats_Events_Frags` (killed by an opponent) UNION
+`hlstats_Events_Teamkills` (killed by a teammate), both keyed on `victimId`.** Querying deaths from
+`hlstats_Events_Frags` alone omits every teamkill death. Verified against production 2026-08-30:
+`hlstats_Events_Teamkills` is roughly **2%** the size of `hlstats_Events_Frags`, so the omission
+skews every derived death rate (and therefore K/D) low by roughly that same margin, **uniformly
+across players** — because every player takes teamkill deaths at roughly the same background rate.
+
+**Why it is dangerous:** a uniform skew does not fail a sanity check. It looks like a plausible
+baseline difference between two datasets rather than a missing UNION, so it survives review that
+only checks for outliers.
+
+**How to apply:** any query computing deaths, K/D, or a per-player death rate must union both
+tables on `victimId`. A K/D or death-rate figure computed against `hlstats_Events_Frags` alone is
+wrong, not approximately right.
+
+Related: `ktp_match_stats.half = 0` is the correct match-total row on that table (see the callout in
+`README.md` § Database Schema) — the two traps were found on the same afternoon rebuilding an
+external leaderboard tool, but they are independent: one is a wrong filter, this one is a missing
+UNION.
+
 ## DoD log event names — a wrong-game grep reads as "the engine emits nothing"
 
 *(Relocated 2026-08-29 from the operator's memory set — this repo is where the trap fires.)*
