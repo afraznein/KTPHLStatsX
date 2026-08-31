@@ -468,6 +468,21 @@ true rate by roughly 44%.
 while raw frag counts look completely normal, because a missing emitter does not stop kills from
 happening, only from being annotated.
 
+**Addendum, relocated from session memory 2026-08-31 — the coverage window, which the figures above
+do not carry.** The column landed 2026-08-30 (`MYSQL_54`), and `headshot_observed = 1` **starts
+2026-04-24, mid-S9** (re-measured live 2026-08-31: `MIN(eventTime) WHERE headshot_observed = 1` =
+`2026-04-24 14:55:33`). So **S9 is partial by construction and S1–S8 have none at all** — see the
+no-player-stats-before-2026 trap below. The original measurement was **730,645 of 1,426,309 rows carry
+0**, and **8.25% unscoped vs 14.90% scoped**; the same probe on 2026-08-31 returns **730,645 of
+1,441,148**, **8.30% unscoped vs 14.87% scoped**. The zero count is frozen — the column is written
+going forward and no backfill exists — so the ratio drifts only because the denominator grows.
+
+🔑 **The flag is a provenance flag, not a fact about the kill**: it says whether the row was written
+while the headshot pipeline was actually recording. It exists precisely because the absence was
+unrecoverable after the fact — there is no way to tell a missed headshot from a real body shot in the
+old rows. **Render absent as absent rather than zero.** Repair guidance for S9 is in
+`S9-HEADSHOT-GRAINS.md` (render-nullable → backfill → null, never blanket).
+
 ## `corpus-regression` / Lane B tests parsing of committed fixtures, not emission — and its gate checks fewer fields than it reports
 
 *(Moved 2026-08-30 from the KTP board's `TODO.md`; the board's supporting figures — `'headshot': 0,
@@ -542,3 +557,200 @@ guards, so a re-apply under the new name is a no-op either way.
 ⛔ **The general rule survives the fix, because the two branches still disagree:** `main`'s `023` is
 headshot provenance and `preprod`'s is position-state's prerequisite chain. Identify a migration here
 by its descriptive filename suffix and state which branch, never by number alone.
+
+## Three systems store SteamIDs in three shapes, and `hlstats_PlayerUniqueIds.uniqueId` carries no `STEAM_` prefix at all
+
+*(Relocated from session memory 2026-08-31. Measured in production 2026-08-30; every figure below
+re-verified live 2026-08-31, positive control `hlstats_Servers` = 25 rows, negative control a bogus
+table/column name, which errors rather than returning a clean zero.)*
+
+Three systems, three shapes, **no two of which join directly**:
+
+- **`ktp_ac_players.steam_id`** (KTPAntiCheat) — `STEAM_0:1:x`, and **not uniformly universe 0**:
+  195 accounts at universe 0, **1 at universe 1** (`STEAM_1:0:765193414`). So a `STEAM_0:`
+  prefix match silently drops real players.
+- **`ktp_lan.lan_players.steam_id`** (a different system) — also `STEAM_0:1:x`. (62 rows, 62 at
+  universe 0, measured 2026-08-31.)
+- **`hlstats_PlayerUniqueIds.uniqueId`** (HLStatsX upstream — **this repo's table**) — bare **`Y:Z`**,
+  with **no `STEAM_` prefix at all**: 0 of 316 rows carry one.
+
+⚠️ The third is the dangerous one. A join or `LIKE 'STEAM_%'` filter against it returns a clean
+**zero**, which reads as "no such player" rather than "wrong format" — the same shape as a killed
+probe reading as a clean zero. Convert explicitly; never assume a prefix.
+
+The conversion arithmetic itself is `steam64 = 76561197960265728 + Z*2 + Y`.
+
+⚠️ **This fact has three owners, and only one of them is this repo.** It was deliberately kept out of
+any single repo for that reason: filing it here makes the KTPAntiCheat and LAN halves wrong the moment
+those pipelines change shape. It is recorded here because HLStatsX is the side that surprises people —
+**re-derive the other two shapes at their own source before relying on them.**
+
+📌 **Locations, measured 2026-08-31 (not in the original note):** `ktp_ac_players` lives in the
+**`hlstatsx`** database, not a separate `ktp` one — there is no `ktp` schema on the data server.
+`lan_players` is in **`ktp_lan`**.
+
+**Why:** the formats predate any shared convention and each system's upstream chose its own.
+**How to apply:** normalize both sides to one canonical form before joining, and carry a positive
+control proving the join can match at all — a zero row count here is indistinguishable between "no
+overlap" and "format mismatch".
+
+## The `hud_*` tables include warmup and HLStatsX does not — 33,637 vs 31,389 kills on the same matches, and HLStatsX is the one to trust
+
+*(Relocated from session memory 2026-08-31; measured 2026-08-30.)*
+
+⛔ **First, ownership: the `hud_*` tables are NOT in this repo's schema.** They exist only in the
+**`hlstatsx_lan`** database (`hud_damage`, `hud_events`, `hud_flag_events`, `hud_kill_assists`,
+`hud_kills`, `hud_player_stats`, `hud_prone`, `hud_spawns` — verified 2026-08-31, against a positive
+control that finds them in `hlstatsx_lan` and a negative one that finds nothing in `hlstatsx`). They
+are written by the broadcast HUD via the `lan-web` / `hlstatsx_lan` pipeline, **not by `hlstats.pl`**.
+Do not go looking for them here, and do not add them. The comparison is recorded here because it is
+the trap that bites HLStatsX work.
+
+KTP has **two stat sources over the same matches, and they disagree on purpose**:
+
+- **`hlstats_Events_*` / `ktp_match_stats`** (this repo) — match-time only.
+- **`hud_*`** (written by the broadcast HUD on a timer, in `hlstatsx_lan`) — **includes warmup**.
+
+Measured: **33,637 HUD kills vs 31,389 in the match record — 2,248 of warmup.**
+🔑 **HLStatsX is the one to trust** for anything that is a *match* statistic.
+
+⚠️ The trap is that neither number looks wrong. A HUD-sourced leaderboard is internally consistent,
+plausible, and about **7% high** — it reads as a slightly different methodology rather than as counting
+kills that happened before the match started. Any figure quoted without naming its source is
+unreviewable.
+
+**How to apply:** name the source next to every stat figure, and never join or compare the two without
+deciding which is authoritative first. Sibling traps in the same tables: `hud_prone` rows are snapshots,
+so `COUNT(*)` counts spawns, and `tick` is server map uptime that resets mid-half; plus the SteamID
+format trap above.
+
+📌 **The writer has no locatable git repo** under either GitHub org, which is why this note had no repo
+of its own to live beside. Recorded 2026-08-30 while its only prior home, a reference section in
+`TODO.md`, was being relocated off the board.
+
+## DoD half-2 `team_score` is cumulative ONLY on current servers; on the legacy pool it is per-half and the match total is h1+h2 across the side swap
+
+*(Relocated from session memory 2026-08-31. ⛔ Reads `hud_events` in **`hlstatsx_lan`**, which is not
+this repo's schema — see the ownership note in the trap above. Kept here because the derived score is
+what any HLStatsX match figure has to reconcile against.)*
+
+Deriving a per-club match score from `hud_events` `event='team_score'` (payload `allies_score` /
+`axis_score` / `half` / `tick`). Verified 2026-08-14: **88 of 88** scored rows across the whole
+100-match index reproduce the index `score` column exactly. (`hud_events` still carries
+`match_id`/`half`/`tick`/`event`/`payload` and 137,028 `team_score` rows, re-checked 2026-08-31.)
+
+🔴 **SCOPE, added 2026-08-27 — this holds ONLY where `KTPMatchHandler` is running, i.e. the CURRENT
+fleet. On the LEGACY servers it is FALSE**, and getting it backwards understates a match by exactly its
+first half. The plugin is what makes half 2 carry half 1 forward; the legacy pool never had that
+infrastructure, so each half's `TeamScore` stands alone (operator, 2026-08-27).
+
+🔴 **READ THE PEAK TeamScore, NEVER THE LAST ONE — a demo that keeps recording past the whistle closes
+at `0/0`, because the scoreboard RESETS.** Measured 2026-08-27 on S9 fx#555 h1: the demo runs 3,871s,
+peaks at 53/55 at t=947, and is back to 0/0 by t=1343. Read by its closing value the fixture looks
+broken and irreconcilable; read by its peak it is exact (55+103 = 158, 53+23 = 76, the published score).
+⚠️ **A truncated demo and an over-long one are BOTH invisible to a closing-value check, in opposite
+directions** — one closes too high (caught the end, missed the start), the other too low (caught the
+end, then kept going). Take the maximum per team across the whole stream.
+
+⛔ **And a matching closing value does NOT prove a complete half.** A recording that reaches the end
+closes correctly however late it started: S9 fx#550's `raccoons2` reproduced its published score exactly
+while covering only the last ~42% of the half. The test is whether the demo captures the **go-live
+transition** — climb-from-zero for a per-half scoreboard, jump-to-carry for a cumulative one, and
+neither for a recording that began mid-climb.
+
+➡️ **On the legacy pool the match total is `h1 + h2` PER TEAM, following the side swap** — not h2 alone.
+Measured on S9 fx#561 (ICYHOT v OVER, dod_anjou_a5), from two INDEPENDENT HLTV recordings that agreed to
+the point: h1 = 73/67, h2 = 127/181, and icyHOT played team2 then team1 while over played team1 then
+team2 (confirmed from the demos' `PTeam` rows, 6/6 clean in h2). So icyHOT = 67+127 = **194** and
+over = 73+181 = **254**, reproducing the published `legacy_match` pair exactly.
+
+🔑 **`legacy_match.score_unit = 'points'` IS this in-game TeamScore** — not kills, not flags, and not any
+linear combination of them. Checked against the 82 S9 fixtures that carry player stats: fx#557 publishes
+889-127 on kills of 317-220, because DoD weights captures heavily and a capping team can lose the kill
+count outright.
+
+⚠️ **A demo-derived reconstruction that reconciles to the published score is the acceptance test.** One
+that does not must be flagged, never loaded — it will look like plausible stats and be wrong.
+
+**Half 2 is cumulative** (current fleet). It opens at half 1's final with the sides swapped and keeps
+counting, so half 2's last reading **is** each club's two-half total — the number on the scoreboard at
+the whistle. So:
+
+- `total` = half 2's last reading, read straight off
+- the per-half half-2 figure = `total - h1` (derived, not read)
+- summing the halves reproduces `total` by construction, so it is a *check*, not the definition
+
+⚠️ **The match index CSV's `score` column is therefore the match TOTAL, not half 2 only.** They are the
+same number, which makes it easy to conclude the wrong thing from one example.
+
+**Two traps that silently transpose a half:**
+
+1. **`tick` resets mid-half and rows keep the same `half`.** `MAX(id)` per half returns a post-reset
+   **0-0**. Segment where tick jumps backwards and take the last row of the FIRST segment. Same seam as
+   the `hud_prone` tick reset — this is `hud_events`, so the reset is not specific to `hud_prone`.
+2. **Some matches carry a post-halftime row still labelled `half 1`** holding half 1's final with
+   **allies/axis swapped** — same sum, opposite split. Any "max score in the half" heuristic picks it and
+   transposes the half without erroring. First-segment avoids it; `half_end` corroborates.
+
+**Club attribution:** side from `hud_player_stats.team`, club from `ktp_match_players.team`, joined **in
+Python on the canonicalised SteamID** — joining in SQL hits the 1267 collation error. Take the vote from
+**half 1**, whose roster is full and unanimous; half 2 thins to a single player in places and to nobody
+in one, so use it only as a gate on the swap.
+🔻 **The collation claim needs restating, re-measured 2026-08-31.** The original note read
+"`hud_*`/`hlstats_*` are `utf8mb4_unicode_ci`, `ktp_*` are `utf8mb4_0900_ai_ci`". The first half holds
+exactly — all 54 `hlstats_*` and all 8 `hud_*` tables are `utf8mb4_unicode_ci`. **The second half does
+not: `ktp_*` is MIXED.** In `hlstatsx`, 49 `ktp_*` tables are `utf8mb4_0900_ai_ci` and 32 are
+`utf8mb4_unicode_ci`; in `hlstatsx_lan`, 32 are `0900_ai_ci` and 2 are `unicode_ci`. `ktp_match_players`
+is `0900_ai_ci` in `hlstatsx_lan` (the copy this join uses) but `unicode_ci` in `hlstatsx`. ➡️ So
+whether a given SQL join hits 1267 **depends on which `ktp_*` table and which database** — do not
+predict it from the prefix. Joining in Python sidesteps the question entirely, which is why it is still
+the recommendation.
+
+**Gate both figures on the plugin's own `half_end` and `ktp_match_end` events, which carry the same two
+numbers.** `ktp_match_end` is expressed in *half-1* side terms while half 2's stream is in half-2 terms,
+so it genuinely tests the swap rather than restating it.
+
+🔑 **Flags captured is NOT the score and leads a different club in four matches** (e.g. flags dicE 77-76
+while the score is icyHOT 535-387). Both are real numbers; only the score may crown a winner.
+
+⚠️ **`legacy_match` and `series_maps` are NOT in MySQL — measured 2026-08-31.** A schema-wide
+`information_schema.tables` lookup returns **0** for both names across every database on the data server,
+against a positive control that returns 3 for `hlstats_Servers` + `hud_events`. They live in the league
+site's own store, not here, so a `mysql` probe for them is a false zero, not evidence they were dropped.
+
+## There are NO player-level stats before 2026 — every hlstatsx event table starts 2026-01-09, five weeks before S9
+
+*(Relocated from session memory 2026-08-31; measured 2026-08-18, re-verified live 2026-08-31.)*
+
+**Answers the recurring worry "the early seasons' stats must be rough" — they are not rough, they do not
+exist.** Every hlstatsx event table starts **2026-01-09** and none holds a pre-2026 row.
+
+- `Events_Frags` 2026-01-09 → now · `Events_PlayerActions` 2026-01-09 · `Events_Teamkills` 2026-01-09 ·
+  `Events_Connects` 2026-01-16 · `hlstats_Players.createdate` min **2026-01-09**
+- Seasons: **S1 2022-03-27 → S8 2025-12-14**; **S9 2026-02-15 → 2026-05-03**
+
+Re-measured 2026-08-31, all five still exact to the day: Frags `2026-01-09 18:49:57`, PlayerActions
+`2026-01-09 18:50:19`, Teamkills `2026-01-09 18:58:08`, Connects `2026-01-16 16:42:07`,
+`hlstats_Players.createdate` min `1767971340` (a unix epoch column, = 2026-01-09).
+
+➡️ **hlstatsx covers S9 onward only.** S1–S8 have zero player-level data and **no repair work can produce
+any** — do not scope one.
+
+✅ **S1–S8 DO have team-level results, and they are good:** `ktp.legacy_match`, 646 rows / 641 scored, no
+missing dates, no missing maps outside the 34 `series_maps` rows **where a map is correctly absent because
+a Bo3 series has no single map**. Unscored per season: 1/0/0/1/0/0/0/0/3.
+⚠️ **Do not read S8/S9's `series_maps` + blank map as a gap** — it is the Bo3 format arriving, and the one
+place the record legitimately changes shape mid-history.
+⚠️ **Unmeasured here: `legacy_match` and `series_maps` are not MySQL tables** (0 hits schema-wide,
+2026-08-31, positive control returns 3). Those two row counts could not be re-verified from the data
+server and are carried forward as recorded on 2026-08-18.
+
+✅ **The S9 scores that exist are VERIFIED against an independent source** — the scorebot embed vs the
+published workbook, joined on date + team-pair + **map**, points unit only: **14 comparable, 14 agree, 0
+disagree**. Two traps when redoing this: filter on `score_unit` (83 of 97 rows are `points`, the rest are
+Bo3 map-wins), and key the join on **map** — two maps in one day is normal, and without it you fabricate a
+flipped winner. A wrong `GROUP BY` key fakes a refutation here; see also the `team_score` derivation trap
+above.
+
+📌 S9's loss is front-loaded: first three match dates 8/30 missing (27%), rest of season 3/67 (4%), last
+four weeks zero. Related: `s9-stats-repair-shape` (in `ENGINE_BUG_POSTMORTEMS.md` at the KTP project root).
