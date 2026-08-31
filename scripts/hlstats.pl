@@ -3481,9 +3481,10 @@ while ($loop = &getLine()) {
 					);
 				}
 			} elsif ($ev_verb eq "triggered") {
-				if ($ev_obj_a =~ /^(life_boundary|cap_break|break_context|position_sample)$/) {
+				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample)$/) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
-						break_context => "break", position_sample => "position");
+						break_context => "break", position_sample => "position",
+						team_membership => "team_membership");
 					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties);
 				}
 
@@ -3491,7 +3492,7 @@ while ($loop = &getLine()) {
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
 				my $ktp_buffered_identity;
-			    if ($ev_obj_a =~ /^(?:life_boundary|cap_break|break_context|position_sample)$/) {
+			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
@@ -3512,10 +3513,12 @@ while ($loop = &getLine()) {
 				# player cannot be resolved. That leaves an explicit BAD DATA/drop
 				# diagnostic instead of silently falling through as a stock action.
 				$ev_type = 611 if ($ev_obj_a eq "life_boundary");
-				if ($ev_obj_a =~ /^(life_boundary|cap_break|break_context|position_sample)$/ &&
+				$ev_type = 614 if ($ev_obj_a eq "team_membership");
+				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample)$/ &&
 					!$ktp_buffered_player_id) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
-						break_context => "break", position_sample => "position");
+						break_context => "break", position_sample => "position",
+						team_membership => "team_membership");
 					if ($ev_obj_a eq "life_boundary" && $ktp_buffered_identity) {
 						ktpQueuePendingLife($ktp_buffered_identity, \%ev_properties);
 					} else {
@@ -3552,6 +3555,23 @@ while ($loop = &getLine()) {
 						} else {
 							$ev_status = "Life boundary queued: unresolved player " .
 								$playerinfo->{"uniqueid"};
+						}
+					} elsif ($ev_obj_a eq "team_membership") {
+						# A team change is an authoritative producer transition, not a
+						# mutable roster snapshot. Persist it only under the advertised
+						# manifest and an event-time-proven match interval.
+						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "team_membership")) {
+							ktpRejectUnobservedCaptureMarker("team_membership", \%ev_properties, 0);
+							$ev_status = "Team membership dropped: no accepted manifest";
+						} elsif ($ktp_buffered_player_id) {
+							$ev_status = &doEvent_KTPTeamMembership(
+								$ktp_buffered_player_id, $playerinfo->{"userid"},
+								$ev_properties{"matchid"}, $ev_properties{"half"},
+								$ev_properties{"team"}, $ev_properties{"old_team"},
+								$ev_properties{"game_time"}, $ev_properties{"event_epoch"},
+								$ev_properties{"sequence"});
+							ktpRejectCaptureMarker("team_membership", \%ev_properties, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed|rejected)/i);
 						}
 					} elsif ($ev_obj_a eq "break_context") {
 						# KTP: follow-up marker on cap_break from
@@ -5191,10 +5211,11 @@ sub ktpAuthorizeCaptureManifest
 		%g_ktpCaptureSequences = ();
 	}
 	$g_ktpAcceptedCaptureManifests{$key} = {
-		schema => 22,
+		schema => int($p->{schema}),
 		fingerprint => $fingerprint,
 		objective_attempt => $capabilities{objective_attempt} ? 1 : 0,
 		grenade_entity => $capabilities{grenade_entity} ? 1 : 0,
+		team_membership => $capabilities{team_membership} ? 1 : 0,
 	};
 	return 1;
 }
@@ -5203,12 +5224,16 @@ sub ktpCaptureManifestAuthorizes
 {
 	my ($p, $event_type) = @_;
 	return 0 if (!defined($event_type) ||
-		$event_type !~ /^(?:objective_attempt|grenade_entity)$/);
+		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership)$/);
 	my $key = ktpCaptureContextKey($p);
 	return 0 if (!defined($key) ||
 		!defined($g_ktpAcceptedCaptureManifests{$key}));
 	my $manifest = $g_ktpAcceptedCaptureManifests{$key};
-	return $manifest->{schema} == 22 && $manifest->{$event_type};
+	return 0 if (!$manifest->{$event_type});
+	# Schema 21 is deliberately a partial contract: it may carry the durable
+	# team-transition ledger but cannot authorize schema-22-only rich facts.
+	return 1 if ($manifest->{schema} == 22);
+	return $manifest->{schema} == 21 && $event_type eq "team_membership";
 }
 # END KTP CAPTURE AUTHORIZATION
 
@@ -5318,7 +5343,8 @@ sub ktpValidateCaptureManifestPayload
 	return "invalid producer_version"
 		if ($p->{producer_version} !~ /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
 	return "unsupported schema"
-		if ($p->{schema} !~ /^\d+$/ || int($p->{schema}) != 22);
+		if ($p->{schema} !~ /^\d+$/ ||
+			(int($p->{schema}) != 21 && int($p->{schema}) != 22));
 	return "invalid position_interval"
 		if ($p->{position_interval} !~ /^\d+(?:\.\d+)?$/ ||
 			($p->{position_interval} + 0) != 2);
@@ -5334,8 +5360,12 @@ sub ktpValidateCaptureManifestPayload
 		return "invalid capabilities" if ($capability !~ /^[a-z][a-z0-9_]{0,31}$/);
 		return "duplicate capability $capability" if ($capabilities{$capability}++);
 	}
-	for my $required (qw(frag_context damage position assist life break
-		flag_state flag_position objective_attempt grenade_entity sequence health)) {
+	my @required_capabilities = int($p->{schema}) == 21
+		? qw(frag_context damage position assist life break flag_state flag_position
+			team_membership sequence health)
+		: qw(frag_context damage position assist life break flag_state flag_position
+			objective_attempt grenade_entity team_membership sequence health);
+	for my $required (@required_capabilities) {
 		return "missing capability $required" if (!$capabilities{$required});
 	}
 	return "";
@@ -5735,7 +5765,7 @@ sub doEvent_KTPGrenadeEntity
 sub ktpValidateCaptureHealthPayload
 {
 	my ($p) = @_;
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -5806,10 +5836,13 @@ sub doEvent_KTPCaptureHealth
 			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
 			event_time=VALUES(event_time)
 	");
-	# Producer schema 22 emits health rows in enum order with grenade_entity
-	# last. Keep reconciliation state until that final row has observed both new
-	# event types; clearing at the old flag_position tail would report zeros.
-	if ($p->{event_type} eq "grenade_entity" && defined($rv)) {
+	# Schema 21 ends with team_membership; schema 22 ends with grenade_entity.
+	# Keep reconciliation state through the contract's actual final health row.
+	my $manifest = $g_ktpAcceptedCaptureManifests{$key};
+	my $is_terminal_health = defined($manifest) &&
+		(($manifest->{schema} == 21 && $p->{event_type} eq "team_membership") ||
+		 ($manifest->{schema} == 22 && $p->{event_type} eq "grenade_entity"));
+	if ($is_terminal_health && defined($rv)) {
 		delete $g_ktpCaptureSequences{$key};
 		delete $g_ktpAcceptedCaptureManifests{$key};
 	}
@@ -5883,6 +5916,83 @@ sub doEvent_KTPLifeBoundary
 		if (($rv + 0) == 0);
 	return "Life boundary logged: match=$matchid half=$half player=$player_id kind=$kind reason=$reason context=$context_source";
 }
+
+# BEGIN KTP TEAM MEMBERSHIP INTERVALS
+# A transition is accepted only as a real change.  `team` and `old_team` use
+# the DODX numeric vocabulary and intentionally allow zero for joining/leaving
+# a playing side.  They are facts, not an instruction to update the roster.
+sub ktpValidateTeamMembershipPayload
+{
+	my ($matchid, $producer_half, $team, $old_team, $game_time, $event_epoch,
+		$producer_sequence) = @_;
+	my $clock_error = ktpValidateProducerEventClock(
+		$matchid, $producer_half, $game_time, $event_epoch);
+	return $clock_error if ($clock_error ne "");
+	return "invalid team" if (!defined($team) || $team !~ /^[0-2]$/);
+	return "invalid old team" if (!defined($old_team) || $old_team !~ /^[0-2]$/);
+	return "unchanged team" if (int($team) == int($old_team));
+	return "invalid producer sequence"
+		if (!defined($producer_sequence) || $producer_sequence !~ /^[1-9]\d{0,18}$/);
+	return "";
+}
+
+sub doEvent_KTPTeamMembership
+{
+	my ($player_id, $engine_userid, $matchid, $producer_half, $team, $old_team,
+		$game_time, $event_epoch, $producer_sequence) = @_;
+	my $validation_error = ktpValidateTeamMembershipPayload(
+		$matchid, $producer_half, $team, $old_team, $game_time, $event_epoch,
+		$producer_sequence);
+	if ($validation_error ne "") {
+		&printEvent("KTP_TEAM_MEMBERSHIP_DROP",
+			"Team membership dropped: $validation_error", 1, 1);
+		return "Team membership dropped: $validation_error";
+	}
+	return "Team membership dropped: invalid resolved player"
+		if (!defined($player_id) || $player_id !~ /^\d+$/ || $player_id < 1);
+
+	my ($half, $map, $context_error, $context_source) =
+		ktpResolveProducerEventContext($matchid, $producer_half, $event_epoch);
+	if ($context_error ne "") {
+		&printEvent("KTP_TEAM_MEMBERSHIP_DROP",
+			"Team membership dropped: $context_error (match=$matchid player=$player_id)", 1, 1);
+		return "Team membership dropped: $context_error";
+	}
+
+	# Sequence is global to the capture context. Equal values are replay-safe and
+	# reach INSERT IGNORE; a lower value is out of order and fails closed.
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	my $state = $g_ktpCaptureSequences{$key};
+	if (defined($state) && defined($state->{team_membership_last_sequence}) &&
+		int($producer_sequence) < $state->{team_membership_last_sequence}) {
+		return "Team membership rejected: producer sequence out of order";
+	}
+	if (defined($state) && (!defined($state->{team_membership_last_sequence}) ||
+		int($producer_sequence) > $state->{team_membership_last_sequence})) {
+		$state->{team_membership_last_sequence} = int($producer_sequence);
+	}
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $userid_sql = (defined($engine_userid) && $engine_userid =~ /^\d+$/)
+		? int($engine_userid) : "NULL";
+	my $normalized_game_time = sprintf("%.2f", $game_time + 0);
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_team_membership_events
+			(server_id, match_id, half, map_name, player_id, engine_userid,
+			 team, old_team, game_time, event_epoch, producer_sequence, event_time)
+		VALUES
+			(".int($server_id).", '".&quoteSQL($matchid)."', ".int($half).",
+			 '".&quoteSQL($map)."', ".int($player_id).", $userid_sql,
+			 ".int($team).", ".int($old_team).", $normalized_game_time,
+			 ".int($event_epoch).", ".int($producer_sequence).",
+			 FROM_UNIXTIME(".int($event_epoch)."))
+	");
+	return "Team membership SQL insert failed" if (!defined($rv));
+	return "Team membership duplicate ignored: match=$matchid half=$half player=$player_id"
+		if (($rv + 0) == 0);
+	return "Team membership logged: match=$matchid half=$half player=$player_id context=$context_source";
+}
+# END KTP TEAM MEMBERSHIP INTERVALS
 
 sub doEvent_KTPAssist
 {
