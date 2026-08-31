@@ -79,13 +79,32 @@ jobs:
         run: python3 scripts/check-lane-refs.py
 
   corpus-regression:
-    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
+    # Pinned to a commit sha, not `@preprod` -- a literal branch name still moves
+    # every time someone pushes to it. The reusable workflow's inner job is named
+    # `Lane B (${{ inputs.lane }}, ${{ matrix.target_ref }}, run ${{
+    # matrix.run_index }})`, which composes the required status check
+    # `corpus-regression / Lane B (corpus, preprod, run 1)` on this repo's `main`
+    # and `preprod`. A rename of that job on preprod -- even one unrelated to
+    # this repo -- would mean the required context can never report again, with
+    # no failing check to point at: every PR would block forever. Pinning the sha
+    # freezes which version of the reusable workflow's orchestration CODE runs,
+    # so a later rename on preprod cannot reach us until the pin is moved on
+    # purpose. Pinned to preprod's tip as of 2026-08-30 (KTPInfrastructure#201).
+    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
     with:
       lane: corpus
+      # infrastructure_ref/amxx_ref stay the literal "preprod" -- that selects
+      # which commit of KTPInfrastructure/KTPAMXX gets CHECKED OUT once the
+      # pinned workflow code above is running, deliberately left live so the
+      # harness content (fixtures, schema, bot driver) keeps tracking preprod.
+      # Only the orchestration YAML is frozen. scripts/check-lane-refs.py no
+      # longer compares these against the `uses:` pin (which can now be a sha
+      # that no branch name equals) -- it compares them against the fixed
+      # lineage name "preprod" instead.
       infrastructure_ref: preprod
       # Literal, not the PR's base ref. KTPAMXX is not the artifact under test
       # here — it is part of the stack the harness assembles, so it has to come
-      # from the same lineage as the `uses:` pin. See scripts/check-lane-refs.py.
+      # from the same lineage as the harness. See scripts/check-lane-refs.py.
       amxx_ref: preprod
       daemon_ref: ${{ github.event.pull_request.head.sha || github.sha }}
     secrets: inherit
