@@ -135,6 +135,19 @@ events take their half from `ktp_matches` by time. A query that names a `half`
 column on that table fails to stderr while the caller sees an empty result,
 which reads exactly like a match with no captures.
 
+**`ktp_matches.match_type`** is a direct `TINYINT UNSIGNED` column (migration 014), matching
+`KTPMatchHandler.sma`'s enum: `0` official (`.ktp`), `1` scrim, `2` 12man, `3` draft, `4` KTP OT,
+`5` draft OT. It records only which chat command started the match — it does not encode round,
+stage, or format, and cannot separate group play from playoffs on its own. `NULL` rows predate the
+KTPMatchHandler build that started emitting the type on `KTP_MATCH_START` (0.10.167); see
+`sql/repair_backfill_match_type_13community.sql` for the one class of historical row recoverable
+from the match id shape, and `scripts/backfill-match-type-from-demos.py` for the rest.
+⚠️ **Keying match selection on `end_time IS NOT NULL` silently drops matches that started but
+never got an explicit end** — decide deliberately whether an unfinished-but-real match belongs in
+a result set, rather than by the side effect of an inner join or a `WHERE end_time IS NOT NULL`.
+⚠️ **The `-KTP1`…`-KTP5` suffix on a `match_id` is the game-server station, not the match type** —
+do not parse it looking for one.
+
 Every `DATETIME` in this schema is written through `FROM_UNIXTIME()`, so it
 renders in the database session's own zone (Eastern on the data server), not
 UTC. Where a producer supplies `event_epoch`, that is the only column holding a
