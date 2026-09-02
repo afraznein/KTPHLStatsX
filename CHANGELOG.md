@@ -1,5 +1,24 @@
 # KTP HLStatsX Changelog
 
+## [Unreleased]
+
+### Added - the repo carries the runtime libraries it loads
+
+- Vendor the seven upstream HLStatsX:CE files `hlstats.pl` loads through
+  `$opt_libdir` and that this repo never tracked: `ConfigReaderSimple.pm`,
+  `TRcon.pm`, `BASTARDrcon.pm`, `HLstats_Server.pm`, `HLstats_Player.pm`,
+  `HLstats_Game.pm`, `HLstats_GameConstants.plib`. Copied from the running
+  daemon at `/opt/hlstatsx/scripts/` and byte-identical (md5) to
+  `NomisCZ/hlstatsx-community-edition@0b5af096`, the ref Lane B already pins.
+  Stock upstream, GPL-2.0-or-later, same licence as this repo; unmodified, and
+  they stay that way - the KTP delta remains `hlstats.pl`, `HLstats.plib` and
+  `HLstats_EventHandlers.plib`, and `deploy.ps1` still stages only those three.
+- `scripts/selftest-runtime-closure.pl` derives the load set from the source
+  and walks it transitively, so a bare checkout can no longer be missing a file
+  the daemon requires. `require` dies on a gap and `do` only warns, which is
+  why the `do` half went unnoticed; the check treats both alike and proves it
+  reports a synthetic gap before reporting none on the real tree.
+
 ## [0.3.15] - 2026-08-27
 
 ### Added - schema-22 objective and grenade entity facts
