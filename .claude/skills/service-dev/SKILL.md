@@ -45,6 +45,17 @@ This is HLStatsX:CE with a KTP delta grafted on, not a from-scratch daemon.
 - Stay inside the KTP delta. If a fix looks like it wants to restructure
   general HLStatsX behavior, it's almost certainly out of scope — scope the
   fix to the KTP-specific code path instead.
+- `scripts/ConfigReaderSimple.pm`, `TRcon.pm`, `BASTARDrcon.pm`,
+  `HLstats_Server.pm`, `HLstats_Player.pm`, `HLstats_Game.pm`,
+  `HLstats_GameConstants.plib` — **vendored upstream, unmodified** (#68).
+  `hlstats.pl` loads them by path and a bare checkout dies without them;
+  they exist so this repo's own CI can run the daemon standalone. Confirmed
+  byte-identical (md5) to `NomisCZ/hlstatsx-community-edition@0b5af096`.
+  Never edit them — replace with a fresh copy from that ref or
+  `/opt/hlstatsx/scripts/`, never a patch, or the fork stops being
+  rebasable. `deploy.ps1` never stages them; Lane B doesn't read them
+  either — `KTPInfrastructure/scripts/assemble_daemon_tree.sh` composes its
+  own copies independently.
 
 ## Known landmines (don't reintroduce these)
 
