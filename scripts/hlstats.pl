@@ -5830,18 +5830,28 @@ sub ktpValidateCaptureHealthPayload
 sub ktpCaptureHealthSilentStreamWarning
 {
 	my ($p, $manifest) = @_;
+	# The marker count is dominated by the position stream's sampling cadence,
+	# so the floor must clear what an aborted half accumulates from sampling
+	# alone; below it the half was too empty for a zero to indict anything.
+	return "" if (int($p->{sequence_last}) < 2000);
+	# Health rows exist only in the capture contract, and the contract's sole
+	# authorizer is an accepted manifest - so health without one is always a
+	# wiring or authorization break. Judged once per half, on its first row.
+	if (!defined($manifest)) {
+		return "" if ($p->{event_type} ne "life");
+		return "Capture health arrived with no accepted manifest for the half"
+			. " (match=$p->{matchid} half=$p->{half}): the manifest was"
+			. " dropped or never sent, so every manifest-gated stream is dark";
+	}
 	return "" if (int($p->{attempted}) != 0);
-	# Below this many producer markers the half itself was too empty for a
-	# zero to indict the stream rather than the gameplay.
-	return "" if (int($p->{sequence_last}) < 200);
 	my $type = $p->{event_type};
-	# Only streams a completed competitive half cannot honestly finish without.
+	# Only streams a half this busy cannot honestly finish without.
 	# objective_attempt stays out (a map without area captures produces none),
 	# and so do the legitimately sparse streams (assist, break, team_membership).
 	my %always_active = map { $_ => 1 } qw(life damage frag);
 	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position);
 	if ($manifest_gated{$type}) {
-		return "" if (!defined($manifest) || !$manifest->{$type});
+		return "" if (!$manifest->{$type});
 	} elsif (!$always_active{$type}) {
 		return "";
 	}

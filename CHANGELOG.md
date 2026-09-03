@@ -13,11 +13,21 @@
   byte-identical to "awaiting gameplay" - which is exactly how
   `ktp_grenade_entity_events` sat at zero rows across every completed half
   since schema-22 activation while its sibling streams flowed. `life`,
-  `damage` and `frag` warn unconditionally; `grenade_entity` and `position`
-  warn only when the accepted manifest declared them; legitimately sparse
-  streams (`assist`, `break`, `team_membership`) and `objective_attempt`
-  (honestly absent on captureless maps) never warn. Log-only: no drop, no
-  schema change.
+  `damage` and `frag` warn whenever a manifest was accepted; `grenade_entity`
+  and `position` warn only when that manifest declared them; legitimately
+  sparse streams (`assist`, `break`, `team_membership`) and
+  `objective_attempt` (honestly absent on captureless maps) never warn. The
+  marker floor is denominated in a count dominated by position-sampling
+  cadence, so it is set to clear what an aborted half accumulates from
+  sampling alone. Log-only: no drop, no schema change.
+- The same tripwire also fires when capture health arrives for a busy half
+  with **no accepted manifest at all** (judged once, on the half's `life`
+  row). Health rows exist only in the capture contract and the contract's
+  sole authorizer is an accepted manifest, so this case is unambiguously a
+  wiring or authorization break - it is exactly what a producer/daemon
+  capability-requirement skew looks like, where every manifest-gated stream
+  goes dark at once while the daemon's only complaint is a
+  `Capture manifest dropped` line nobody reads.
 
 ### Added - the repo carries the runtime libraries it loads
 
