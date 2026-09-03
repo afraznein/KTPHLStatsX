@@ -501,6 +501,60 @@ $health_ok{event_type} = 'grenade_entity';
 is(ktpValidateCaptureHealthPayload(\%health_ok), '',
     'grenade_entity is a valid health type');
 
+my %silent_health = (
+    matchid => 'telemetry-TEST', half => 1, event_type => 'grenade_entity',
+    attempted => 0, enqueued => 0, dropped => 0, emitted => 0,
+    sequence_first => 1, sequence_last => 8000, sequence => 8001,
+    event_epoch => 1787616790,
+);
+my %silent_manifest = (schema => 22, grenade_entity => 1, position => 0);
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest),
+    qr/wiring loss/,
+    'a declared grenade stream silent across a busy half warns loudly');
+$silent_health{attempted} = 3;
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'a stream that attempted anything does not warn');
+$silent_health{attempted} = 0;
+$silent_health{sequence_last} = 1999;
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'a half below the marker floor cannot indict a silent stream');
+$silent_health{sequence_last} = 2000;
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest),
+    qr/wiring loss/,
+    'the marker floor is inclusive at its boundary');
+$silent_health{sequence_last} = 8000;
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health,
+        {schema => 22, grenade_entity => 0}), '',
+    'an undeclared manifest-gated stream is allowed to be silent');
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, undef), '',
+    'a missing manifest is judged once on the life row, not per stream');
+$silent_health{event_type} = 'team_membership';
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'legitimately sparse streams never warn');
+$silent_health{event_type} = 'objective_attempt';
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'objective attempts can be honestly absent on captureless maps');
+$silent_health{event_type} = 'life';
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest),
+    qr/wiring loss/,
+    'a silent life stream warns whenever a manifest was accepted');
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, undef),
+    qr/no accepted manifest/,
+    'a busy half with no accepted manifest warns on its life row');
+$silent_health{attempted} = 700;
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, undef),
+    qr/no accepted manifest/,
+    'the missing-manifest warning does not require a silent stream');
+$silent_health{attempted} = 0;
+my $health_handler_at = index($source, 'sub doEvent_KTPCaptureHealth');
+my $health_handler = substr($source, $health_handler_at, 2000);
+my $manifest_fetch_at = index($health_handler, 'my $manifest =');
+my $tripwire_call_at =
+    index($health_handler, 'ktpCaptureHealthSilentStreamWarning($p, $manifest)');
+ok($health_handler_at >= 0 && $manifest_fetch_at >= 0 &&
+   $tripwire_call_at > $manifest_fetch_at,
+    'capture health dispatch fetches the manifest before consulting the tripwire');
+
 like($source, qr/KTP_OBJECTIVE_ATTEMPT.*?ktpObserveCaptureMarker\("objective_attempt"/s,
     'direct objective marker participates in capture health');
 my $manifest_at = index($source, '} elsif ($s_output =~ /^KTP_CAPTURE_MANIFEST');
