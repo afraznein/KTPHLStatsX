@@ -5822,6 +5822,34 @@ sub ktpValidateCaptureHealthPayload
 	return "invalid event_epoch" if ($p->{event_epoch} < 1);
 	return "";
 }
+
+# In the ledgers, a stream whose producer wiring is broken is byte-identical to
+# a stream awaiting gameplay, so a declared stream that attempted nothing across
+# an otherwise-busy half must say so loudly at health time rather than persist
+# another silent zero.
+sub ktpCaptureHealthSilentStreamWarning
+{
+	my ($p, $manifest) = @_;
+	return "" if (int($p->{attempted}) != 0);
+	# Below this many producer markers the half itself was too empty for a
+	# zero to indict the stream rather than the gameplay.
+	return "" if (int($p->{sequence_last}) < 200);
+	my $type = $p->{event_type};
+	# Only streams a completed competitive half cannot honestly finish without.
+	# objective_attempt stays out (a map without area captures produces none),
+	# and so do the legitimately sparse streams (assist, break, team_membership).
+	my %always_active = map { $_ => 1 } qw(life damage frag);
+	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position);
+	if ($manifest_gated{$type}) {
+		return "" if (!defined($manifest) || !$manifest->{$type});
+	} elsif (!$always_active{$type}) {
+		return "";
+	}
+	return "Stream '$type' attempted 0 events while the half produced "
+		. int($p->{sequence_last})
+		. " markers (match=$p->{matchid} half=$p->{half}): producer-side"
+		. " wiring loss (module forward or capability skew), not absent gameplay";
+}
 # END KTP CAPTURE HEALTH VALIDATION
 
 sub doEvent_KTPCaptureHealth
@@ -5835,6 +5863,10 @@ sub doEvent_KTPCaptureHealth
 	ktpDrainPendingDamage($p->{matchid}, $p->{half})
 		if ($p->{event_type} eq "damage");
 	my $key = join("\x1e", $s_addr, $p->{matchid}, int($p->{half}));
+	my $manifest = $g_ktpAcceptedCaptureManifests{$key};
+	my $silent_warning = ktpCaptureHealthSilentStreamWarning($p, $manifest);
+	&printEvent("KTP_CAPTURE_STREAM_SILENT", $silent_warning, 1, 1)
+		if ($silent_warning ne "");
 	my $state = $g_ktpCaptureSequences{$key} || {};
 	my $daemon_received = (($state->{types} || {})->{$p->{event_type}} || 0);
 	my $daemon_rejected = (($state->{rejected} || {})->{$p->{event_type}} || 0);
@@ -5879,7 +5911,6 @@ sub doEvent_KTPCaptureHealth
 	");
 	# Schema 21 ends with team_membership; schemas 22/23 end with grenade_entity.
 	# Keep reconciliation state through the contract's actual final health row.
-	my $manifest = $g_ktpAcceptedCaptureManifests{$key};
 	my $is_terminal_health = defined($manifest) &&
 		(($manifest->{schema} == 21 && $p->{event_type} eq "team_membership") ||
 		 (($manifest->{schema} == 22 || $manifest->{schema} == 23) &&

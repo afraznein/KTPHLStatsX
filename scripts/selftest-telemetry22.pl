@@ -501,6 +501,43 @@ $health_ok{event_type} = 'grenade_entity';
 is(ktpValidateCaptureHealthPayload(\%health_ok), '',
     'grenade_entity is a valid health type');
 
+my %silent_health = (
+    matchid => 'telemetry-TEST', half => 1, event_type => 'grenade_entity',
+    attempted => 0, enqueued => 0, dropped => 0, emitted => 0,
+    sequence_first => 1, sequence_last => 4000, sequence => 4001,
+    event_epoch => 1787616790,
+);
+my %silent_manifest = (schema => 22, grenade_entity => 1, position => 0);
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest),
+    qr/wiring loss/,
+    'a declared grenade stream silent across a busy half warns loudly');
+$silent_health{attempted} = 3;
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'a stream that attempted anything does not warn');
+$silent_health{attempted} = 0;
+$silent_health{sequence_last} = 40;
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'a near-empty half cannot indict a silent stream');
+$silent_health{sequence_last} = 4000;
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health,
+        {schema => 22, grenade_entity => 0}), '',
+    'an undeclared manifest-gated stream is allowed to be silent');
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, undef), '',
+    'no accepted manifest means no capability judgement');
+$silent_health{event_type} = 'team_membership';
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'legitimately sparse streams never warn');
+$silent_health{event_type} = 'objective_attempt';
+is(ktpCaptureHealthSilentStreamWarning(\%silent_health, \%silent_manifest), '',
+    'objective attempts can be honestly absent on captureless maps');
+$silent_health{event_type} = 'life';
+like(ktpCaptureHealthSilentStreamWarning(\%silent_health, undef),
+    qr/wiring loss/,
+    'a silent life stream warns without any manifest gate');
+like($source,
+    qr/ktpCaptureHealthSilentStreamWarning\(\$p,\s*\$manifest\)/,
+    'capture health dispatch consults the silent-stream tripwire');
+
 like($source, qr/KTP_OBJECTIVE_ATTEMPT.*?ktpObserveCaptureMarker\("objective_attempt"/s,
     'direct objective marker participates in capture health');
 my $manifest_at = index($source, '} elsif ($s_output =~ /^KTP_CAPTURE_MANIFEST');

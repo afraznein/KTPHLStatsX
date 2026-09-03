@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added - a declared-but-silent capture stream now warns at health time
+
+- `KTP_CAPTURE_STREAM_SILENT`: when an end-of-half capture health row reports
+  `attempted=0` for a stream the half cannot honestly lack, and the half
+  produced enough producer markers overall to judge, the daemon prints a loud
+  journal line naming the stream instead of only persisting another zero. In
+  the ledgers a producer-side wiring break (a fleet module binary built before
+  its forwards existed, or a capability skew between plugin and module) is
+  byte-identical to "awaiting gameplay" - which is exactly how
+  `ktp_grenade_entity_events` sat at zero rows across every completed half
+  since schema-22 activation while its sibling streams flowed. `life`,
+  `damage` and `frag` warn unconditionally; `grenade_entity` and `position`
+  warn only when the accepted manifest declared them; legitimately sparse
+  streams (`assist`, `break`, `team_membership`) and `objective_attempt`
+  (honestly absent on captureless maps) never warn. Log-only: no drop, no
+  schema change.
+
 ### Added - the repo carries the runtime libraries it loads
 
 - Vendor the seven upstream HLStatsX:CE files `hlstats.pl` loads through
