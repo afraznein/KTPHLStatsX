@@ -93,6 +93,9 @@ sub doQuery {
 }
 sub execNonQuery { $last_insert = $_[0]; return $exec_return; }
 sub printEvent { return 1; }
+# The extracted context block reaches the unconditional alarm path too;
+# scripts/selftest-alarm-audibility.pl is what actually exercises it.
+sub printAlarm { return 1; }
 
 my $loaded = eval "no strict 'vars';\n$identity\n$validator\n$resolver\n$team_membership\n1;";
 die "cannot load shipped capture helpers: $@" unless $loaded;

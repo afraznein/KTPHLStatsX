@@ -157,6 +157,33 @@ sub printNotice
 	}
 }
 
+# BEGIN KTP UNCONDITIONAL ALARM
+#
+# void printAlarm (string code, string description)
+#
+# An alarm whose audibility is a side effect of DebugLevel is not an alarm.
+# printEvent prints only when $g_debug > 0 in UDP mode, and its force_output
+# escape hatch is reachable only under --stdin, so every detector routed
+# through it goes silent the day someone quietens the daemon -- including the
+# ones whose whole job is to report that a stats stream has stopped.
+#
+# Reserved for conditions an operator must see at any DebugLevel: bounded in
+# volume, and reporting data that is being lost or a pipeline that has gone
+# quiet. Per-event drop reports do not qualify; they would flood a daemon that
+# was deliberately quietened.
+#
+# This lifts printEvent's gate rather than reimplementing it, so the line
+# format stays identical and anything grepping these codes is unaffected.
+# force_output covers --stdin, where the debug clause never applies.
+sub printAlarm
+{
+	my ($code, $description) = @_;
+
+	local $g_debug = 1;
+	&printEvent($code, $description, 1, 1);
+}
+# END KTP UNCONDITIONAL ALARM
+
 sub track_hlstats_trend
 {
 	if ($last_trend_timestamp > 0) {
@@ -4688,10 +4715,13 @@ sub ktpWarnUnresolvedAction
 
 	my $key = "$game/$action";
 	if (!$g_ktpUnresolvedActions{$key}++) {
-		&printEvent("SQL_ERROR",
+		# Deduped to one line per game/action for the process lifetime, so
+		# being unconditional costs nothing, and every objective event for
+		# this action is being discarded until someone sees it.
+		&printAlarm("SQL_ERROR",
 			"Unresolved action '$action' (game '$game') is NOT in hlstats_Actions -- " .
 			"this event is being DISCARDED and will never reach the database. " .
-			"Seed the actions table for this game.", 1);
+			"Seed the actions table for this game.");
 	}
 }
 
@@ -4713,10 +4743,12 @@ sub ktpAssertActionsSeeded
 	$result->finish;
 
 	if (!$count) {
-		&printEvent("SQL_ERROR",
+		# Once per game at discovery, and it is the only warning before a
+		# season's objectives are parsed and silently thrown away.
+		&printAlarm("SQL_ERROR",
 			"hlstats_Actions has NO rows for game '$game'. Every objective event for " .
 			"this game will be parsed and then discarded. Seed the actions table " .
-			"before running a match.", 1);
+			"before running a match.");
 	} else {
 		&printEvent("HLSTATSX", "Actions loaded for game '$game': $count", 1);
 	}
@@ -5875,7 +5907,9 @@ sub doEvent_KTPCaptureHealth
 	my $key = join("\x1e", $s_addr, $p->{matchid}, int($p->{half}));
 	my $manifest = $g_ktpAcceptedCaptureManifests{$key};
 	my $silent_warning = ktpCaptureHealthSilentStreamWarning($p, $manifest);
-	&printEvent("KTP_CAPTURE_STREAM_SILENT", $silent_warning, 1, 1)
+	# printAlarm, not printEvent: a detector for a stream that has gone quiet
+	# cannot itself be silenced by DebugLevel.
+	&printAlarm("KTP_CAPTURE_STREAM_SILENT", $silent_warning)
 		if ($silent_warning ne "");
 	my $state = $g_ktpCaptureSequences{$key} || {};
 	my $daemon_received = (($state->{types} || {})->{$p->{event_type}} || 0);
