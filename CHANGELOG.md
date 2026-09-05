@@ -1,5 +1,51 @@
 # KTP HLStatsX Changelog
 
+## [Unreleased]
+
+### Added - a declared-but-silent capture stream now warns at health time
+
+- `KTP_CAPTURE_STREAM_SILENT`: when an end-of-half capture health row reports
+  `attempted=0` for a stream the half cannot honestly lack, and the half
+  produced enough producer markers overall to judge, the daemon prints a loud
+  journal line naming the stream instead of only persisting another zero. In
+  the ledgers a producer-side wiring break (a fleet module binary built before
+  its forwards existed, or a capability skew between plugin and module) is
+  byte-identical to "awaiting gameplay" - which is exactly how
+  `ktp_grenade_entity_events` sat at zero rows across every completed half
+  since schema-22 activation while its sibling streams flowed. `life`,
+  `damage` and `frag` warn whenever a manifest was accepted; `grenade_entity`
+  and `position` warn only when that manifest declared them; legitimately
+  sparse streams (`assist`, `break`, `team_membership`) and
+  `objective_attempt` (honestly absent on captureless maps) never warn. The
+  marker floor is denominated in a count dominated by position-sampling
+  cadence, so it is set to clear what an aborted half accumulates from
+  sampling alone. Log-only: no drop, no schema change.
+- The same tripwire also fires when capture health arrives for a busy half
+  with **no accepted manifest at all** (judged once, on the half's `life`
+  row). Health rows exist only in the capture contract and the contract's
+  sole authorizer is an accepted manifest, so this case is unambiguously a
+  wiring or authorization break - it is exactly what a producer/daemon
+  capability-requirement skew looks like, where every manifest-gated stream
+  goes dark at once while the daemon's only complaint is a
+  `Capture manifest dropped` line nobody reads.
+
+### Added - the repo carries the runtime libraries it loads
+
+- Vendor the seven upstream HLStatsX:CE files `hlstats.pl` loads through
+  `$opt_libdir` and that this repo never tracked: `ConfigReaderSimple.pm`,
+  `TRcon.pm`, `BASTARDrcon.pm`, `HLstats_Server.pm`, `HLstats_Player.pm`,
+  `HLstats_Game.pm`, `HLstats_GameConstants.plib`. Copied from the running
+  daemon at `/opt/hlstatsx/scripts/` and byte-identical (md5) to
+  `NomisCZ/hlstatsx-community-edition@0b5af096`, the ref Lane B already pins.
+  Stock upstream, GPL-2.0-or-later, same licence as this repo; unmodified, and
+  they stay that way - the KTP delta remains `hlstats.pl`, `HLstats.plib` and
+  `HLstats_EventHandlers.plib`, and `deploy.ps1` still stages only those three.
+- `scripts/selftest-runtime-closure.pl` derives the load set from the source
+  and walks it transitively, so a bare checkout can no longer be missing a file
+  the daemon requires. `require` dies on a gap and `do` only warns, which is
+  why the `do` half went unnoticed; the check treats both alike and proves it
+  reports a synthetic gap before reporting none on the real tree.
+
 ## [0.3.15] - 2026-08-27
 
 ### Added - schema-22 objective and grenade entity facts

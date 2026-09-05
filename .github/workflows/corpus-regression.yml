@@ -14,6 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # First: the rest of this job runs scripts from a bare checkout, and so does
+      # Lane B. A missing $opt_libdir file makes those fail for a reason no PR
+      # caused.
+      - name: Every file hlstats.pl loads is committed here
+        run: perl scripts/selftest-runtime-closure.pl
       - name: Producer-clock and buffered-identity regressions
         run: perl scripts/selftest-life-boundary.pl
       - name: Property-tail parse regressions
