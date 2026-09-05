@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Fixed - alarms no longer depend on the debug level to be heard
+
+- `printAlarm()`: a logging path that does not consult `DebugLevel`. Every
+  alarm in this daemon went through `printEvent`, whose gate is
+  `(($g_debug > 0) && ($g_stdin == 0)) || (($g_stdin == 1) && ($force_output
+  == 1))`. The daemon reads UDP, so `$g_stdin` is always 0, the second clause
+  can never fire, and the `force_output=1` passed at several call sites is
+  inert - audibility rested entirely on `DebugLevel`. It worked only because
+  the live config carries `DebugLevel 1`; quietening the daemon would have
+  disabled a silent-pipeline detector with no other symptom.
+  `printAlarm` lifts `printEvent`'s gate for the duration of one call rather
+  than reimplementing it, so the line format is unchanged and anything
+  grepping these codes is unaffected.
+- Routed through it, and nothing else: `KTP_CAPTURE_STREAM_SILENT`, and the
+  two `SQL_ERROR` reports for an unseeded `hlstats_Actions` - the silence that
+  cost the Philly 2026 LAN every objective capture of the weekend. All three
+  are bounded (once per half per stream, once per game/action, once per game
+  at discovery) and all three report data being lost or a pipeline gone quiet.
+  The per-event `KTP_*_DROP` reports keep `printEvent` deliberately: they are
+  unbounded in volume and would flood a daemon someone had quietened on
+  purpose. Their `force_output=1` argument stays, still inert; why it buys
+  nothing under UDP is recorded at `printAlarm`.
+- `scripts/selftest-alarm-audibility.pl` runs the shipped `printEvent` from
+  `HLstats.plib` against the shipped `printAlarm` lifted out of `hlstats.pl`
+  by marker - stubbing either would test the stub. At `DebugLevel 0` it
+  asserts `printEvent` emits nothing *and* `printAlarm` emits, against a
+  positive control proving the stdout capture reports output when there is
+  any, and it asserts the two produce a byte-identical line at `DebugLevel 1`.
+
 ### Added - a declared-but-silent capture stream now warns at health time
 
 - `KTP_CAPTURE_STREAM_SILENT`: when an end-of-half capture health row reports

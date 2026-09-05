@@ -31,6 +31,8 @@ jobs:
         run: perl scripts/selftest-damage-absence.pl
       - name: Schema-22 objective and grenade entity contracts
         run: perl scripts/selftest-telemetry22.pl
+      - name: Alarms stay audible at DebugLevel 0
+        run: perl scripts/selftest-alarm-audibility.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL
