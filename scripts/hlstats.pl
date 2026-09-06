@@ -3043,6 +3043,7 @@ while ($loop = &getLine()) {
 							my $fc_time_where =
 								"AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")";
 							my $fc_match_description = "legacy receipt window";
+							my $fc_order_by = "id ASC";
 							if ($fc_context_error eq "") {
 								my $fc_event_epoch = int($ev_properties_hash{"event_epoch"});
 								$fc_clock_sql = ", game_time = ".($ev_properties_hash{"game_time"} + 0).
@@ -3050,10 +3051,19 @@ while ($loop = &getLine()) {
 									", producer_match_id = '".quoteSQL($ev_properties_hash{"matchid"})."'".
 									", producer_half = ".int($fc_half).
 									", producer_sequence = ".int($ev_properties_hash{"sequence"} // 0);
+								# eventTime is daemon receipt time (no --timestamp on the
+								# production cmdline), so UDP transit plus sub-second host
+								# clock offset pushes 15-45% of kills into the neighboring
+								# second and the exact-second join drops them (28.4% of
+								# corpus frags untagged; FRAG_CONTEXT_COVERAGE_TRIAGE
+								# 20260906). Widen to [epoch-1, epoch+2) and pick the row
+								# closest to the producer epoch.
 								$fc_time_where =
-									"AND eventTime >= FROM_UNIXTIME(".$fc_event_epoch.") ".
-									"AND eventTime < FROM_UNIXTIME(".($fc_event_epoch + 1).")";
-								$fc_match_description = "exact producer second";
+									"AND eventTime >= FROM_UNIXTIME(".($fc_event_epoch - 1).") ".
+									"AND eventTime < FROM_UNIXTIME(".($fc_event_epoch + 2).")";
+								$fc_match_description = "producer second (+/-1s)";
+								$fc_order_by =
+									"ABS(UNIX_TIMESTAMP(eventTime) - ".$fc_event_epoch.") ASC, id ASC";
 							} elsif ($fc_has_explicit_context) {
 								ktpWarnProducerClock("frag_context", $fc_context_error);
 							}
@@ -3071,10 +3081,13 @@ while ($loop = &getLine()) {
 								$fc_pos_sql .= ", pos_victim_x = $1, pos_victim_y = $2, pos_victim_z = $3";
 							}
 
-							# Authoritative producer clocks use FIFO only inside the exact
-							# producer second, so a lost marker cannot shift later clocks.
-							# Old/sentinel emitters retain the preexisting receipt-window
-							# tactical update, but those rows receive no producer clocks.
+							# Authoritative producer clocks join only inside the narrow
+							# producer window above, ordered nearest-epoch-first, so a
+							# lost marker can shift a later clock only when the same
+							# killer/victim/weapon repeats within ~2s -- accepted for the
+							# 28.4% coverage recovery. Old/sentinel emitters retain the
+							# preexisting receipt-window tactical update, but those rows
+							# receive no producer clocks.
 							my $fc_rv = &execNonQuery("
 								UPDATE hlstats_Events_Frags
 								SET headshot = ".$fc_context{'headshot'}.",
@@ -3097,7 +3110,7 @@ while ($loop = &getLine()) {
 								AND weapon IN ($fc_weapon_where)
 								AND frag_context_recorded = 0
 								$fc_time_where
-								ORDER BY id ASC
+								ORDER BY $fc_order_by
 								LIMIT 1
 							");
 							if (defined($fc_rv) && $fc_rv == 0) {
