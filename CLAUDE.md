@@ -355,6 +355,34 @@ sentinel/nullable columns with the `DEFAULT 0` ones — only the latter are ambi
 Related: the teamkills-union trap above and `ktp_match_stats.half = 0` in `README.md` are the same
 "a default reads as a real measurement" shape, on different tables.
 
+## Filtering `ktp_matches.match_type` — allowlist what you want, never denylist what you don't
+
+*(2026-09-05.)* `match_type` is nullable and a large share of `ktp_matches` is NULL — the pre-backfill
+population, described in `README.md`. **Those NULLs are a real, expected value, not missing data.**
+
+⛔ **`WHERE match_type NOT IN (2)` silently drops every one of them.** SQL three-valued logic makes
+`NULL NOT IN (…)` evaluate to NULL rather than TRUE, so the row fails the predicate. Nothing errors,
+nothing warns; the result set is just quietly smaller, and it reads exactly like a correct filter.
+
+**The rule, for anyone querying this table:**
+
+- **Allowlist:** `WHERE match_type IN (0, 1)` — say which types you want.
+- ⛔ **Never denylist:** `WHERE match_type NOT IN (2)` — a denylist is an allowlist that also drops NULL.
+- If NULLs belong alongside an exclusion, spell it out: `WHERE (match_type NOT IN (2) OR match_type IS NULL)`.
+
+The footgun lives in the *consumer's* query, not in this repo's code, so no change here can prevent it —
+which is why it is written down rather than fixed.
+
+**Re-derive the current population** instead of trusting a number in prose:
+
+```sql
+SELECT match_type, COUNT(*) AS rows_, COUNT(DISTINCT match_id) AS matches
+FROM ktp_matches GROUP BY match_type ORDER BY match_type;
+```
+
+⚠️ `match_type = 0` is *official*, a distinct value from NULL, and `0` is falsy in most host languages —
+do not let an application-side truthiness check collapse the two.
+
 ## Spine rows support per-half rates, never per-half splits — there is no `half` column to split on
 
 *(Moved 2026-08-30 from the KTP board's `TODO.md`.)* Verified against `information_schema` 2026-08-30:
