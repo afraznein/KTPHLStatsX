@@ -141,6 +141,23 @@ like($frag_branch, qr/AND frag_context_recorded = 0/,
 unlike($frag_branch, qr/AND frag_context_certified = 0/,
     'certification must not gate the claim, or a partial payload becomes re-claimable');
 
+# --- the producer join window ------------------------------------------------
+# eventTime is daemon receipt time; an exact-second join loses every kill whose
+# receipt lands in the neighboring second (28.4% of the Tier-2 corpus --
+# FRAG_CONTEXT_COVERAGE_TRIAGE_20260906). The window is [epoch-1, epoch+2),
+# nearest row to the producer epoch first.
+like($frag_branch,
+    qr/FROM_UNIXTIME\("\.\(\$fc_event_epoch - 1\)\."\)/,
+    'producer join window opens one second early');
+like($frag_branch,
+    qr/FROM_UNIXTIME\("\.\(\$fc_event_epoch \+ 2\)\."\)/,
+    'and closes after epoch+1, half-open');
+like($frag_branch,
+    qr/ABS\(UNIX_TIMESTAMP\(eventTime\) - "\.\$fc_event_epoch\."\) ASC, id ASC/,
+    'the nearest receipt second to the producer epoch wins, id breaks ties');
+like($frag_branch, qr/my \$fc_order_by = "id ASC"/,
+    'the legacy receipt-window path stays FIFO');
+
 my $trailing_newline = resolve(%COMPLETE, k_ammo => "1" . chr(10));
 is($trailing_newline->{certified}, 0,
     'a trailing newline is rejected -- the $ anchor would have allowed one');
