@@ -3814,6 +3814,34 @@ while ($loop = &getLine()) {
 
 					if ($playerinfo)
 					{
+						# KTP: dod_control_point is the OTHER DoD 1.3 capture-completion
+						# line. Same shape as dod_capture_area above --
+						#   "Player<uid><steamid><Team>" triggered a
+						#   "dod_control_point" - "POINT_NAME"
+						# -- and it is what single-capper points emit, where
+						# dod_capture_area is what multi-capper areas emit. Only the
+						# latter had a handler, so ktp_flag_captures held captures for
+						# whichever flags a map happens to author as areas and nothing
+						# for the rest: on dod_harrington the HUD recorded 960 captures
+						# across five flags in six matches while we recorded one flag.
+						#
+						# Deliberately additive: the generic PlayerAction row below is
+						# still written. `caps` is sourced from hlstats_Events_PlayerActions
+						# code dod_control_point today, and diverting this line the way
+						# dod_capture_area was diverted on 2026-08-14 would silence that
+						# consumer without warning -- the same failure, twice.
+						if ($ev_obj_a eq "dod_control_point") {
+							my ($cp_flagname) = ($ev_properties =~ /-\s*"(.+?)"\s*$/);
+							my $cp_capper = lookupPlayer($s_addr, $playerinfo->{"userid"}, $playerinfo->{"uniqueid"});
+							if ($cp_capper) {
+								&doEvent_KTPFlagCapture(
+									$cp_capper->{playerid},
+									$playerinfo->{"team"},
+									$cp_flagname // ""
+								);
+							}
+						}
+
 						$ev_status = &doEvent_PlayerAction(
 							$playerinfo->{"userid"},
 							$playerinfo->{"uniqueid"},
