@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added - capture credit is now asserted, not only reviewed
+
+- `scripts/selftest-capture-credit.pl` covers the path both DoD 1.3
+  completion codes take. `capture-contract-selftests` reads as though it
+  already did: it covers parse, producer clocks, frag context and telemetry,
+  and named none of `dod_capture_area`, `dod_control_point` or
+  `doEvent_KTPFlagCapture`. Correctness of the capture path rested on the
+  corpus lane and on review.
+- It runs the shipped dispatch and the shipped credit sub, lifted out of
+  `hlstats.pl` by two new marker pairs, over raw log lines parsed with the
+  daemon's own prototype pattern. A harness that built its own fixtures would
+  pass over a handler that had stopped, which is the failure being guarded:
+  when `dod_capture_area` was diverted on 2026-08-14 nothing errored and every
+  total stayed plausible for weeks.
+- Asserted per event rather than in totals - which code took which branch, the
+  durable player id and team credited, the point name parsed off the tail, the
+  match tag a live round adds, and that one line reaches exactly one branch.
+  `dod_capture_area` writing no `PlayerAction` row and `dod_control_point`
+  still writing one is asserted in both directions, since that asymmetry is
+  what `caps` depends on. The control is an unrelated `triggered a` line,
+  without which a handler crediting everything would pass.
+- The markers are comments; no behaviour changed.
+
 ### Fixed - alarms no longer depend on the debug level to be heard
 
 - `printAlarm()`: a logging path that does not consult `DebugLevel`. Every
