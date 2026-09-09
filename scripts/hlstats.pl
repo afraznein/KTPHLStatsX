@@ -3778,6 +3778,7 @@ while ($loop = &getLine()) {
 			} elsif ($ev_verb eq "triggered a") {
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
 
+				# BEGIN KTP CAPTURE DISPATCH
 				if ($playerinfo && $ev_obj_a eq "dod_capture_area") {
 					# KTP: DoD 1.3 (GoldSrc) flag-capture completion --
 					#     "Player<uid><steamid><Team>" triggered a "dod_capture_area" - "POINT_NAME"
@@ -3853,6 +3854,7 @@ while ($loop = &getLine()) {
 						);
 					}
 				}
+				# END KTP CAPTURE DISPATCH
 			} elsif ($ev_verb eq "say" || $ev_verb eq "say_team" || $ev_verb eq "say_squad") {
 				my $playerinfo = &getPlayerInfo($ev_player, 1);
 				
@@ -6359,6 +6361,7 @@ sub doEvent_KTPPosition
 	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
 }
 
+# BEGIN KTP FLAG CAPTURE CREDIT
 sub doEvent_KTPFlagCapture
 {
 	# KTP: per-player flag-capture completion. Same match_id/round_live
@@ -6392,6 +6395,7 @@ sub doEvent_KTPFlagCapture
 
 	return "Flag capture logged: player=$player_id team=".($team // "?")." flag=".($flag_name // "?");
 }
+# END KTP FLAG CAPTURE CREDIT
 
 sub doEvent_KTPFlagPosition
 {

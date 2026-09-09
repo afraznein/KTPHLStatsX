@@ -29,6 +29,8 @@ jobs:
         run: perl scripts/selftest-frag-context.pl
       - name: Damage-absence distinction
         run: perl scripts/selftest-damage-absence.pl
+      - name: Capture credit reaches both completion codes
+        run: perl scripts/selftest-capture-credit.pl
       - name: Schema-22 objective and grenade entity contracts
         run: perl scripts/selftest-telemetry22.pl
       - name: Alarms stay audible at DebugLevel 0
