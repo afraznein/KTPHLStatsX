@@ -529,6 +529,18 @@ is(ktpValidateCaptureHealthPayload(\%health_ok), '',
 $health_ok{event_type} = 'grenade_entity';
 is(ktpValidateCaptureHealthPayload(\%health_ok), '',
     'grenade_entity is a valid health type');
+# ksc_emit_health loops over the plugin's whole event enum, so every stream the
+# plugin knows produces a health row. A type missing from the validator's
+# whitelist is rejected outright and that stream loses its entire
+# attempted/enqueued/dropped/emitted accounting -- silently, because the stream
+# keeps working and only the health row goes missing.
+$health_ok{event_type} = 'shot';
+is(ktpValidateCaptureHealthPayload(\%health_ok), '',
+    'shot is a valid health type (schema 24)');
+$health_ok{event_type} = 'not_a_real_stream';
+like(ktpValidateCaptureHealthPayload(\%health_ok), qr/event type/,
+    'an unknown health type is still rejected');
+$health_ok{event_type} = 'objective_attempt';
 
 my %silent_health = (
     matchid => 'telemetry-TEST', half => 1, event_type => 'grenade_entity',

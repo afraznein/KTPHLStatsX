@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed - the `shot` health row was rejected, leaving the new stream with no drop detection
+
+`ktpValidateCaptureHealthPayload` whitelists the health `event_type` it will
+accept, and `shot` was missing from it. Schema 24 (KTPAMXX #102) added the
+stream and it was added to the four other daemon-side whitelists -- the
+capabilities flag, the authorization regex, the sequence-type map and the
+silent-stream gate -- but not this one.
+
+`ksc_emit_health` loops over the plugin's whole event enum, so a plugin that
+gains a stream emits a health row for it. A row whose type is missing here is
+dropped with `Capture health dropped: invalid event type`, taking that
+stream's `attempted`/`enqueued`/`dropped`/`emitted` accounting with it. The
+stream itself keeps working and its rows keep landing, so the loss shows up
+only as a health row that never arrives -- which is the same shape as a dead
+producer.
+
+That would have hit the wave-0 canary directly. The canary reads
+`ktp_capture_health` per stream to decide whether the rollout is safe, and
+`shot` is the highest-volume stream in it and the whole reason the dedicated
+buffer and its drop counter exist. The check would have found nothing to read
+for exactly the stream it was there to validate.
+
+`selftest-telemetry22.pl` now asserts `shot` is accepted and that an unknown
+type is still rejected (155 assertions, up from 153).
+
+
 ### Added - shot-context stream (ktp_shot_events, migration 027)
 
 Pairs with KTPAMXX's `dod_client_weapon_fire` handler (wave 0,
