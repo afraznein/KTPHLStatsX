@@ -3801,7 +3801,6 @@ while ($loop = &getLine()) {
 								$ev_properties{"yaw"} // 0,
 								$ev_properties{"pitch"} // 0,
 								$ev_properties{"prone"},
-								$ev_properties{"deployed"},
 								$ev_properties{"map"},
 								$ev_properties{"game_time"} // 0,
 								$ev_properties{"event_epoch"},
@@ -6472,7 +6471,12 @@ sub doEvent_KTPPosition
 # sharing this daemon's single thread, not just this one.
 sub doEvent_KTPShot
 {
-	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone, $deployed,
+	# No `deployed`: the producer never emitted one that compiled. It was
+	# dod_is_deployed(), a dodfun native the stats plugin does not depend on,
+	# so the shipped source did not build at all (KTPAMXX #106). dodx's
+	# pronestate already encodes 2 = prone with the weapon deployed, which is
+	# what `prone` carries here.
+	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone,
 		$map_name, $game_time, $event_epoch, $producer_matchid,
 		$producer_half, $producer_sequence) = @_;
 
@@ -6516,7 +6520,7 @@ sub doEvent_KTPShot
 	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
 		", ".int($player_id).", ".int($weapon_id).
 		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
-		", ".int($prone ? 1 : 0).", ".int($deployed ? 1 : 0).
+		", ".int($prone ? 1 : 0).
 		", '".quoteSQL($map_name)."', ".($game_time + 0).
 		", ".int($event_epoch // 0).", ".int($producer_sequence // 0).
 		", FROM_UNIXTIME(".int($event_epoch // 0)."))";
@@ -6533,7 +6537,7 @@ sub flushShotEvents
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_shot_events
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
-			 pos_z, yaw, pitch, prone, deployed, map_name, game_time,
+			 pos_z, yaw, pitch, prone, map_name, game_time,
 			 event_epoch, producer_sequence, event_time)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "

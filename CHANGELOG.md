@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed - `ktp_shot_events` drops the `deployed` column
+
+The producer never emitted a `deployed` value that compiled. It was written as
+`dod_is_deployed()`, a **dodfun** native the stats plugin does not include or
+depend on, so the shipped plugin failed to build outright (KTPAMXX #106) --
+undetected, because the plugin build swallowed the compiler's exit status.
+
+The field is dropped rather than repaired: `#include <dodfun>` would make
+stats collection fail to load anywhere that module is absent, and deriving it
+from `dod_get_pronestate() == 2` catches only PRONE deploys while silently
+missing standing or crouched ones. `prone` already carries dodx's own 0/1/2,
+whose contract defines 2 as prone with the weapon deployed, so that case is
+still recorded and honestly labelled.
+
+Migration 027 is edited in place rather than superseded by an 028: it has not
+been applied to any persistent environment, so there is no deployed column
+anywhere to drop.
+
+
 ### Fixed - the `shot` health row was rejected, leaving the new stream with no drop detection
 
 `ktpValidateCaptureHealthPayload` whitelists the health `event_type` it will
