@@ -5973,7 +5973,18 @@ sub doEvent_KTPGrenadeEntity
 sub ktpValidateCaptureHealthPayload
 {
 	my ($p) = @_;
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership);
+	# Every stream ksc_emit_health loops over. It loops over the plugin's whole
+	# event enum, so a plugin that GAINS a stream emits a health row for it --
+	# and a row whose type is missing here is rejected outright, taking that
+	# stream's attempted/enqueued/dropped/emitted accounting with it. The stream
+	# itself keeps working, so the loss is invisible except as a health row that
+	# never arrives: exactly the shape of a dead producer.
+	#
+	# `shot` (schema 24, KTPAMXX #102) was added to the four other daemon-side
+	# whitelists and missed here, which would have left the highest-volume new
+	# stream with no drop detection at all -- and the wave-0 canary reads this
+	# table, per stream, to decide whether the rollout is safe.
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
