@@ -1492,6 +1492,13 @@ sub flushAll
 	my ($flushevents) = @_;
 	if ($flushevents)
 	{
+		# KTP: batched ktp_* queues are in-memory only, so a shutdown with a
+		# partial batch pending loses those rows outright -- and their markers
+		# were already counted as daemon_received/accepted, so the loss would
+		# surface later as an unexplained health mismatch rather than as an
+		# error. Drain them first, before anything else can exit.
+		flushShotEvents();
+		flushPositionEvents();
 		flushAccumulators();
 		while ( my ($table, $colsref) = each(%g_eventTables) )
 		{
@@ -1602,11 +1609,25 @@ $g_cpanelhack = 0;
 $g_event_queue_size = 100;
 # KTP: ktp_shot_events is the first ktp_* stream sized to need batching --
 # ~2,500 rows/match, bursting to ~120/s (ENGINE_STATS_EXPANSION_PLAN_20260909.md
-# §4.2). Every other ktp_* table (position, damage, life, ...) INSERTs one row
-# at a time via doEvent_KTP*, matching their measured 0-drop rate; left alone
-# here rather than retrofitted, since they show no stall risk today.
+# §4.2).
+#
+# position is the second, and it was retrofitted for a measured reason. The
+# "every other stream shows 0 drops" reading that left it on the per-row path
+# came from the producer's own `dropped` counter, which is genuinely 0 -- but
+# that counter cannot see loss that happens after log_message. The signals that
+# can are `emitted - daemon_received` in ktp_capture_health and this daemon's
+# own UDP socket drop counter, and both say the same thing:
+# SEQUENCE_GAP_ROOT_CAUSE_UDP_INTAKE_LOSS_20260910.md measured
+# emitted-minus-received == sequence_gap_count in 13 of 13 halves, and
+# /proc/net/udp port 27500 carried drops=2356 -- the only socket on the box
+# with any. position is ~0.6% of that loss by rate and ~73% by volume, because
+# it is far and away the highest-volume per-row INSERT. The receive buffer is
+# already pinned at net.core.rmem_max, so the only lever left is not stalling
+# the single-threaded intake in the first place.
 $g_ktp_shot_queue_size = 200;
 @g_ktpShotQueue = ();
+$g_ktp_position_queue_size = 200;
+@g_ktpPositionQueue = ();
 $g_dns_resolveip = 1;
 $g_dns_timeout = 5;
 $g_skill_maxchange = 100;
@@ -3714,9 +3735,11 @@ while ($loop = &getLine()) {
 						# (KSC_POSITION_BROADCAST_SECS, currently 2s). Raw facts
 						# only -- no "is this holding forward territory" judgment
 						# happens here, that's entirely query-layer, reading this
-						# table plus ktp_flag_positions. Standalone table, direct
-						# INSERT, same shape as doEvent_KTPDamage -- not routed
-						# through recordEvent's generic hlstats_Events_* batching.
+						# table plus ktp_flag_positions. Standalone table, batched
+						# through @g_ktpPositionQueue (nothing in this daemon reads
+						# ktp_position_samples back, so a queued row is only ever
+						# read after its flush) -- not routed through recordEvent's
+						# generic hlstats_Events_* batching.
 						$ev_type = 608;  # KTP position-sample marker
 
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "position")) {
@@ -4290,8 +4313,9 @@ while ($loop = &getLine()) {
 			$ev_status = &doEvent_KTPCaptureHealth(\%ev_properties);
 			# KTP: health fires once per event type at every half boundary --
 			# a convenient, guaranteed-to-occur point to flush any partial
-			# shot batch rather than let it wait on the size threshold alone.
+			# batch rather than let it wait on the size threshold alone.
 			flushShotEvents();
+			flushPositionEvents();
 		} elsif ($s_output =~ /^KTP_OBJECTIVE_ATTEMPT\s+(.*)$/) {
 			# Bare producer marker, although its delivery may have been delayed by
 			# the AMXX buffer. Attribution therefore uses only producer clocks and
@@ -6393,21 +6417,19 @@ sub doEvent_KTPPosition
 	}
 	my ($x, $y, $z) = ($1, $2, $3);
 
-	my $rv = &execNonQuery("
-		INSERT INTO ktp_position_samples
-			(server_id, match_id, half, player_id, team, pos_x, pos_y, pos_z,
-			 is_alive, is_spectator, map_revision_sha256, game_time,
-			 producer_sequence, event_epoch, event_time)
-		VALUES
-			($server_id, $match_id_sql, $half, $player_id, ".int($team).",
-			 $x, $y, $z, ".int($alive).", ".int($spectator).",
-			 '".quoteSQL($map_revision)."', ".($game_time + 0).",
-			 ".int($producer_sequence // 0).",
-			 ".int($event_epoch // 0).", FROM_UNIXTIME(".int($event_epoch // 0)."))
-	");
+	my $value = "($server_id, $match_id_sql, $half, $player_id, ".int($team).
+		", $x, $y, $z, ".int($alive).", ".int($spectator).
+		", '".quoteSQL($map_revision)."', ".($game_time + 0).
+		", ".int($producer_sequence // 0).
+		", ".int($event_epoch // 0).", FROM_UNIXTIME(".int($event_epoch // 0)."))";
+	push(@g_ktpPositionQueue, $value);
+	flushPositionEvents() if (scalar(@g_ktpPositionQueue) >= $g_ktp_position_queue_size);
 
-	return "Position sample SQL failed" if (!defined($rv));
-	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
+	# "queued", never "logged"/"failed": the call site classifies this string,
+	# rejecting the marker on /dropped|failed/i. A queued row has not failed,
+	# and a flush failure is no longer attributable to one marker -- it is
+	# reported from flushPositionEvents instead (see the note there).
+	return "Position sample queued: player=$player_id team=$team pos=$x,$y,$z";
 }
 
 # BEGIN KTP SHOT CONTEXT STREAM
@@ -6477,6 +6499,7 @@ sub doEvent_KTPShot
 sub flushShotEvents
 {
 	return if (scalar(@g_ktpShotQueue) == 0);
+	my $queued = scalar(@g_ktpShotQueue);
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_shot_events
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
@@ -6486,9 +6509,50 @@ sub flushShotEvents
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 	");
 	@g_ktpShotQueue = ();
+	# execNonQuery already reports the failure and the statement; what it
+	# cannot show is the blast radius, because it logs only the first 200
+	# characters of a many-row INSERT. printEvent, not printAlarm: the alarm
+	# set is deliberately bounded to three conditions
+	# (selftest-alarm-audibility.pl), and this is the per-drop-report class
+	# that comment assigns to printEvent.
+	&printEvent("SQL_ERROR",
+		"ktp_shot_events batch INSERT failed -- $queued row(s) lost", 1)
+		if (!defined($rv));
 	return $rv;
 }
 # END KTP SHOT CONTEXT STREAM
+
+# BEGIN KTP POSITION BATCH FLUSH
+sub flushPositionEvents
+{
+	return if (scalar(@g_ktpPositionQueue) == 0);
+	my $queued = scalar(@g_ktpPositionQueue);
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_position_samples
+			(server_id, match_id, half, player_id, team, pos_x, pos_y, pos_z,
+			 is_alive, is_spectator, map_revision_sha256, game_time,
+			 producer_sequence, event_epoch, event_time)
+		VALUES
+			" . join(",\n\t\t\t", @g_ktpPositionQueue) . "
+	");
+	@g_ktpPositionQueue = ();
+	# Tradeoff this batching accepts, stated plainly: on the per-row path a
+	# failed INSERT returned "...SQL failed", which the call site matched on
+	# /dropped|failed/i and turned into ktpRejectCaptureMarker -- so an SQL
+	# failure reached ktp_capture_health as daemon_rejected. Batched, the
+	# markers have already returned "queued" and that attribution is gone;
+	# a failed batch is visible in the log (here and in execNonQuery) but not
+	# in the health counters. Accepted deliberately: this converts a rare,
+	# loud, already-logged failure into a log-only one, in exchange for
+	# removing a constant silent one (the UDP intake loss this change exists
+	# to fix). Restoring the attribution would mean carrying each queued
+	# row's capture-context key and replaying rejections on failure.
+	&printEvent("SQL_ERROR",
+		"ktp_position_samples batch INSERT failed -- $queued row(s) lost", 1)
+		if (!defined($rv));
+	return $rv;
+}
+# END KTP POSITION BATCH FLUSH
 
 # BEGIN KTP FLAG CAPTURE CREDIT
 sub doEvent_KTPFlagCapture
