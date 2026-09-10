@@ -5,7 +5,7 @@
 -- which emits, on every weapon actuation:
 --     "Player<uid><steamid><Team>" triggered "shot"
 --     (weapon_id "10") (position "123 456 -78") (yaw "45.20") (pitch "-3.10")
---     (prone "0") (deployed "0") (map "dod_anzio") (matchid "...") (half "1")
+--     (prone "0") (map "dod_anzio") (matchid "...") (half "1")
 --     (game_time "245.32") (event_epoch "...") (sequence "...")
 --
 -- Deliberately NOT a duplicate of the anti-cheat per-shot ledger
@@ -37,8 +37,12 @@ CREATE TABLE IF NOT EXISTS ktp_shot_events (
     pos_z MEDIUMINT NOT NULL,
     yaw DECIMAL(6,2) NOT NULL,
     pitch DECIMAL(6,2) NOT NULL,
+    -- dodx pronestate verbatim: 0 upright, 1 prone, 2 prone with the weapon
+    -- deployed. There is deliberately no separate `deployed` column -- the
+    -- producer's only candidate was a dodfun native it does not depend on and
+    -- which did not compile (KTPAMXX #106), and deriving one from pronestate
+    -- would catch prone deploys only. Full deploy state wants a dodx accessor.
     prone TINYINT UNSIGNED NOT NULL DEFAULT 0,
-    deployed TINYINT UNSIGNED NOT NULL DEFAULT 0,
     map_name VARCHAR(32) NOT NULL,
     game_time FLOAT NOT NULL COMMENT 'the forward''s own gametime param, seconds since map start',
     event_epoch BIGINT UNSIGNED DEFAULT NULL COMMENT 'producer wall-clock, for AC-ledger join',
