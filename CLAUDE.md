@@ -782,3 +782,25 @@ above.
 
 📌 S9's loss is front-loaded: first three match dates 8/30 missing (27%), rest of season 3/67 (4%), last
 four weeks zero. Related: `s9-stats-repair-shape` (in `ENGINE_BUG_POSTMORTEMS.md` at the KTP project root).
+
+## An empty `ktp_grenade_entity_events` window is a MATCH gate, not a broken producer
+
+`ktpValidateGrenadeEntityPayload` lists `matchid` among its hard-required fields — missing or empty
+and the event is dropped before any insert is attempted. So that table **cannot** hold a row without
+a match, and an empty result outside match hours is the design rather than a dead emitter.
+
+🔑 **The discriminating control is the sibling family, because it proves "no match" is representable
+at all:** `ktp_damage_events.match_id` is `DEFAULT NULL` and its `half` carries
+`COMMENT '0=no match context'` — that family does record no-match hits. One gated family beside one
+ungated family is what separates a gate from a failure; the grenade table alone cannot tell you which
+you are looking at.
+
+## Frag-path stats stop below the server's `MinPlayers` — an empty stat window is not a broken emitter
+
+Handlers throughout `HLstats_EventHandlers.plib` open with
+`num_trackable_players < minplayers` and return early, so on a quiet server the frag path records
+nothing and reports nothing anywhere.
+
+⚠️ **The threshold is per-server config, not a constant** — `MinPlayers` from the server's config,
+which `hlstats.pl` defaults to 6 only when a server has no row of its own. **Read that server's value
+before drawing any conclusion from a quiet window**; a remembered number is the wrong test.

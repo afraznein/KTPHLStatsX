@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added - shot-context stream (ktp_shot_events, migration 027)
+
+Pairs with KTPAMXX's `dod_client_weapon_fire` handler (wave 0,
+`ENGINE_STATS_EXPANSION_PLAN_20260909.md`, schema 24). Shooter
+position/facing/prone/deployed on every weapon actuation, joinable to
+KTPMatchHandler's existing per-shot ledger (`ktp_ac_weapon_fires`) by
+player + weapon + nearest clock. Not a duplicate ledger.
+
+- `doEvent_KTPShot` / `flushShotEvents`: the first `ktp_*` stream batched
+  into multi-row INSERTs (`g_ktpShotQueue`, flushed at 200 rows or on the
+  next `KTP_CAPTURE_HEALTH` marker) rather than one INSERT per row.
+  Measured production rate is ~2,500 shots/match, bursting to ~120/s -- an
+  order of magnitude above every other `ktp_*` stream, and the first one
+  sized to risk turning a synchronous per-row INSERT into a UDP-intake
+  stall for every stream sharing this daemon's single thread.
+- Schema whitelist extended to include 24 (`ktpValidateCaptureManifestPayload`,
+  `ktpCaptureManifestAuthorizes`, `doEvent_KTPPosition`'s manifest check):
+  each of those previously used an **exact** `== 23` (or `!= 23`) schema
+  comparison, which a schema-24 manifest would have failed outright --
+  silently dropping every `position_sample` fleet-wide the moment the new
+  plugin shipped, not only withholding the new `shot` capability. Changed
+  to `>= 23` throughout; schema 24 is a superset of 23's contract, not a
+  replacement.
+- `shot` added to `ktpAuthorizeCaptureManifest`'s per-capability flags and
+  to `ktpCaptureHealthSilentStreamWarning`'s manifest-gated stream set, so
+  a busy half producing zero shots is detected the same way a dark
+  `position` stream already is.
+- New table `ktp_shot_events` (`sql/migrate_027_shot_events.sql`).
+
+Compressed ahead of S10's first match day (2026-09-13) per operator
+decision; paired with the KTPAMXX plugin change in the same window.
+
 ### Added - capture credit is now asserted, not only reviewed
 
 - `scripts/selftest-capture-credit.pl` covers the path both DoD 1.3
