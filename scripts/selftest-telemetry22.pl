@@ -104,6 +104,9 @@ my $capabilities = join(',', qw(frag_context damage position assist life break
 my $schema23_capabilities = join(',', qw(frag_context damage position assist life break
     flag_state flag_position objective_attempt grenade_entity team_membership
     position_state map_revision sequence health));
+my $schema24_capabilities = join(',', qw(frag_context damage position assist life break
+    flag_state flag_position objective_attempt grenade_entity team_membership
+    shot position_state map_revision sequence health));
 my $schema21_capabilities = join(',', qw(frag_context damage position assist life break
     flag_state flag_position team_membership sequence health));
 my %manifest_ok = (
@@ -115,10 +118,10 @@ my %manifest_ok = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest_ok), '',
     'schema-22 manifest accepts the two-second paired contract');
-for my $bad_schema (24) {
+for my $bad_schema (25) {
     my %bad = (%manifest_ok, schema => $bad_schema);
     like(ktpValidateCaptureManifestPayload(\%bad), qr/schema/,
-        "schema $bad_schema is rejected by the schema-23 receiver");
+        "schema $bad_schema is rejected by the schema-24 receiver");
 }
 my %manifest23 = (
     %manifest_ok, producer_version => '1.19.0', schema => 23,
@@ -127,6 +130,13 @@ my %manifest23 = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest23), '',
     'schema-23 manifest requires explicit position state and BSP revision capabilities');
+my %manifest24 = (
+    %manifest_ok, producer_version => '1.20.0', schema => 24,
+    capabilities => $schema24_capabilities,
+    map_revision_algorithm => 'sha256', map_revision => ('a' x 64),
+);
+is(ktpValidateCaptureManifestPayload(\%manifest24), '',
+    'schema-24 manifest carries the same map-revision fields as schema-23, plus shot');
 my %bad_revision = (%manifest23, map_revision => 'A' x 64);
 like(ktpValidateCaptureManifestPayload(\%bad_revision), qr/map_revision/,
     'schema-23 manifest rejects noncanonical revision text');
@@ -206,6 +216,25 @@ ok(ktpAuthorizeCaptureManifest(\%manifest23),
     'complete schema-23 manifest authorizes its exact context');
 ok(ktpCaptureManifestAuthorizes(\%manifest23, 'position'),
     'schema-23 manifest authorizes explicit-state position samples');
+ok(!ktpCaptureManifestAuthorizes(\%manifest23, 'shot'),
+    'schema-23 manifest cannot authorize the schema-24-only shot stream');
+%g_ktpAcceptedCaptureManifests = ();
+# Regression coverage for the bug this schema bump exposed: three schema
+# comparisons in this file used exact equality (== 23 / != 23), so a
+# schema-24 manifest would have failed every one of them -- silently
+# dropping position_sample fleet-wide the moment a schema-24 producer
+# shipped, not merely withholding the new "shot" capability. >= 23 fixed
+# it; these assertions pin schema 24 authorizing BOTH contracts together.
+ok(ktpAuthorizeCaptureManifest(\%manifest24),
+    'complete schema-24 manifest authorizes its exact context');
+ok(ktpCaptureManifestAuthorizes(\%manifest24, 'shot'),
+    'schema-24 manifest authorizes the new shot stream');
+ok(ktpCaptureManifestAuthorizes(\%manifest24, 'position'),
+    'schema-24 manifest ALSO still authorizes position -- the schema bump is additive, not a replacement');
+ok(ktpCaptureManifestAuthorizes(\%manifest24, 'objective_attempt') &&
+   ktpCaptureManifestAuthorizes(\%manifest24, 'grenade_entity') &&
+   ktpCaptureManifestAuthorizes(\%manifest24, 'team_membership'),
+    'schema-24 manifest retains every schema-22/23 capability it still declares');
 %g_ktpAcceptedCaptureManifests = ();
 ok(ktpAuthorizeCaptureManifest(\%manifest_ok),
     'schema-22 manifest remains accepted for its legacy contract');

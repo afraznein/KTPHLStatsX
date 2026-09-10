@@ -1600,6 +1600,13 @@ $g_server_port = 27015;
 $g_timestamp = 0;
 $g_cpanelhack = 0;
 $g_event_queue_size = 100;
+# KTP: ktp_shot_events is the first ktp_* stream sized to need batching --
+# ~2,500 rows/match, bursting to ~120/s (ENGINE_STATS_EXPANSION_PLAN_20260909.md
+# §4.2). Every other ktp_* table (position, damage, life, ...) INSERTs one row
+# at a time via doEvent_KTP*, matching their measured 0-drop rate; left alone
+# here rather than retrofitted, since they show no stall risk today.
+$g_ktp_shot_queue_size = 200;
+@g_ktpShotQueue = ();
 $g_dns_resolveip = 1;
 $g_dns_timeout = 5;
 $g_skill_maxchange = 100;
@@ -3521,10 +3528,10 @@ while ($loop = &getLine()) {
 					);
 				}
 			} elsif ($ev_verb eq "triggered") {
-				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample)$/) {
+				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot)$/) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
 						break_context => "break", position_sample => "position",
-						team_membership => "team_membership");
+						team_membership => "team_membership", shot => "shot");
 					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties);
 				}
 
@@ -3532,7 +3539,7 @@ while ($loop = &getLine()) {
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
 				my $ktp_buffered_identity;
-			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample)$/) {
+			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
@@ -3730,6 +3737,37 @@ while ($loop = &getLine()) {
 								$ev_properties{"sequence"}
 							);
 							ktpRejectCaptureMarker("position", \%ev_properties, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+						}
+					} elsif ($ev_obj_a eq "shot") {
+						# KTP: shot-context stream from ktp_stats_capture.inc's
+						# dod_client_weapon_fire handler (wave 0,
+						# ENGINE_STATS_EXPANSION_PLAN_20260909.md). Same manifest
+						# gate and buffered-identity resolution as position_sample;
+						# batched into ktp_shot_events via flushShotEvents rather
+						# than one INSERT per row -- see doEvent_KTPShot.
+						$ev_type = 615;  # KTP shot-context marker
+
+						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "shot")) {
+							ktpRejectCaptureMarker("shot", \%ev_properties, 0);
+							$ev_status = "Shot dropped: no accepted schema-24 manifest";
+						} elsif ($ktp_buffered_player_id) {
+							$ev_status = &doEvent_KTPShot(
+								$ktp_buffered_player_id,
+								$ev_properties{"weapon_id"},
+								$ev_properties{"position"} // "",
+								$ev_properties{"yaw"} // 0,
+								$ev_properties{"pitch"} // 0,
+								$ev_properties{"prone"},
+								$ev_properties{"deployed"},
+								$ev_properties{"map"},
+								$ev_properties{"game_time"} // 0,
+								$ev_properties{"event_epoch"},
+								$ev_properties{"matchid"},
+								$ev_properties{"half"},
+								$ev_properties{"sequence"}
+							);
+							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
@@ -4250,6 +4288,10 @@ while ($loop = &getLine()) {
 			$ev_type = 613;
 			ktpObserveCaptureMarker("health", \%ev_properties);
 			$ev_status = &doEvent_KTPCaptureHealth(\%ev_properties);
+			# KTP: health fires once per event type at every half boundary --
+			# a convenient, guaranteed-to-occur point to flush any partial
+			# shot batch rather than let it wait on the size threshold alone.
+			flushShotEvents();
 		} elsif ($s_output =~ /^KTP_OBJECTIVE_ATTEMPT\s+(.*)$/) {
 			# Bare producer marker, although its delivery may have been delayed by
 			# the AMXX buffer. Attribution therefore uses only producer clocks and
@@ -5306,6 +5348,7 @@ sub ktpAuthorizeCaptureManifest
 		grenade_entity => $capabilities{grenade_entity} ? 1 : 0,
 		team_membership => $capabilities{team_membership} ? 1 : 0,
 		position => $capabilities{position_state} && $capabilities{map_revision} ? 1 : 0,
+		shot => $capabilities{shot} ? 1 : 0,
 		map_revision_algorithm => $p->{map_revision_algorithm},
 		map_revision => $p->{map_revision},
 	};
@@ -5316,7 +5359,7 @@ sub ktpCaptureManifestAuthorizes
 {
 	my ($p, $event_type) = @_;
 	return 0 if (!defined($event_type) ||
-		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position)$/);
+		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot)$/);
 	my $key = ktpCaptureContextKey($p);
 	return 0 if (!defined($key) ||
 		!defined($g_ktpAcceptedCaptureManifests{$key}));
@@ -5324,7 +5367,9 @@ sub ktpCaptureManifestAuthorizes
 	return 0 if (!$manifest->{$event_type});
 	# Schema 21 is deliberately a partial contract: it may carry the durable
 	# team-transition ledger but cannot authorize schema-22-only rich facts.
-	return 1 if ($manifest->{schema} == 23);
+	# >= 23, not == 23: schema 24 (wave 0, "shot") is a superset of 23's
+	# contract, not a replacement -- everything 23 authorizes, 24 does too.
+	return 1 if ($manifest->{schema} >= 23);
 	return $event_type ne "position" if ($manifest->{schema} == 22);
 	return $manifest->{schema} == 21 && $event_type eq "team_membership";
 }
@@ -5438,8 +5483,12 @@ sub ktpValidateCaptureManifestPayload
 	return "unsupported schema"
 		if ($p->{schema} !~ /^\d+$/ ||
 			(int($p->{schema}) != 21 && int($p->{schema}) != 22 &&
-			 int($p->{schema}) != 23));
-	if (int($p->{schema}) == 23) {
+			 int($p->{schema}) != 23 && int($p->{schema}) != 24));
+	# KTP: map_revision fields are unconditional in ksc_emit_manifest (not
+	# schema-gated on the plugin side), so every schema from 23 onward carries
+	# them -- >= 23, not == 23, or a schema-24 manifest (wave 0, "shot") would
+	# be rejected outright by the branch below on its very first field.
+	if (int($p->{schema}) >= 23) {
 		return "invalid map_revision_algorithm"
 			if (!defined($p->{map_revision_algorithm}) ||
 				$p->{map_revision_algorithm} ne "sha256");
@@ -5924,7 +5973,7 @@ sub ktpCaptureHealthSilentStreamWarning
 	# objective_attempt stays out (a map without area captures produces none),
 	# and so do the legitimately sparse streams (assist, break, team_membership).
 	my %always_active = map { $_ => 1 } qw(life damage frag);
-	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position);
+	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot);
 	if ($manifest_gated{$type}) {
 		return "" if (!$manifest->{$type});
 	} elsif (!$always_active{$type}) {
@@ -6307,8 +6356,8 @@ sub doEvent_KTPPosition
 	});
 	my $manifest = defined($manifest_key)
 		? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
-	return "Position sample dropped: no accepted schema-23 manifest"
-		if (!defined($manifest) || $manifest->{schema} != 23 || !$manifest->{position});
+	return "Position sample dropped: no accepted schema-23+ manifest"
+		if (!defined($manifest) || $manifest->{schema} < 23 || !$manifest->{position});
 	return "Position sample dropped: map revision does not match manifest"
 		if (!defined($manifest->{map_revision}) ||
 			$manifest->{map_revision} ne $map_revision);
@@ -6360,6 +6409,86 @@ sub doEvent_KTPPosition
 	return "Position sample SQL failed" if (!defined($rv));
 	return "Position sample logged: player=$player_id team=$team pos=$x,$y,$z";
 }
+
+# BEGIN KTP SHOT CONTEXT STREAM
+# Same producer-context/manifest gating as doEvent_KTPPosition above, on the
+# "shot" capability added to KSC_SCHEMA_CONTRACT 24. Batched rather than one
+# INSERT per row (ENGINE_STATS_EXPANSION_PLAN_20260909.md §4.2): measured
+# production rate is ~2,500 shots/match, bursting to ~120/s, an order of
+# magnitude above every other ktp_* stream -- exactly the case a per-row
+# synchronous INSERT risks turning into a UDP-intake stall for every stream
+# sharing this daemon's single thread, not just this one.
+sub doEvent_KTPShot
+{
+	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone, $deployed,
+		$map_name, $game_time, $event_epoch, $producer_matchid,
+		$producer_half, $producer_sequence) = @_;
+
+	return 0 if (!defined($player_id));
+	return "Shot dropped: invalid weapon_id"
+		if (!defined($weapon_id) || $weapon_id !~ /^\d+$/ || int($weapon_id) <= 0);
+
+	my $manifest_key = ktpCaptureContextKey({
+		matchid => $producer_matchid, half => $producer_half,
+	});
+	my $manifest = defined($manifest_key)
+		? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
+	return "Shot dropped: no accepted schema-24+ manifest"
+		if (!defined($manifest) || $manifest->{schema} < 24 || !$manifest->{shot});
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (ktpHasExplicitProducerContext($producer_matchid)) {
+		my ($validated_half, $validated_map, $clock_error, $clock_source) =
+			ktpResolveValidatedProducerEventContext(
+				$producer_matchid, $producer_half, $game_time, $event_epoch);
+		if ($clock_error ne "") {
+			ktpWarnProducerClock("shot", $clock_error);
+			return "Shot dropped: $clock_error";
+		}
+		$match_id_sql = "'".quoteSQL($producer_matchid)."'";
+		$half = $validated_half;
+	} elsif (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	if ($position !~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+		return "Shot dropped for player=$player_id: unparseable position '$position'";
+	}
+	my ($x, $y, $z) = ($1, $2, $3);
+
+	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
+		", ".int($player_id).", ".int($weapon_id).
+		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
+		", ".int($prone ? 1 : 0).", ".int($deployed ? 1 : 0).
+		", '".quoteSQL($map_name)."', ".($game_time + 0).
+		", ".int($event_epoch // 0).", ".int($producer_sequence // 0).
+		", FROM_UNIXTIME(".int($event_epoch // 0)."))";
+	push(@g_ktpShotQueue, $value);
+	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
+
+	return "Shot queued: player=$player_id weapon=$weapon_id pos=$x,$y,$z";
+}
+
+sub flushShotEvents
+{
+	return if (scalar(@g_ktpShotQueue) == 0);
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_shot_events
+			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
+			 pos_z, yaw, pitch, prone, deployed, map_name, game_time,
+			 event_epoch, producer_sequence, event_time)
+		VALUES
+			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
+	");
+	@g_ktpShotQueue = ();
+	return $rv;
+}
+# END KTP SHOT CONTEXT STREAM
 
 # BEGIN KTP FLAG CAPTURE CREDIT
 sub doEvent_KTPFlagCapture
