@@ -804,3 +804,45 @@ nothing and reports nothing anywhere.
 ⚠️ **The threshold is per-server config, not a constant** — `MinPlayers` from the server's config,
 which `hlstats.pl` defaults to 6 only when a server has no row of its own. **Read that server's value
 before drawing any conclusion from a quiet window**; a remembered number is the wrong test.
+
+## One game can be TWO `match_id`s, each labelled half 1 — and roster identity alone cannot pair them
+
+**2026-09-10: 169 `match_id`s between 2026-01-01 and 2026-06-01 carry a single half row against 1,095
+carrying two. Only 13 of those 169 are split games — 26 ids.** ⛔ **Do not read the orphan count as a
+split count.** When teams change server at halftime the producer opens a new `match_id` and labels the
+second half **1** again, so both pieces look like a match that never finished.
+
+🔑 **The pairing test is FOUR filters, and roster identity is only one of them.** Applied to the same
+window, on their own: proximity nominates several partners for one orphan, and roster identity is not
+discriminating either.
+
+- **Same map.** 99 pairs of back-to-back *complete* two-half games within 6h score Jaccard ≥ 0.80 on
+  roster — the same twelve people play again — and **only 1 of the 99 shares a map**. Two games change
+  map; two halves of one game cannot. Independent corroboration: all 15 multi-game S9 fixtures in
+  `ktp.legacy_match_game` are Bo2/Bo3 and **every one changes map between games.**
+- **Both pieces are played halves.** A half row on the 1,095 complete matches is 18–23 min in 1,989 of
+  2,064 rows. Anything under ~10 min or under ~50 frags is an aborted start, not a half — and aborts
+  cluster around real ones, which is where the multiple-candidate problem comes from.
+- **Gap ≤ 15 min.** Measured halftime on the same 1,095: ≤ 8 min in 1,007 of 1,019.
+- **Roster Jaccard ≥ 0.80.** On the candidate set that survives the three filters above, the scores are
+  ten at 1.000, three at 0.846 and one at 0.000 — **a chasm, so any threshold from 0.01 to 0.84 gives
+  the same 13 pairs.** Do not tune it.
+
+⚠️ **A killer-only roster misses a player who never fragged; the maximal roster can DEFEAT a true
+pair.** Union killers and victims. Adding `ChangeRole`/`ChangeTeam` catches 158 further player-match
+pairs the frag union misses, but it also admits a late-joining spectator who picked a class — on
+`1771556745-NY5` + `1771558339-KTP4` that drags a genuine pair from Jaccard **1.000 down to 0.750**.
+➡️ **Score both roster views and take the better; never only the wide one.**
+
+⚠️ **`end_time` is NULL on 58 of the 169**, so a duration computed as `end_time - start_time` renders a
+fully-played half as **0 minutes**. And `max(eventTime)` is not a safe substitute: **14 orphans carry
+frags under the same id up to 289 hours later** (stale `_ktp_mid` localinfo). Bound the window to the
+first contiguous frag block — a gap ≥ 30 min ends it.
+
+⚠️ **A shared `1.3-NNNN` legacy stem is NOT evidence of a pairing.** `1.3-5273-ATL3` and
+`1.3-5273-NY1` share a stem across different maps 60 days apart at Jaccard 0.000. Of 10 stems carried
+on more than one id, one is a real pair.
+
+🔻 **The producer behaviour is NOT fixed.** Three more split pairs after the S9 window — 2026-07-15
+(DEN2→CHI1), 2026-08-10 (NY1→ATL1), 2026-08-13 (NY1→DEN1) — each 12/12 identical frag rosters, ~20 min
+halves, 2–5 min gaps. **Any future season repair inherits this.**
