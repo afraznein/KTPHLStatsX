@@ -1624,6 +1624,25 @@ $g_event_queue_size = 100;
 # it is far and away the highest-volume per-row INSERT. The receive buffer is
 # already pinned at net.core.rmem_max, so the only lever left is not stalling
 # the single-threaded intake in the first place.
+#
+# The other three high-volume ktp_* streams were each checked and each has a
+# specific blocker; they are excluded on purpose, not for lack of time:
+#   damage (6.8% of rows)          -- read back at "SELECT 1 FROM
+#                                     ktp_damage_events"; a queued row is
+#                                     invisible to that lookup.
+#   grenade_entity (6.8%)          -- read back for lifecycle dedup on
+#                                     (entindex, serial) / producer_sequence;
+#                                     same problem, worse consequence.
+#   life (8.1%)                    -- uses the affected-row count to tell an
+#                                     ignored duplicate from a real insert
+#                                     ("Life boundary duplicate ignored"). A
+#                                     multi-row INSERT IGNORE returns one
+#                                     aggregate count, so that per-row signal
+#                                     would be lost.
+# Batching any of them means flushing before the dependent read (damage,
+# grenade_entity) or giving up a diagnostic (life). position needs neither:
+# nothing in this daemon reads ktp_position_samples, and its handler's return
+# value carries no per-row semantics.
 $g_ktp_shot_queue_size = 200;
 @g_ktpShotQueue = ();
 $g_ktp_position_queue_size = 200;
