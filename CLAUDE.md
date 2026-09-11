@@ -247,8 +247,11 @@ trap (that table does not exist at all; frags ARE the death record). A nonexiste
 genuinely empty result are indistinguishable at the call site unless stderr is read.
 
 **How to apply:** carry a positive control on every hlstatsx query — reproduce a known-good figure
-before believing a new one. Known-good: `hlstats_Servers` = 25 rows, and match `1773018654-ATL4`
-has 234 frags in h1 / 250 in h2. Never suppress stderr on a mysql call.
+before believing a new one. Known-good: `hlstats_Servers` returns a matching row for a real serverId
+while a bogus serverId returns 0 rows — its total row count is NOT a stable control (it is instances
+plus non-instance rows that accrete over time; see § Two `hlstats_Servers` rows are not instances, and
+re-derive rather than quoting a number from this file). Also known-good: match `1773018654-ATL4` has
+234 frags in h1 / 250 in h2. Never suppress stderr on a mysql call.
 
 Related: hlstatsx stores timestamps in **America/New_York**, not UTC (`timedatectl` on the data
 server reports EDT; MySQL `time_zone = SYSTEM`) — so anything loaded must carry ET, and an apparent
@@ -589,7 +592,9 @@ by its descriptive filename suffix and state which branch, never by number alone
 ## Three systems store SteamIDs in three shapes, and `hlstats_PlayerUniqueIds.uniqueId` carries no `STEAM_` prefix at all
 
 *(Relocated from session memory 2026-08-31. Measured in production 2026-08-30; every figure below
-re-verified live 2026-08-31, positive control `hlstats_Servers` = 25 rows, negative control a bogus
+re-verified live 2026-08-31, positive control a real `hlstats_Servers.serverId` returning its row
+(a bogus serverId returns 0) — its total row count keeps growing as non-instance rows accrete (§ Two
+`hlstats_Servers` rows are not instances) and is NOT a control, negative control a bogus
 table/column name, which errors rather than returning a clean zero.)*
 
 Three systems, three shapes, **no two of which join directly**:
