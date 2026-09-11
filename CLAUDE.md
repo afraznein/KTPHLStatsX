@@ -846,3 +846,27 @@ on more than one id, one is a real pair.
 🔻 **The producer behaviour is NOT fixed.** Three more split pairs after the S9 window — 2026-07-15
 (DEN2→CHI1), 2026-08-10 (NY1→ATL1), 2026-08-13 (NY1→DEN1) — each 12/12 identical frag rosters, ~20 min
 halves, 2–5 min gaps. **Any future season repair inherits this.**
+## Two `hlstats_Servers` rows are not instances, and neither is safe to tidy away
+
+*(Relocated from the project `TODO.md` 2026-09-10, where they were the only copy.)*
+
+⛔ **serverId 25 is `KTPSCRIM - Chicago 5` :27019 — an instance DELETED 2026-07-13 — and it is NOT
+safe to delete.** It still owns **2,153** `hlstats_Events_Frags` rows, newest **2026-03-17** (control:
+serverId 21 holds 56,203). **It is inert, not orphaned: removing the row orphans real history.** Leave
+it, and do not let a *"25 rows for 24 instances"* count read as drift — a row count over
+`hlstats_Servers` is not an instance census.
+
+⛔ **serverId 99 · `0.0.0.0` · `0` · `'LEGACY - S9 reconstructed from demos'`** holds the S9 demo
+reconstruction: **7,878** frags / **3,915** PlayerActions / **11,435** TeamBonuses across 13 matches.
+
+🔑 **Why a row at `0.0.0.0:0` can never receive live traffic — read in the code, not asserted:**
+`hlstats.pl` builds an `address:port → serverId` map for routing inbound log packets, so that address
+yields a key **no real packet source can match**. Adding the row opens no socket and makes no
+connection.
+
+⚠️ **Its rollback `DELETE FROM hlstats_Servers WHERE serverId = 99;` is safe ONLY while the row owns no
+event rows.** It now owns many, so deleting it orphans real history — exactly the serverId 25 trap
+above. **That is why the row was created *before* promotion, not after.**
+
+⚠️ Adding 99 took the table from **25 to 26 rows**, so the `hlstats_Servers = 25` positive control
+recorded earlier in this file is stale. Re-derive the count; do not quote either number.
