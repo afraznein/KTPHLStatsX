@@ -247,8 +247,11 @@ trap (that table does not exist at all; frags ARE the death record). A nonexiste
 genuinely empty result are indistinguishable at the call site unless stderr is read.
 
 **How to apply:** carry a positive control on every hlstatsx query — reproduce a known-good figure
-before believing a new one. Known-good: `hlstats_Servers` = 25 rows, and match `1773018654-ATL4`
-has 234 frags in h1 / 250 in h2. Never suppress stderr on a mysql call.
+before believing a new one. Known-good: `hlstats_Servers` returns a matching row for a real serverId
+while a bogus serverId returns 0 rows — its total row count is NOT a stable control (it is instances
+plus non-instance rows that accrete over time; see § Two `hlstats_Servers` rows are not instances, and
+re-derive rather than quoting a number from this file). Also known-good: match `1773018654-ATL4` has
+234 frags in h1 / 250 in h2. Never suppress stderr on a mysql call.
 
 Related: hlstatsx stores timestamps in **America/New_York**, not UTC (`timedatectl` on the data
 server reports EDT; MySQL `time_zone = SYSTEM`) — so anything loaded must carry ET, and an apparent
@@ -589,7 +592,9 @@ by its descriptive filename suffix and state which branch, never by number alone
 ## Three systems store SteamIDs in three shapes, and `hlstats_PlayerUniqueIds.uniqueId` carries no `STEAM_` prefix at all
 
 *(Relocated from session memory 2026-08-31. Measured in production 2026-08-30; every figure below
-re-verified live 2026-08-31, positive control `hlstats_Servers` = 25 rows, negative control a bogus
+re-verified live 2026-08-31, positive control a real `hlstats_Servers.serverId` returning its row
+(a bogus serverId returns 0) — its total row count keeps growing as non-instance rows accrete (§ Two
+`hlstats_Servers` rows are not instances) and is NOT a control, negative control a bogus
 table/column name, which errors rather than returning a clean zero.)*
 
 Three systems, three shapes, **no two of which join directly**:
@@ -853,8 +858,9 @@ halves, 2–5 min gaps. **Any future season repair inherits this.**
 ⛔ **serverId 25 is `KTPSCRIM - Chicago 5` :27019 — an instance DELETED 2026-07-13 — and it is NOT
 safe to delete.** It still owns **2,153** `hlstats_Events_Frags` rows, newest **2026-03-17** (control:
 serverId 21 holds 56,203). **It is inert, not orphaned: removing the row orphans real history.** Leave
-it, and do not let a *"25 rows for 24 instances"* count read as drift — a row count over
-`hlstats_Servers` is not an instance census.
+it, and do not let the table's row count read as drift against the instance count — `hlstats_Servers`
+holds every live instance plus the non-instance rows this section describes (this one and serverId 99
+below), so a row count over it is not an instance census.
 
 ⛔ **serverId 99 · `0.0.0.0` · `0` · `'LEGACY - S9 reconstructed from demos'`** holds the S9 demo
 reconstruction: **7,878** frags / **3,915** PlayerActions / **11,435** TeamBonuses across 13 matches.
@@ -868,5 +874,7 @@ connection.
 event rows.** It now owns many, so deleting it orphans real history — exactly the serverId 25 trap
 above. **That is why the row was created *before* promotion, not after.**
 
-⚠️ Adding 99 took the table from **25 to 26 rows**, so the `hlstats_Servers = 25` positive control
-recorded earlier in this file is stale. Re-derive the count; do not quote either number.
+⚠️ Adding 99 moved the table's row count by one (it does not track the instance count — see above),
+which is why a positive control that quoted a fixed `hlstats_Servers` row count earlier in this file
+was already stale by the time it was written. Never quote a fixed number as a control here; check by
+`serverId` instead.
