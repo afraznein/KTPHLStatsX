@@ -425,6 +425,8 @@ form cannot distinguish "the expression correctly returned NULL for an uncapture
 expression is broken and returning 0 for everything" — both read as zero rows with `damage > 0`. Count
 the `NULL`s instead.
 
+⛔ **The 2026-08-21 → 08-24 window stays zeroed permanently.** The damage ledger was never written for those days, so there is no damage to recover. After the fix those rows read `NULL` (absence) rather than `0` (a measured zero), which is the whole point of the change. Do not backfill them from StatsMe: it was dropped as canonical match damage on purpose because it is timing-sensitive, and bringing it back would mix two definitions of one field.
+
 ## The Perl footgun behind the `k_prone`/`k_clip` false-zero risk — already fixed, still worth knowing
 
 *(Moved 2026-08-30 from the KTP board's `TODO.md`.)* `hlstats.pl` has `use strict` but no
@@ -513,6 +515,8 @@ while the headshot pipeline was actually recording. It exists precisely because 
 unrecoverable after the fact — there is no way to tell a missed headshot from a real body shot in the
 old rows. **Render absent as absent rather than zero.** Repair guidance for S9 is in
 `S9-HEADSHOT-GRAINS.md` (render-nullable → backfill → null, never blanket).
+
+⛔ **The blanket "575 zeros → NULL" fix must NOT be run** (ruled 2026-08-23). All four grains of the S9 headshot zeros reproduce, each with its own predicate, so a blanket update would null rows that are correct. The derivation and per-row plan live in the operator's `S9-HEADSHOT-GRAINS.md`, outside this repo; read it rather than re-deriving.
 
 ## `corpus-regression` / Lane B tests parsing of committed fixtures, not emission — and its gate checks fewer fields than it reports
 
