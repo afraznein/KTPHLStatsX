@@ -31,7 +31,7 @@
 -- is indistinguishable from the measurement that matters most.
 
 SET @clauses := CONCAT_WS(', ',
-    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_health'), 'ADD COLUMN tgt_health SMALLINT DEFAULT NULL COMMENT ''target health at trace time; <=0 with tgt_dead=0 is a same-tick kill''', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_health'), 'ADD COLUMN tgt_health SMALLINT DEFAULT NULL COMMENT ''target health at trace time -- <=0 with tgt_dead=0 is a same-tick kill''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_dead'), 'ADD COLUMN tgt_dead TINYINT UNSIGNED DEFAULT NULL COMMENT ''1 when the target deadflag was set at trace time''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_team'), 'ADD COLUMN tgt_team TINYINT DEFAULT NULL COMMENT ''target team at trace time''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='shooter_team'), 'ADD COLUMN shooter_team TINYINT DEFAULT NULL COMMENT ''shooter team at trace time, so tgt_team needs no roster join''', NULL));
