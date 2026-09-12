@@ -386,6 +386,28 @@ FROM ktp_matches GROUP BY match_type ORDER BY match_type;
 ⚠️ `match_type = 0` is *official*, a distinct value from NULL, and `0` is falsy in most host languages —
 do not let an application-side truthiness check collapse the two.
 
+## "stats for X matches" is ambiguous between CAPTURE and DISPLAY — name which one, every time
+
+Operator ruling, 2026-09-10, stated precisely because the loose wording had already been
+misread once in this repo's direction: **capture stats for ALL match types; display only
+`.ktp` matches on the website.** Two scopes, not one.
+
+⛔ **The COLLECTION side must never acquire a match-type filter.** The plugin, this daemon
+and the `hlstatsx` tables capture every type. At the time of the ruling that was 213 pending
+12man and scrim matches which stay captured and are simply not published.
+
+✅ **The DISPLAY boundary is `pending_match_ids()` in `scripts/report_service.py`**, which feeds
+`ktp_match_reports` and the website. `match_type IN (0, 4)` is exactly “`.ktp` only”: **0**
+competitive and **4** KTP OT. ⚠️ **Type 4 has never appeared in the data and belongs in the set
+anyway** — an S10 overtime is precisely the match a `(0)`-only filter would silently drop.
+
+🔑 **The durable lesson, because the wording will recur: CAPTURE and DISPLAY are different
+systems with different owners.** A sentence like “stats are for `.ktp` matches only” does not say
+which one it constrains, and reading a capture instruction as a display one (or the reverse)
+produces a filter in the wrong layer that looks correct from either end.
+
+Related: `Filtering ktp_matches.match_type`, and see `ktp-matches-match-type-is-the-plugin-enum`.
+
 ## Spine rows support per-half rates, never per-half splits — there is no `half` column to split on
 
 *(Moved 2026-08-30 from the KTP board's `TODO.md`.)* Verified against `information_schema` 2026-08-30:
