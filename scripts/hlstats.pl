@@ -3806,7 +3806,11 @@ while ($loop = &getLine()) {
 								$ev_properties{"event_epoch"},
 								$ev_properties{"matchid"},
 								$ev_properties{"half"},
-								$ev_properties{"sequence"}
+								$ev_properties{"sequence"},
+								$ev_properties{"tgt_health"},
+								$ev_properties{"tgt_dead"},
+								$ev_properties{"tgt_team"},
+								$ev_properties{"shooter_team"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -6497,7 +6501,8 @@ sub doEvent_KTPShot
 	# what `prone` carries here.
 	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone,
 		$map_name, $game_time, $event_epoch, $producer_matchid,
-		$producer_half, $producer_sequence) = @_;
+		$producer_half, $producer_sequence,
+		$tgt_health, $tgt_dead, $tgt_team, $shooter_team) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -6547,13 +6552,38 @@ sub doEvent_KTPShot
 	my $wire_sequence = (defined($producer_sequence) && $producer_sequence =~ /^\d+$/ && $producer_sequence >= 1)
 		? int($producer_sequence) : "NULL";
 
+	# Target state at trace time. The producer writes all four together or sends
+	# -1 in all four for "no target state belongs to this shot" (the shot missed,
+	# or the stash was not this dispatch's to read), and the sentinel has to reach
+	# SQL as NULL: a -1 stored as data would be counted as a measurement by
+	# anything that later asks how many shots struck an already-dead target.
+	#
+	# tgt_dead is the presence key for the whole group, and it has to be -- it is
+	# the only one of the four that cannot legitimately be -1. tgt_health CAN be
+	# negative (a target already below zero in the same tick is precisely the case
+	# this stream exists to catch), so testing health against the sentinel would
+	# discard the most interesting rows it produces. Team ids are non-negative
+	# when present. An older producer emitting none of these fields lands as NULL
+	# the same way.
+	my $has_target = (defined($tgt_dead) && $tgt_dead =~ /^-?\d+$/
+		&& (int($tgt_dead) == 0 || int($tgt_dead) == 1));
+	my $wire_target = sub {
+		my ($v) = @_;
+		return "NULL" if (!$has_target || !defined($v) || $v !~ /^-?\d+$/);
+		return int($v);
+	};
+
 	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
 		", ".int($player_id).", ".int($weapon_id).
 		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
 		", ".int($prone ? 1 : 0).
 		", '".quoteSQL($map_name)."', ".($game_time + 0).
 		", ".int($event_epoch // 0).", $wire_sequence".
-		", FROM_UNIXTIME(".int($event_epoch // 0)."))";
+		", FROM_UNIXTIME(".int($event_epoch // 0).")".
+		", ".$wire_target->($tgt_health).
+		", ".$wire_target->($tgt_dead).
+		", ".$wire_target->($tgt_team).
+		", ".$wire_target->($shooter_team).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
@@ -6579,7 +6609,8 @@ sub flushShotEvents
 		INSERT INTO ktp_shot_events
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
 			 pos_z, yaw, pitch, prone, map_name, game_time,
-			 event_epoch, producer_sequence, event_time)
+			 event_epoch, producer_sequence, event_time,
+			 tgt_health, tgt_dead, tgt_team, shooter_team)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 		ON DUPLICATE KEY UPDATE id=id
