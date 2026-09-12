@@ -199,6 +199,18 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 *Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
 assistant's recall. Each was measured; the date it was measured is stated inline.*
 
+## The `--timestamp` daemon flag was RULED DROPPED, not deferred — and the magnitude nobody had measured is ONE SECOND
+
+Measured 2026-09-09 over **74,655 rows** (2026-08-24 → 09-09). `hlstats_Events_Frags` already carries **both clocks on the same row** — `eventTime` (daemon receipt) and `event_epoch` (the game server’s own clock) — so their difference *is* the quantity the flag would remove. It is about one second.
+
+⛔ **Why DROP rather than defer again:** the frag-context join the flag would improve was **already fixed** by the 2026-09-06 ±1 s widening. Against ~50 ms of residual benefit, the flag makes `eventTime` **host-supplied** — a drifted game host would write its own clock error straight into the data.
+
+⚠️ **And it changes `eventTime` RETROACTIVELY for EVERY event type, not just frags** — a silent change to the meaning of a column every stats consumer already reads, including the S9 reconstruction and any KTPR window.
+
+✅ **Two audits ran first and both were clean.** Timezone uniformity: all 24 instances across 5 hosts, plus the daemon and MySQL, are `America/New_York`, EDT −0400, NTP active. 🔑 **The load-bearing probe was NOT `timedatectl`** — it was each instance’s *last log-line stamp*, which is what actually reaches the data. Consumers: 28 enumerated; the daemon’s internal split is clean (`$ev_daemontime` housekeeping never moves, `$ev_unixtime` data columns do).
+
+⚠️ **The timezone dependency does NOT die with this ruling** — it carries its own operator item.
+
 ## "hlstatsx ran six migrations behind its own daemon and silently dropped every flag capture fleet-wide; schema ahead of code is harmless, code ahead of schema is data loss"
 
 **2026-08-15: hlstatsx had been deployed six migrations ahead of its schema and was losing every DoD flag
