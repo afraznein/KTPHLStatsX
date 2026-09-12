@@ -5442,24 +5442,41 @@ sub ktpObserveCaptureMarker
 			!defined($g_ktpCaptureSequences{$key}));
 	if ($marker eq "manifest" && !defined($g_ktpCaptureSequences{$key})) {
 		$g_ktpCaptureSequences{$key} = {
-			first => undef, last => undef, gaps => 0, duplicate_or_reordered => 0,
-			received => 0, types => {}, rejected => {}, correlation_failures => {}
+			seq => {}, received => 0, types => {}, rejected => {},
+			correlation_failures => {}
 		};
 	}
 	my $state = $g_ktpCaptureSequences{$key};
 	my $seq = int($sequence);
-	if (!defined($state->{first})) {
-		$state->{first} = $seq;
-		$state->{gaps} += $seq - 1 if ($seq > 1);
-		$state->{last} = $seq;
-	} elsif ($seq > $state->{last}) {
-		$state->{gaps} += $seq - $state->{last} - 1;
-		$state->{last} = $seq;
-	} else {
-		$state->{duplicate_or_reordered}++;
-	}
 
+	# Continuity is tracked per event type, not once for the whole (server,
+	# match, half). The shared counter is real (ksc_next_sequence() in
+	# ktp_stats_capture.inc numbers every stream), but a top-level
+	# {first,last,gaps} conflated "this one stream's flush cadence differs
+	# from the shared 5s ring" with "every stream lost or reordered data."
+	# The wave-0 shot stream flushes its own buffer every 1s (KTPAMXX#102);
+	# under the old shared state its cadence alone made all twelve streams'
+	# ktp_capture_health rows read unhealthy even though every stream's
+	# emitted == daemon_received (confirmed via Lane B, 2026-09-11 — see
+	# runs/34659242759). Same root class as the 1.19.3 shot-stream saga:
+	# a stream on a different cadence than the rest, sharing one sequence
+	# space. manifest/health are metadata about the streams, not a stream
+	# of their own — they never get their own ktp_capture_health row, so
+	# they don't get (and can't skew) a per-type slot.
 	if ($marker ne "manifest" && $marker ne "health") {
+		my $slot = ($state->{seq}{$marker} ||= {
+			first => undef, last => undef, gaps => 0, duplicate_or_reordered => 0,
+		});
+		if (!defined($slot->{first})) {
+			$slot->{first} = $seq;
+			$slot->{gaps} += $seq - 1 if ($seq > 1);
+			$slot->{last} = $seq;
+		} elsif ($seq > $slot->{last}) {
+			$slot->{gaps} += $seq - $slot->{last} - 1;
+			$slot->{last} = $seq;
+		} else {
+			$slot->{duplicate_or_reordered}++;
+		}
 		$state->{received}++;
 		$state->{types}{$marker} = ($state->{types}{$marker} || 0) + 1;
 	}
@@ -6063,10 +6080,12 @@ sub doEvent_KTPCaptureHealth
 	$daemon_accepted = 0 if ($daemon_accepted < 0);
 	my $correlation_failures =
 		(($state->{correlation_failures} || {})->{$p->{event_type}} || 0);
-	my $first_sql = defined($state->{first}) ? int($state->{first}) : "NULL";
-	my $last_sql = defined($state->{last}) ? int($state->{last}) : "NULL";
-	my $gaps = $state->{gaps} || 0;
-	my $duplicates = $state->{duplicate_or_reordered} || 0;
+	# Per event type, not per (server,match,half) -- see ktpObserveCaptureMarker.
+	my $seq_slot = (($state->{seq} || {})->{$p->{event_type}} || {});
+	my $first_sql = defined($seq_slot->{first}) ? int($seq_slot->{first}) : "NULL";
+	my $last_sql = defined($seq_slot->{last}) ? int($seq_slot->{last}) : "NULL";
+	my $gaps = $seq_slot->{gaps} || 0;
+	my $duplicates = $seq_slot->{duplicate_or_reordered} || 0;
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
 	my $rv = &execNonQuery("
