@@ -3817,7 +3817,11 @@ while ($loop = &getLine()) {
 								$ev_properties{"trace_frac"},
 								$ev_properties{"trace_flags"},
 								$ev_properties{"trace_start_off"},
-								$ev_properties{"cmd_all_traces"}
+								$ev_properties{"cmd_all_traces"},
+								$ev_properties{"net_lerp"},
+								$ev_properties{"net_dropped"},
+								$ev_properties{"net_backup"},
+								$ev_properties{"net_cmds"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -6512,7 +6516,8 @@ sub doEvent_KTPShot
 		$tgt_health, $tgt_dead, $tgt_team, $shooter_team,
 		$shot_ping, $shot_loss, $cmd_traces,
 		$trace_frac, $trace_flags,
-		$trace_start_off, $cmd_all_traces) = @_;
+		$trace_start_off, $cmd_all_traces,
+		$net_lerp, $net_dropped, $net_backup, $net_cmds) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -6600,7 +6605,11 @@ sub doEvent_KTPShot
 		", ".$wire_target->($trace_frac).
 		", ".$wire_target->($trace_flags).
 		", ".$wire_target->($trace_start_off).
-		", ".$wire_target->($cmd_all_traces).")";
+		", ".$wire_target->($cmd_all_traces).
+		", ".$wire_target->($net_lerp).
+		", ".$wire_target->($net_dropped).
+		", ".$wire_target->($net_backup).
+		", ".$wire_target->($net_cmds).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
@@ -6629,7 +6638,8 @@ sub flushShotEvents
 			 event_epoch, producer_sequence, event_time,
 			 tgt_health, tgt_dead, tgt_team, shooter_team,
 			 shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
-			 trace_start_off, cmd_all_traces)
+			 trace_start_off, cmd_all_traces,
+			 net_lerp, net_dropped, net_backup, net_cmds)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 		ON DUPLICATE KEY UPDATE id=id
