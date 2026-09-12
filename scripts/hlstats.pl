@@ -6502,7 +6502,8 @@ sub doEvent_KTPShot
 	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone,
 		$map_name, $game_time, $event_epoch, $producer_matchid,
 		$producer_half, $producer_sequence,
-		$tgt_health, $tgt_dead, $tgt_team, $shooter_team) = @_;
+		$tgt_health, $tgt_dead, $tgt_team, $shooter_team,
+		$shot_ping, $shot_loss, $cmd_traces) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -6610,7 +6611,8 @@ sub flushShotEvents
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
 			 pos_z, yaw, pitch, prone, map_name, game_time,
 			 event_epoch, producer_sequence, event_time,
-			 tgt_health, tgt_dead, tgt_team, shooter_team)
+			 tgt_health, tgt_dead, tgt_team, shooter_team,
+			 shot_ping, shot_loss, cmd_traces)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 		ON DUPLICATE KEY UPDATE id=id

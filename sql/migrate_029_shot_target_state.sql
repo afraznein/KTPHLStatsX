@@ -34,7 +34,10 @@ SET @clauses := CONCAT_WS(', ',
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_health'), 'ADD COLUMN tgt_health SMALLINT DEFAULT NULL COMMENT ''target health at trace time -- <=0 with tgt_dead=0 is a same-tick kill''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_dead'), 'ADD COLUMN tgt_dead TINYINT UNSIGNED DEFAULT NULL COMMENT ''1 when the target deadflag was set at trace time''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_team'), 'ADD COLUMN tgt_team TINYINT DEFAULT NULL COMMENT ''target team at trace time''', NULL),
-    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='shooter_team'), 'ADD COLUMN shooter_team TINYINT DEFAULT NULL COMMENT ''shooter team at trace time, so tgt_team needs no roster join''', NULL));
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='shooter_team'), 'ADD COLUMN shooter_team TINYINT DEFAULT NULL COMMENT ''shooter team at trace time, so tgt_team needs no roster join''', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='shot_ping'), 'ADD COLUMN shot_ping SMALLINT DEFAULT NULL COMMENT ''shooter measured ping ms at trace time -- the only per-shot ping there is''', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='shot_loss'), 'ADD COLUMN shot_loss SMALLINT DEFAULT NULL COMMENT ''shooter measured loss at trace time''', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='cmd_traces'), 'ADD COLUMN cmd_traces SMALLINT DEFAULT NULL COMMENT ''player-hitting traces in the shooter cmd -- >1 means this sample may not be the bullet''', NULL));
 SET @ddl := IF(@clauses IS NULL OR @clauses='', 'DO 0', CONCAT('ALTER TABLE ktp_shot_events ', @clauses));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -43,6 +46,7 @@ PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 --   SELECT
 --     CASE
 --       WHEN tgt_dead IS NULL                     THEN 'no target state'
+--       WHEN cmd_traces > 1                       THEN 'unattributed (multi-trace cmd)'
 --       WHEN tgt_dead = 1 OR tgt_health <= 0      THEN 'already dead'
 --       WHEN tgt_team = shooter_team              THEN 'teammate'
 --       ELSE                                           'live enemy, unexplained'
@@ -52,5 +56,18 @@ PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 --   WHERE match_id IS NOT NULL
 --   GROUP BY bucket;
 --
--- 'live enemy, unexplained' is the smoking gun. Every other bucket is a shot
--- whose missing damage row is fully accounted for.
+-- 'live enemy, unexplained' is the smoking gun, and the cmd_traces arm above is
+-- what keeps that claim honest. The capture is first-wins within a usercmd and
+-- cannot prove the sample it kept was the bullet's own trace rather than a
+-- game-DLL trace that displaced it; a displaced sample reports a hitgroup,
+-- applies no damage, and leaves health flat -- indistinguishable from a real
+-- disappearing shot. Counting the cmd's player-hitting traces is the only way to
+-- separate them, so anything with more than one candidate is set aside rather
+-- than counted as evidence. Measured on a bot match 2026-09-12 BEFORE this
+-- column existed: 41.7% of confirmed live-enemy hits had no damage row and 100%
+-- of those left health flat, which is exactly the ambiguity this resolves.
+--
+-- shot_ping is the field that matters once this runs against live players:
+-- nothing else anywhere records a per-shot ping, and a hitreg failure caused by
+-- the network should concentrate in the high-ping tail. Bots make it uniformly
+-- 0, which is precisely why a bot lane cannot answer the production question.
