@@ -6536,12 +6536,23 @@ sub doEvent_KTPShot
 	}
 	my ($x, $y, $z) = ($1, $2, $3);
 
+	# Same validity test ktpObserveCaptureMarker (5428-5430) applies before
+	# trusting a sequence value. A missing/non-numeric sequence must become
+	# SQL NULL here, not 0: migrate_028's UNIQUE (server_id, match_id, half,
+	# producer_sequence) plus INSERT ... ON DUPLICATE KEY UPDATE would
+	# otherwise collapse every such row in the match/half onto one, turning
+	# an unrelated parse gap into silent mass loss. NULL never collides with
+	# NULL in a UNIQUE index, so this loses the dedup guard for exactly the
+	# rows that have no real sequence to dedup on, and nothing else.
+	my $wire_sequence = (defined($producer_sequence) && $producer_sequence =~ /^\d+$/ && $producer_sequence >= 1)
+		? int($producer_sequence) : "NULL";
+
 	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
 		", ".int($player_id).", ".int($weapon_id).
 		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
 		", ".int($prone ? 1 : 0).
 		", '".quoteSQL($map_name)."', ".($game_time + 0).
-		", ".int($event_epoch // 0).", ".int($producer_sequence // 0).
+		", ".int($event_epoch // 0).", $wire_sequence".
 		", FROM_UNIXTIME(".int($event_epoch // 0)."))";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
@@ -6553,6 +6564,17 @@ sub flushShotEvents
 {
 	return if (scalar(@g_ktpShotQueue) == 0);
 	my $queued = scalar(@g_ktpShotQueue);
+	# ON DUPLICATE KEY UPDATE id=id, paired with migrate_028's UNIQUE
+	# (server_id, match_id, half, producer_sequence): execNonQuery retries
+	# this whole batch once on any transient failure, and if the first
+	# attempt's write actually landed before the ack was lost, a plain
+	# INSERT would silently double every row in it. producer_sequence is
+	# KTPAMXX's per-type counter, so a genuine duplicate key can only be a
+	# retried resend of the same marker, never two different shots -- safe
+	# to no-op. Deliberately not INSERT IGNORE: that downgrades every error
+	# (truncation, out-of-range, bad datetime) to a warning, not just a
+	# duplicate key; this converts only the one error this fix targets and
+	# leaves everything else loud.
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_shot_events
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
@@ -6560,6 +6582,7 @@ sub flushShotEvents
 			 event_epoch, producer_sequence, event_time)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
+		ON DUPLICATE KEY UPDATE id=id
 	");
 	@g_ktpShotQueue = ();
 	# execNonQuery already reports the failure and the statement; what it
