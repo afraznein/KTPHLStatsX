@@ -3810,7 +3810,10 @@ while ($loop = &getLine()) {
 								$ev_properties{"tgt_health"},
 								$ev_properties{"tgt_dead"},
 								$ev_properties{"tgt_team"},
-								$ev_properties{"shooter_team"}
+								$ev_properties{"shooter_team"},
+								$ev_properties{"shot_ping"},
+								$ev_properties{"shot_loss"},
+								$ev_properties{"cmd_traces"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -6584,7 +6587,10 @@ sub doEvent_KTPShot
 		", ".$wire_target->($tgt_health).
 		", ".$wire_target->($tgt_dead).
 		", ".$wire_target->($tgt_team).
-		", ".$wire_target->($shooter_team).")";
+		", ".$wire_target->($shooter_team).
+		", ".$wire_target->($shot_ping).
+		", ".$wire_target->($shot_loss).
+		", ".$wire_target->($cmd_traces).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
