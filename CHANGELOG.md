@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added - 0.3.18, the shooter's stance and movement group (migration 031)
+
+`shooter_flags` (FL_ONGROUND/FL_DUCKING/IN_ATTACK2), `shooter_punch_pitch`/
+`_yaw`, `shooter_speed`, `shooter_stamina` on `ktp_shot_events`. Wired through
+the same `$wire_target` presence gate migration 029's target-state group
+already uses -- same trace-time instant, same lifecycle, so a shot either
+carries the whole group or none of it. These fields can legitimately be 0 or
+negative, so NULL has to come from the presence gate, never a per-field
+sentinel -- verified by round-tripping a real negative punch-pitch value
+through the schema.
+
+Why: `errUdeg` already reports how far a shot missed by, not why. A wide
+miss from a moving, ducking, or undeployed shooter is DoD's own accuracy
+model working as designed; the identical miss from a stationary, deployed
+one is not.
+
 ### Added - 0.3.17, per-shot registration diagnostics on `ktp_shot_events`
 
 Migrations 028, 029 and 030, and the daemon side that fills them.
