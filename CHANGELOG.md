@@ -2,6 +2,111 @@
 
 ## [Unreleased]
 
+### Added - 0.3.17, per-shot registration diagnostics on `ktp_shot_events`
+
+Migrations 028, 029 and 030, and the daemon side that fills them.
+
+**028** adds `UNIQUE (server_id, match_id, half, producer_sequence)` and the
+insert becomes `ON DUPLICATE KEY UPDATE id=id`. `flushShotEvents()` batches up
+to 200 markers through `execNonQuery`, which retries the whole statement once on
+any transient DBI failure — including "a connection that died between the ping
+and the write", its own comment. If the first attempt committed before the ack
+was lost, a plain INSERT silently doubled every row in that batch. Deliberately
+not `INSERT IGNORE`, which would downgrade truncation, out-of-range and bad
+datetime to warnings as well.
+
+028 clears pre-existing duplicates before adding the index, and the order it
+does that in matters for how long it holds the table. The dedup is a self-join
+on the four key columns; with only `idx_match` to work from, MySQL rescans every
+row of a match for every row of that match — around 6M comparisons per match at
+~2,500 shot rows each, in one transaction, against the database the live daemon
+is writing to. So the composite index is built NON-unique first (one online
+INPLACE pass, concurrent DML allowed), which turns the self-join into a seek;
+then the dedup runs, then the index is upgraded to UNIQUE and the helper
+dropped. Each step is skipped once the UNIQUE index exists, so a re-run costs a
+few `information_schema` lookups instead of repeating the scan.
+
+**029** adds the target's health/deadflag/team, the shooter's team, ping and
+loss, the usercmd's trace counts, trace fraction and flags, the trace's start
+offset from the shooter's eye, and the client's `lerp_msec` and dropped-command
+count. All NULLABLE, and NULL is the normal state: the producer only sends the
+group when a trace-time stash belongs to that exact shot.
+
+`tgt_dead` is the presence key for the group, and it has to be — it is the only
+one of the original four that cannot legitimately be -1. `tgt_health` CAN be
+negative (a target already below zero in the same tick is precisely the case
+this stream exists to catch), so testing health against the sentinel would
+discard the most interesting rows it produces.
+
+Together these separate a confirmed hit that produced no damage into
+already-dead / teammate / not-damageable / trace-started-in-solid / genuinely
+unexplained — a split two independently-ingested tables cannot make after the
+fact.
+
+**030** adds `tgt_player_id`: which player the trace hit, so a shot joins
+`ktp_damage_events` on the victim and not only on (attacker, time). Without it
+a shot that registered nothing is indistinguishable from one that landed,
+whenever an unrelated shot by the same player damaged somebody else inside the
+window. That error only ever runs in the reassuring direction, so every
+registration-failure rate measured before this column is a floor rather than an
+estimate -- on a 694-row bot-lane sample the loose join credited 100 of 115
+clean live-enemy hits with damage and could not say how many were somebody
+else's.
+
+The producer sends an engine userid, not an entindex: same wire cost, but an
+entindex is a slot reused after a disconnect and identifies a player only
+within a life. `lookupPlayer` cannot resolve a bare userid (it keys on
+`"$userid/$uniqueid"`, and the producer has no uniqueid for a player who is not
+the actor), so `ktpResolveShotTargetPlayerId` scans the live set read-only. A
+reconnect that leaves two live objects sharing a userid returns undef rather
+than guessing: NULL is an honest unknown, a wrong player id would credit one
+player's damage to another and corrupt the very join the column exists for.
+
+### Changed - `ktp_shot_events` drops the `deployed` column
+
+The producer never emitted a `deployed` value that compiled. It was written as
+`dod_is_deployed()`, a **dodfun** native the stats plugin does not include or
+depend on, so the shipped plugin failed to build outright (KTPAMXX #106) --
+undetected, because the plugin build swallowed the compiler's exit status.
+
+The field is dropped rather than repaired: `#include <dodfun>` would make
+stats collection fail to load anywhere that module is absent, and deriving it
+from `dod_get_pronestate() == 2` catches only PRONE deploys while silently
+missing standing or crouched ones. `prone` already carries dodx's own 0/1/2,
+whose contract defines 2 as prone with the weapon deployed, so that case is
+still recorded and honestly labelled.
+
+Migration 027 is edited in place rather than superseded by an 028: it has not
+been applied to any persistent environment, so there is no deployed column
+anywhere to drop.
+
+
+### Fixed - the `shot` health row was rejected, leaving the new stream with no drop detection
+
+`ktpValidateCaptureHealthPayload` whitelists the health `event_type` it will
+accept, and `shot` was missing from it. Schema 24 (KTPAMXX #102) added the
+stream and it was added to the four other daemon-side whitelists -- the
+capabilities flag, the authorization regex, the sequence-type map and the
+silent-stream gate -- but not this one.
+
+`ksc_emit_health` loops over the plugin's whole event enum, so a plugin that
+gains a stream emits a health row for it. A row whose type is missing here is
+dropped with `Capture health dropped: invalid event type`, taking that
+stream's `attempted`/`enqueued`/`dropped`/`emitted` accounting with it. The
+stream itself keeps working and its rows keep landing, so the loss shows up
+only as a health row that never arrives -- which is the same shape as a dead
+producer.
+
+That would have hit the wave-0 canary directly. The canary reads
+`ktp_capture_health` per stream to decide whether the rollout is safe, and
+`shot` is the highest-volume stream in it and the whole reason the dedicated
+buffer and its drop counter exist. The check would have found nothing to read
+for exactly the stream it was there to validate.
+
+`selftest-telemetry22.pl` now asserts `shot` is accepted and that an unknown
+type is still rejected (155 assertions, up from 153).
+
+
 ### Added - shot-context stream (ktp_shot_events, migration 027)
 
 Pairs with KTPAMXX's `dod_client_weapon_fire` handler (wave 0,
