@@ -6582,6 +6582,19 @@ sub doEvent_KTPShot
 	# the same way.
 	my $has_target = (defined($tgt_dead) && $tgt_dead =~ /^-?\d+$/
 		&& (int($tgt_dead) == 0 || int($tgt_dead) == 1));
+	# The packet-state group has its own presence key. tgt_dead cannot gate it:
+	# the native returns -1 for all four net fields whenever the sampled packet
+	# does not belong to this shot, while tgt_dead is simultaneously a perfectly
+	# valid 0/1. Gating them together writes -1 as DATA -- which migration 029
+	# forbids in terms, and which is indistinguishable from a real negative lerp
+	# (the producer clamps that floor at -999). Bots never reach the hook at all,
+	# so every bot row would have carried net_lerp = -1.
+	my $has_net = (defined($net_cmds) && $net_cmds =~ /^\d+$/ && $net_cmds >= 1);
+	my $wire_net = sub {
+		my ($v) = @_;
+		return "NULL" if (!$has_net || !defined($v) || $v !~ /^-?\d+$/);
+		return int($v);
+	};
 	my $wire_target = sub {
 		my ($v) = @_;
 		return "NULL" if (!$has_target || !defined($v) || $v !~ /^-?\d+$/);
@@ -6591,7 +6604,10 @@ sub doEvent_KTPShot
 	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
 		", ".int($player_id).", ".int($weapon_id).
 		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
-		", ".int($prone ? 1 : 0).
+		# pronestate verbatim: 0 upright, 1 prone, 2 prone with the weapon deployed.
+		# migrate_027 states there is deliberately no separate `deployed` column, so
+		# collapsing this to a boolean deletes the only deploy signal the stream has.
+		", ".((defined($prone) && $prone =~ /^\d+$/) ? int($prone) : 0).
 		", '".quoteSQL($map_name)."', ".($game_time + 0).
 		", ".int($event_epoch // 0).", $wire_sequence".
 		", FROM_UNIXTIME(".int($event_epoch // 0).")".
@@ -6606,10 +6622,10 @@ sub doEvent_KTPShot
 		", ".$wire_target->($trace_flags).
 		", ".$wire_target->($trace_start_off).
 		", ".$wire_target->($cmd_all_traces).
-		", ".$wire_target->($net_lerp).
-		", ".$wire_target->($net_dropped).
-		", ".$wire_target->($net_backup).
-		", ".$wire_target->($net_cmds).")";
+		", ".$wire_net->($net_lerp).
+		", ".$wire_net->($net_dropped).
+		", ".$wire_net->($net_backup).
+		", ".$wire_net->($net_cmds).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
