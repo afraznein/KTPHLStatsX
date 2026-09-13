@@ -125,6 +125,11 @@ verbatim rebuilds the table once per column. **Combine every column and index
 change for the same table into a single `ALTER` when you apply it**, and apply it
 in an idle window — the same live-match check a restart calls for.
 
+⚠️ **CI reads migration files from the branch's tree, never from the database.**
+The corpus-regression gate runs the `sql/` file out of the checkout, so a
+migration applied to production but merged only to `preprod` keeps `main`'s CI
+red. Applying it to the database again fixes nothing — promote the file.
+
 ### Reloading vs restarting
 
 `SIGHUP` (`systemctl kill -s HUP hlstatsx`) flushes and re-reads the database
@@ -225,6 +230,18 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 
 *Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
 assistant's recall. Each was measured; the date it was measured is stated inline.*
+
+## The `--timestamp` daemon flag was RULED DROPPED, not deferred — and the magnitude nobody had measured is ONE SECOND
+
+Measured 2026-09-09 over **74,655 rows** (2026-08-24 → 09-09). `hlstats_Events_Frags` already carries **both clocks on the same row** — `eventTime` (daemon receipt) and `event_epoch` (the game server’s own clock) — so their difference *is* the quantity the flag would remove. It is about one second.
+
+⛔ **Why DROP rather than defer again:** the frag-context join the flag would improve was **already fixed** by the 2026-09-06 ±1 s widening. Against ~50 ms of residual benefit, the flag makes `eventTime` **host-supplied** — a drifted game host would write its own clock error straight into the data.
+
+⚠️ **And it changes `eventTime` RETROACTIVELY for EVERY event type, not just frags** — a silent change to the meaning of a column every stats consumer already reads, including the S9 reconstruction and any KTPR window.
+
+✅ **Two audits ran first and both were clean.** Timezone uniformity: all 24 instances across 5 hosts, plus the daemon and MySQL, are `America/New_York`, EDT −0400, NTP active. 🔑 **The load-bearing probe was NOT `timedatectl`** — it was each instance’s *last log-line stamp*, which is what actually reaches the data. Consumers: 28 enumerated; the daemon’s internal split is clean (`$ev_daemontime` housekeeping never moves, `$ev_unixtime` data columns do).
+
+⚠️ **The timezone dependency does NOT die with this ruling** — it carries its own operator item.
 
 ## "hlstatsx ran six migrations behind its own daemon and silently dropped every flag capture fleet-wide; schema ahead of code is harmless, code ahead of schema is data loss"
 
@@ -412,6 +429,28 @@ FROM ktp_matches GROUP BY match_type ORDER BY match_type;
 
 ⚠️ `match_type = 0` is *official*, a distinct value from NULL, and `0` is falsy in most host languages —
 do not let an application-side truthiness check collapse the two.
+
+## "stats for X matches" is ambiguous between CAPTURE and DISPLAY — name which one, every time
+
+Operator ruling, 2026-09-10, stated precisely because the loose wording had already been
+misread once in this repo's direction: **capture stats for ALL match types; display only
+`.ktp` matches on the website.** Two scopes, not one.
+
+⛔ **The COLLECTION side must never acquire a match-type filter.** The plugin, this daemon
+and the `hlstatsx` tables capture every type. At the time of the ruling that was 213 pending
+12man and scrim matches which stay captured and are simply not published.
+
+✅ **The DISPLAY boundary is `pending_match_ids()` in `scripts/report_service.py`**, which feeds
+`ktp_match_reports` and the website. `match_type IN (0, 4)` is exactly “`.ktp` only”: **0**
+competitive and **4** KTP OT. ⚠️ **Type 4 has never appeared in the data and belongs in the set
+anyway** — an S10 overtime is precisely the match a `(0)`-only filter would silently drop.
+
+🔑 **The durable lesson, because the wording will recur: CAPTURE and DISPLAY are different
+systems with different owners.** A sentence like “stats are for `.ktp` matches only” does not say
+which one it constrains, and reading a capture instruction as a display one (or the reverse)
+produces a filter in the wrong layer that looks correct from either end.
+
+Related: `Filtering ktp_matches.match_type`, and see `ktp-matches-match-type-is-the-plugin-enum`.
 
 ## Spine rows support per-half rates, never per-half splits — there is no `half` column to split on
 
@@ -619,6 +658,60 @@ guards, so a re-apply under the new name is a no-op either way.
 ⛔ **The general rule survives the fix, because the two branches still disagree:** `main`'s `023` is
 headshot provenance and `preprod`'s is position-state's prerequisite chain. Identify a migration here
 by its descriptive filename suffix and state which branch, never by number alone.
+
+## Frag-context join-window fix (#76) outcome, measured on real match traffic — and the health query to reuse
+
+`afraznein/KTPHLStatsX`#76 widened the frag-context producer join from an exact-second match to
+`[epoch-1, epoch+2)`, nearest-epoch-first. It merged 2026-09-06 15:51 UTC as `2c1ae96` — that is
+11:51 ET, and a merge is not a deploy — and reached the live daemon 2026-09-07 15:49:45 ET (the
+on-box backup taken immediately before the next daemon change carries that mtime). The question
+sitting on the board afterward was whether the fix actually moved the number once real matches ran
+against it, not just the corpus. Here is the query and the answer.
+
+```sql
+SELECT COUNT(*) AS frags, SUM(frag_context_recorded = 1) AS tagged
+FROM hlstats_Events_Frags
+WHERE eventTime >= '<window start>' AND eventTime < '<window end>';
+-- tagged rate = tagged / frags
+```
+
+Measured 2026-09-12 ET, both ends of the same 7-day window straddling the deploy:
+
+| Window | Frags | Tagged | Rate |
+|---|---|---|---|
+| 7d before deploy (08-31 15:49:45 → 09-07 15:49:45) | 63,462 | 43,747 | **68.93%** |
+| Since deploy (>= 09-07 15:49:45, ~5.3 days) | 48,180 | 44,583 | **92.53%** |
+| Trailing 7d from measurement time | 65,303 | 56,765 | 86.93% |
+| Trailing 7d, `match_id` non-empty (real matches only) | 59,417 | 55,045 | 92.64% |
+| Control: `weapon = 'zzz_no_such_weapon'` | 0 | NULL | — |
+
+Per-`serverId` since deploy ranges **90.41%–98.22%** across all 11 servers that logged frags in the
+window. The `KTPSCRIM` instances (real match/scrim traffic, not pubs) land in that same range on
+their own: serverId 16 (`KTPSCRIM - New York 1`) is 21,908/24,142 = 90.75%, serverId 22 (`KTPSCRIM -
+Chicago 2`) is 661/673 = 98.22%. Every server moved together right at the deploy timestamp, which is
+what refutes "some servers aren't updated yet" as an explanation for the residual — the plugin
+binary is the same build on every host, so a uniform per-server lift at one timestamp is what a code
+fix looks like, not what stale binaries on a subset of hosts would produce.
+
+`KTP_NO_ROW_MATCHED` (frag-context rejects) in the daemon journal, trailing 7 days: **209** lines
+against **804,613** total journal lines for the unit (`journalctl -u hlstatsx --since '-7d' | grep -c
+KTP_NO_ROW_MATCHED`), down from a pre-deploy banked figure of 4,971 in a comparable 7-day window
+against 813,508 total lines.
+
+⚠️ **Three traps this measurement ran into, worth keeping:**
+- **A tagged-rate baseline recorded without its query cannot be compared to anything.** A prior
+  banked figure of "64.9% tagged" had no SQL attached and does not reproduce: three defensible
+  definitions of "tagged" gave 72.8% / 68.7% / 90.6% on one spot-check of the same data, with no
+  record of which definition produced the banked number. The 68.93% pre-deploy figure above only
+  means something because the exact query is printed next to it — paste the query, not just the
+  percentage.
+- **Compare equal windows.** A 7-day pre-deploy rate against a 30-day rate (or vice versa) moves
+  because the window changed, not because anything about the join logic did. Every row in the table
+  above is a 7-day (or explicitly-labeled trailing) window for that reason.
+- **Verify a daemon's output by effect, never `systemctl is-active`.** A daemon can be wedged and
+  writing nothing while `is-active` still reports `active`. Confirm instead that
+  `hlstats_Events_Frags.eventTime` is advancing (a `MAX(eventTime)` within the last few minutes) and
+  that the journal is still emitting per-server `MYSQL: Flushing player updates` lines.
 
 ## Three systems store SteamIDs in three shapes, and `hlstats_PlayerUniqueIds.uniqueId` carries no `STEAM_` prefix at all
 
