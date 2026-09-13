@@ -3822,7 +3822,12 @@ while ($loop = &getLine()) {
 								$ev_properties{"net_lerp"},
 								$ev_properties{"net_dropped"},
 								$ev_properties{"net_backup"},
-								$ev_properties{"net_cmds"}
+								$ev_properties{"net_cmds"},
+								$ev_properties{"shooter_flags"},
+								$ev_properties{"shooter_punch_pitch"},
+								$ev_properties{"shooter_punch_yaw"},
+								$ev_properties{"shooter_speed"},
+								$ev_properties{"shooter_stamina"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -6550,7 +6555,9 @@ sub doEvent_KTPShot
 		$shot_ping, $shot_loss, $cmd_traces,
 		$trace_frac, $trace_flags,
 		$trace_start_off, $cmd_all_traces,
-		$net_lerp, $net_dropped, $net_backup, $net_cmds) = @_;
+		$net_lerp, $net_dropped, $net_backup, $net_cmds,
+		$shooter_flags, $shooter_punch_pitch, $shooter_punch_yaw,
+		$shooter_speed, $shooter_stamina) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -6671,7 +6678,12 @@ sub doEvent_KTPShot
 		", ".$wire_net->($net_lerp).
 		", ".$wire_net->($net_dropped).
 		", ".$wire_net->($net_backup).
-		", ".$wire_net->($net_cmds).")";
+		", ".$wire_net->($net_cmds).
+		", ".$wire_target->($shooter_flags).
+		", ".$wire_target->($shooter_punch_pitch).
+		", ".$wire_target->($shooter_punch_yaw).
+		", ".$wire_target->($shooter_speed).
+		", ".$wire_target->($shooter_stamina).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
@@ -6701,7 +6713,9 @@ sub flushShotEvents
 			 tgt_player_id, tgt_health, tgt_dead, tgt_team, shooter_team,
 			 shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
 			 trace_start_off, cmd_all_traces,
-			 net_lerp, net_dropped, net_backup, net_cmds)
+			 net_lerp, net_dropped, net_backup, net_cmds,
+			 shooter_flags, shooter_punch_pitch, shooter_punch_yaw,
+			 shooter_speed, shooter_stamina)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 		ON DUPLICATE KEY UPDATE id=id
