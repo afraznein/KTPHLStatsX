@@ -98,6 +98,11 @@ verbatim rebuilds the table once per column. **Combine every column and index
 change for the same table into a single `ALTER` when you apply it**, and apply it
 in an idle window — the same live-match check a restart calls for.
 
+⚠️ **CI reads migration files from the branch's tree, never from the database.**
+The corpus-regression gate runs the `sql/` file out of the checkout, so a
+migration applied to production but merged only to `preprod` keeps `main`'s CI
+red. Applying it to the database again fixes nothing — promote the file.
+
 ### Reloading vs restarting
 
 `SIGHUP` (`systemctl kill -s HUP hlstatsx`) flushes and re-reads the database
