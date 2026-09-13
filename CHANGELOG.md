@@ -4,7 +4,7 @@
 
 ### Added - 0.3.17, per-shot registration diagnostics on `ktp_shot_events`
 
-Migrations 028 and 029, and the daemon side that fills them.
+Migrations 028, 029 and 030, and the daemon side that fills them.
 
 **028** adds `UNIQUE (server_id, match_id, half, producer_sequence)` and the
 insert becomes `ON DUPLICATE KEY UPDATE id=id`. `flushShotEvents()` batches up
@@ -42,6 +42,25 @@ Together these separate a confirmed hit that produced no damage into
 already-dead / teammate / not-damageable / trace-started-in-solid / genuinely
 unexplained — a split two independently-ingested tables cannot make after the
 fact.
+
+**030** adds `tgt_player_id`: which player the trace hit, so a shot joins
+`ktp_damage_events` on the victim and not only on (attacker, time). Without it
+a shot that registered nothing is indistinguishable from one that landed,
+whenever an unrelated shot by the same player damaged somebody else inside the
+window. That error only ever runs in the reassuring direction, so every
+registration-failure rate measured before this column is a floor rather than an
+estimate -- on a 694-row bot-lane sample the loose join credited 100 of 115
+clean live-enemy hits with damage and could not say how many were somebody
+else's.
+
+The producer sends an engine userid, not an entindex: same wire cost, but an
+entindex is a slot reused after a disconnect and identifies a player only
+within a life. `lookupPlayer` cannot resolve a bare userid (it keys on
+`"$userid/$uniqueid"`, and the producer has no uniqueid for a player who is not
+the actor), so `ktpResolveShotTargetPlayerId` scans the live set read-only. A
+reconnect that leaves two live objects sharing a userid returns undef rather
+than guessing: NULL is an honest unknown, a wrong player id would credit one
+player's damage to another and corrupt the very join the column exists for.
 
 ### Changed - `ktp_shot_events` drops the `deployed` column
 
