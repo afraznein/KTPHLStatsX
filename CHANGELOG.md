@@ -15,6 +15,17 @@ was lost, a plain INSERT silently doubled every row in that batch. Deliberately
 not `INSERT IGNORE`, which would downgrade truncation, out-of-range and bad
 datetime to warnings as well.
 
+028 clears pre-existing duplicates before adding the index, and the order it
+does that in matters for how long it holds the table. The dedup is a self-join
+on the four key columns; with only `idx_match` to work from, MySQL rescans every
+row of a match for every row of that match — around 6M comparisons per match at
+~2,500 shot rows each, in one transaction, against the database the live daemon
+is writing to. So the composite index is built NON-unique first (one online
+INPLACE pass, concurrent DML allowed), which turns the self-join into a seek;
+then the dedup runs, then the index is upgraded to UNIQUE and the helper
+dropped. Each step is skipped once the UNIQUE index exists, so a re-run costs a
+few `information_schema` lookups instead of repeating the scan.
+
 **029** adds the target's health/deadflag/team, the shooter's team, ping and
 loss, the usercmd's trace counts, trace fraction and flags, the trace's start
 offset from the shooter's eye, and the client's `lerp_msec` and dropped-command

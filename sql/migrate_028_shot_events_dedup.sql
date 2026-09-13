@@ -42,18 +42,47 @@
 -- retroactively clean up -- the ADD UNIQUE INDEX would simply fail
 -- (ER_DUP_ENTRY) on any database that already has one. Remove them first,
 -- keeping the lowest id per (server_id, match_id, half, producer_sequence)
--- group. Naturally idempotent: a second run finds nothing left to delete.
-DELETE t1 FROM ktp_shot_events t1
+-- group.
+--
+-- Order matters, and not for correctness: the dedup DELETE is a self-join on
+-- the four key columns, and until an index covers them the best the optimizer
+-- can do is idx_match -- so it rescans every row of the match for every row of
+-- the match. At ~2,500 shot rows/match that is ~6M comparisons per match, in
+-- one transaction holding row locks, on the database the live daemon is
+-- writing to. So build the composite index as NON-unique first: that is a
+-- single online pass (InnoDB INPLACE, concurrent DML allowed), and it turns
+-- the self-join into a direct seek. Then dedup, then upgrade the index to
+-- UNIQUE.
+--
+-- Every step is skipped once uniq_shot_producer_sequence exists, which makes
+-- a re-run a handful of information_schema lookups rather than a repeat of
+-- the whole scan.
+SET @done := (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND INDEX_NAME='uniq_shot_producer_sequence');
+
+SET @have_tmp := (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND INDEX_NAME='tmp_shot_producer_dedup');
+SET @ddl := IF(@done OR @have_tmp, 'DO 0', 'ALTER TABLE ktp_shot_events ADD INDEX tmp_shot_producer_dedup (server_id, match_id, half, producer_sequence)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Naturally idempotent on its own (a second run finds nothing left to
+-- delete); the @done guard is there to skip the cost, not for correctness.
+SET @ddl := IF(@done, 'DO 0', 'DELETE t1 FROM ktp_shot_events t1
 INNER JOIN ktp_shot_events t2
     ON t1.server_id = t2.server_id
    AND t1.match_id = t2.match_id
    AND t1.half = t2.half
    AND t1.producer_sequence = t2.producer_sequence
    AND t1.id > t2.id
-WHERE t1.producer_sequence IS NOT NULL AND t1.match_id IS NOT NULL;
+WHERE t1.producer_sequence IS NOT NULL AND t1.match_id IS NOT NULL');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @exists := (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND INDEX_NAME='uniq_shot_producer_sequence');
-SET @ddl := IF(@exists, 'DO 0', 'ALTER TABLE ktp_shot_events ADD UNIQUE INDEX uniq_shot_producer_sequence (server_id, match_id, half, producer_sequence)');
+SET @ddl := IF(@done, 'DO 0', 'ALTER TABLE ktp_shot_events ADD UNIQUE INDEX uniq_shot_producer_sequence (server_id, match_id, half, producer_sequence)');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- The helper is redundant with the UNIQUE index (same columns, same order);
+-- dropped unconditionally if present so an interrupted run does not leave a
+-- duplicate index behind.
+SET @have_tmp := (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_shot_events' AND INDEX_NAME='tmp_shot_producer_dedup');
+SET @ddl := IF(@have_tmp, 'ALTER TABLE ktp_shot_events DROP INDEX tmp_shot_producer_dedup', 'DO 0');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Verify: no duplicate (server_id, match_id, half, producer_sequence) groups
