@@ -627,6 +627,60 @@ guards, so a re-apply under the new name is a no-op either way.
 headshot provenance and `preprod`'s is position-state's prerequisite chain. Identify a migration here
 by its descriptive filename suffix and state which branch, never by number alone.
 
+## Frag-context join-window fix (#76) outcome, measured on real match traffic — and the health query to reuse
+
+`afraznein/KTPHLStatsX`#76 widened the frag-context producer join from an exact-second match to
+`[epoch-1, epoch+2)`, nearest-epoch-first. It merged 2026-09-06 15:51 UTC as `2c1ae96` — that is
+11:51 ET, and a merge is not a deploy — and reached the live daemon 2026-09-07 15:49:45 ET (the
+on-box backup taken immediately before the next daemon change carries that mtime). The question
+sitting on the board afterward was whether the fix actually moved the number once real matches ran
+against it, not just the corpus. Here is the query and the answer.
+
+```sql
+SELECT COUNT(*) AS frags, SUM(frag_context_recorded = 1) AS tagged
+FROM hlstats_Events_Frags
+WHERE eventTime >= '<window start>' AND eventTime < '<window end>';
+-- tagged rate = tagged / frags
+```
+
+Measured 2026-09-12 ET, both ends of the same 7-day window straddling the deploy:
+
+| Window | Frags | Tagged | Rate |
+|---|---|---|---|
+| 7d before deploy (08-31 15:49:45 → 09-07 15:49:45) | 63,462 | 43,747 | **68.93%** |
+| Since deploy (>= 09-07 15:49:45, ~5.3 days) | 48,180 | 44,583 | **92.53%** |
+| Trailing 7d from measurement time | 65,303 | 56,765 | 86.93% |
+| Trailing 7d, `match_id` non-empty (real matches only) | 59,417 | 55,045 | 92.64% |
+| Control: `weapon = 'zzz_no_such_weapon'` | 0 | NULL | — |
+
+Per-`serverId` since deploy ranges **90.41%–98.22%** across all 11 servers that logged frags in the
+window. The `KTPSCRIM` instances (real match/scrim traffic, not pubs) land in that same range on
+their own: serverId 16 (`KTPSCRIM - New York 1`) is 21,908/24,142 = 90.75%, serverId 22 (`KTPSCRIM -
+Chicago 2`) is 661/673 = 98.22%. Every server moved together right at the deploy timestamp, which is
+what refutes "some servers aren't updated yet" as an explanation for the residual — the plugin
+binary is the same build on every host, so a uniform per-server lift at one timestamp is what a code
+fix looks like, not what stale binaries on a subset of hosts would produce.
+
+`KTP_NO_ROW_MATCHED` (frag-context rejects) in the daemon journal, trailing 7 days: **209** lines
+against **804,613** total journal lines for the unit (`journalctl -u hlstatsx --since '-7d' | grep -c
+KTP_NO_ROW_MATCHED`), down from a pre-deploy banked figure of 4,971 in a comparable 7-day window
+against 813,508 total lines.
+
+⚠️ **Three traps this measurement ran into, worth keeping:**
+- **A tagged-rate baseline recorded without its query cannot be compared to anything.** A prior
+  banked figure of "64.9% tagged" had no SQL attached and does not reproduce: three defensible
+  definitions of "tagged" gave 72.8% / 68.7% / 90.6% on one spot-check of the same data, with no
+  record of which definition produced the banked number. The 68.93% pre-deploy figure above only
+  means something because the exact query is printed next to it — paste the query, not just the
+  percentage.
+- **Compare equal windows.** A 7-day pre-deploy rate against a 30-day rate (or vice versa) moves
+  because the window changed, not because anything about the join logic did. Every row in the table
+  above is a 7-day (or explicitly-labeled trailing) window for that reason.
+- **Verify a daemon's output by effect, never `systemctl is-active`.** A daemon can be wedged and
+  writing nothing while `is-active` still reports `active`. Confirm instead that
+  `hlstats_Events_Frags.eventTime` is advancing (a `MAX(eventTime)` within the last few minutes) and
+  that the journal is still emitting per-server `MYSQL: Flushing player updates` lines.
+
 ## Three systems store SteamIDs in three shapes, and `hlstats_PlayerUniqueIds.uniqueId` carries no `STEAM_` prefix at all
 
 *(Relocated from session memory 2026-08-31. Measured in production 2026-08-30; every figure below
