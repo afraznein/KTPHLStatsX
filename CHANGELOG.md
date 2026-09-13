@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added - 0.3.17, per-shot registration diagnostics on `ktp_shot_events`
+
+Migrations 028 and 029, and the daemon side that fills them.
+
+**028** adds `UNIQUE (server_id, match_id, half, producer_sequence)` and the
+insert becomes `ON DUPLICATE KEY UPDATE id=id`. `flushShotEvents()` batches up
+to 200 markers through `execNonQuery`, which retries the whole statement once on
+any transient DBI failure — including "a connection that died between the ping
+and the write", its own comment. If the first attempt committed before the ack
+was lost, a plain INSERT silently doubled every row in that batch. Deliberately
+not `INSERT IGNORE`, which would downgrade truncation, out-of-range and bad
+datetime to warnings as well.
+
+**029** adds the target's health/deadflag/team, the shooter's team, ping and
+loss, the usercmd's trace counts, trace fraction and flags, the trace's start
+offset from the shooter's eye, and the client's `lerp_msec` and dropped-command
+count. All NULLABLE, and NULL is the normal state: the producer only sends the
+group when a trace-time stash belongs to that exact shot.
+
+`tgt_dead` is the presence key for the group, and it has to be — it is the only
+one of the original four that cannot legitimately be -1. `tgt_health` CAN be
+negative (a target already below zero in the same tick is precisely the case
+this stream exists to catch), so testing health against the sentinel would
+discard the most interesting rows it produces.
+
+Together these separate a confirmed hit that produced no damage into
+already-dead / teammate / not-damageable / trace-started-in-solid / genuinely
+unexplained — a split two independently-ingested tables cannot make after the
+fact.
+
 ### Changed - `ktp_shot_events` drops the `deployed` column
 
 The producer never emitted a `deployed` value that compiled. It was written as
