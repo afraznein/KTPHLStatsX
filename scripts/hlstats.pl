@@ -3807,6 +3807,7 @@ while ($loop = &getLine()) {
 								$ev_properties{"matchid"},
 								$ev_properties{"half"},
 								$ev_properties{"sequence"},
+								$ev_properties{"tgt_userid"},
 								$ev_properties{"tgt_health"},
 								$ev_properties{"tgt_dead"},
 								$ev_properties{"tgt_team"},
@@ -4953,6 +4954,37 @@ sub ktpResolvePlayerIdentity
 	my $live = lookupPlayer($s_addr, $identity->{userid}, $identity->{uniqueid});
 	return $live->{playerid} if ($live && $live->{playerid});
 	return &getPlayerId($identity->{uniqueid});
+}
+
+sub ktpResolveShotTargetPlayerId
+{
+	# The shot stream carries its target as an engine userid. lookupPlayer
+	# cannot be used: it keys on "$userid/$uniqueid" and the producer has no
+	# uniqueid for a player who is not the actor. Scan the live set instead,
+	# read-only, the same way ktpIdentityForGenericAction does.
+	#
+	# A userid is unique per connection, but a reconnect can briefly leave two
+	# live objects carrying the same one. Refuse to guess in that case and
+	# return undef: the column is NULLABLE, and a NULL is an honest "unknown
+	# target" while a wrong player id silently credits one player's damage to
+	# another and corrupts exactly the join this column exists to enable.
+	my ($userid) = @_;
+	return undef if (!defined($userid) || $userid !~ /^\d+$/ || int($userid) <= 0);
+
+	my $players = $g_servers{$s_addr}->{srv_players};
+	return undef if (!defined($players));
+
+	my $found;
+	foreach my $key (keys %{$players}) {
+		my $live = $players->{$key};
+		next if (!defined($live) || !defined($live->{playerid}) ||
+			!defined($live->{userid}));
+		next if (int($live->{userid}) != int($userid));
+		return undef if (defined($found) && int($found) != int($live->{playerid}));
+		$found = $live->{playerid};
+	}
+
+	return (defined($found) && int($found) > 0) ? int($found) : undef;
 }
 
 sub ktpIdentityForGenericAction
@@ -6513,6 +6545,7 @@ sub doEvent_KTPShot
 	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone,
 		$map_name, $game_time, $event_epoch, $producer_matchid,
 		$producer_half, $producer_sequence,
+		$tgt_userid,
 		$tgt_health, $tgt_dead, $tgt_team, $shooter_team,
 		$shot_ping, $shot_loss, $cmd_traces,
 		$trace_frac, $trace_flags,
@@ -6601,6 +6634,18 @@ sub doEvent_KTPShot
 		return int($v);
 	};
 
+	# The target reaches us as an engine userid and is stored as the durable
+	# player id, so it joins ktp_damage_events.victim_id directly. Resolution
+	# failing is normal and must stay NULL rather than fall back to the raw
+	# userid: the two are different id spaces and a userid written into a
+	# player_id column would join to an unrelated player rather than to
+	# nothing.
+	my $wire_tgt_player = "NULL";
+	if ($has_target && defined($tgt_userid) && $tgt_userid =~ /^\d+$/ && $tgt_userid >= 1) {
+		my $resolved = ktpResolveShotTargetPlayerId($tgt_userid);
+		$wire_tgt_player = int($resolved) if (defined($resolved));
+	}
+
 	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
 		", ".int($player_id).", ".int($weapon_id).
 		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
@@ -6611,6 +6656,7 @@ sub doEvent_KTPShot
 		", '".quoteSQL($map_name)."', ".($game_time + 0).
 		", ".int($event_epoch // 0).", $wire_sequence".
 		", FROM_UNIXTIME(".int($event_epoch // 0).")".
+		", ".$wire_tgt_player.
 		", ".$wire_target->($tgt_health).
 		", ".$wire_target->($tgt_dead).
 		", ".$wire_target->($tgt_team).
@@ -6652,7 +6698,7 @@ sub flushShotEvents
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
 			 pos_z, yaw, pitch, prone, map_name, game_time,
 			 event_epoch, producer_sequence, event_time,
-			 tgt_health, tgt_dead, tgt_team, shooter_team,
+			 tgt_player_id, tgt_health, tgt_dead, tgt_team, shooter_team,
 			 shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
 			 trace_start_off, cmd_all_traces,
 			 net_lerp, net_dropped, net_backup, net_cmds)
