@@ -35,6 +35,14 @@ jobs:
         run: perl scripts/selftest-telemetry22.pl
       - name: Alarms stay audible at DebugLevel 0
         run: perl scripts/selftest-alarm-audibility.pl
+      # This job is an explicit enumeration, so a selftest that is committed but
+      # not listed here simply never runs. Both of the following were in that
+      # state -- position-batching since it was added, shot-target-resolve as of
+      # migration 030.
+      - name: Position-sample batching
+        run: perl scripts/selftest-position-batching.pl
+      - name: Shot target userid resolves to a player id, or to nothing
+        run: perl scripts/selftest-shot-target-resolve.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL
