@@ -373,6 +373,33 @@ sentinel/nullable columns with the `DEFAULT 0` ones — only the latter are ambi
 Related: the teamkills-union trap above and `ktp_match_stats.half = 0` in `README.md` are the same
 "a default reads as a real measurement" shape, on different tables.
 
+## `ktp_matches` is ONE ROW PER HALF — a "match count" off it is DOUBLE
+
+*(2026-09-14.)* There is no one-row-per-match table here. `ktp_matches` carries a row per half, so
+`count(*)` answers *how many halves*, and every naive match count is 2x.
+
+Measured 2026-09-14 for `start_time >= '2026-09-13'`: `match_type = 0` gives **18 rows / 9 distinct
+`match_id`**; all types give **52 rows / 27 matches**. Both row counts are correct — they are simply
+not matches.
+
+**The expensive half is the join, not the count.** `LEFT JOIN ktp_matches ON match_id` fans every
+interval row out across both halves, so **every `SUM()` through that join is doubled** while the query
+stays green and plausible. This produced a per-match table at exactly 2x before it was caught, and a
+match count that was handed to three agents as a pinned window.
+
+```sql
+-- matches, not halves
+SELECT count(DISTINCT match_id) FROM ktp_matches WHERE ...;
+-- and when joining, collapse first
+JOIN (SELECT DISTINCT match_id, ... FROM ktp_matches WHERE ...) m USING (match_id)
+```
+
+Control that catches it: assert `count(*) = 2 * count(DISTINCT match_id)` over the window before
+trusting any aggregate. An odd row count is itself a finding — it means a half is missing.
+
+⚠️ Related and easy to conflate: `match_type = 4` (`.ktpOT`) has **zero** rows to date, so a cohort
+described as ".ktp and .ktpOT" is entirely `.ktp`. See `Filtering ktp_matches.match_type` below.
+
 ## Filtering `ktp_matches.match_type` — allowlist what you want, never denylist what you don't
 
 *(2026-09-05.)* `match_type` is nullable and a large share of `ktp_matches` is NULL — the pre-backfill
