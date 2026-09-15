@@ -3806,7 +3806,28 @@ while ($loop = &getLine()) {
 								$ev_properties{"event_epoch"},
 								$ev_properties{"matchid"},
 								$ev_properties{"half"},
-								$ev_properties{"sequence"}
+								$ev_properties{"sequence"},
+								$ev_properties{"tgt_userid"},
+								$ev_properties{"tgt_health"},
+								$ev_properties{"tgt_dead"},
+								$ev_properties{"tgt_team"},
+								$ev_properties{"shooter_team"},
+								$ev_properties{"shot_ping"},
+								$ev_properties{"shot_loss"},
+								$ev_properties{"cmd_traces"},
+								$ev_properties{"trace_frac"},
+								$ev_properties{"trace_flags"},
+								$ev_properties{"trace_start_off"},
+								$ev_properties{"cmd_all_traces"},
+								$ev_properties{"net_lerp"},
+								$ev_properties{"net_dropped"},
+								$ev_properties{"net_backup"},
+								$ev_properties{"net_cmds"},
+								$ev_properties{"shooter_flags"},
+								$ev_properties{"shooter_punch_pitch"},
+								$ev_properties{"shooter_punch_yaw"},
+								$ev_properties{"shooter_speed"},
+								$ev_properties{"shooter_stamina"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -4940,6 +4961,37 @@ sub ktpResolvePlayerIdentity
 	return &getPlayerId($identity->{uniqueid});
 }
 
+sub ktpResolveShotTargetPlayerId
+{
+	# The shot stream carries its target as an engine userid. lookupPlayer
+	# cannot be used: it keys on "$userid/$uniqueid" and the producer has no
+	# uniqueid for a player who is not the actor. Scan the live set instead,
+	# read-only, the same way ktpIdentityForGenericAction does.
+	#
+	# A userid is unique per connection, but a reconnect can briefly leave two
+	# live objects carrying the same one. Refuse to guess in that case and
+	# return undef: the column is NULLABLE, and a NULL is an honest "unknown
+	# target" while a wrong player id silently credits one player's damage to
+	# another and corrupts exactly the join this column exists to enable.
+	my ($userid) = @_;
+	return undef if (!defined($userid) || $userid !~ /^\d+$/ || int($userid) <= 0);
+
+	my $players = $g_servers{$s_addr}->{srv_players};
+	return undef if (!defined($players));
+
+	my $found;
+	foreach my $key (keys %{$players}) {
+		my $live = $players->{$key};
+		next if (!defined($live) || !defined($live->{playerid}) ||
+			!defined($live->{userid}));
+		next if (int($live->{userid}) != int($userid));
+		return undef if (defined($found) && int($found) != int($live->{playerid}));
+		$found = $live->{playerid};
+	}
+
+	return (defined($found) && int($found) > 0) ? int($found) : undef;
+}
+
 sub ktpIdentityForGenericAction
 {
 	my ($identity, $player_id) = @_;
@@ -5442,24 +5494,41 @@ sub ktpObserveCaptureMarker
 			!defined($g_ktpCaptureSequences{$key}));
 	if ($marker eq "manifest" && !defined($g_ktpCaptureSequences{$key})) {
 		$g_ktpCaptureSequences{$key} = {
-			first => undef, last => undef, gaps => 0, duplicate_or_reordered => 0,
-			received => 0, types => {}, rejected => {}, correlation_failures => {}
+			seq => {}, received => 0, types => {}, rejected => {},
+			correlation_failures => {}
 		};
 	}
 	my $state = $g_ktpCaptureSequences{$key};
 	my $seq = int($sequence);
-	if (!defined($state->{first})) {
-		$state->{first} = $seq;
-		$state->{gaps} += $seq - 1 if ($seq > 1);
-		$state->{last} = $seq;
-	} elsif ($seq > $state->{last}) {
-		$state->{gaps} += $seq - $state->{last} - 1;
-		$state->{last} = $seq;
-	} else {
-		$state->{duplicate_or_reordered}++;
-	}
 
+	# Continuity is tracked per event type, not once for the whole (server,
+	# match, half). The shared counter is real (ksc_next_sequence() in
+	# ktp_stats_capture.inc numbers every stream), but a top-level
+	# {first,last,gaps} conflated "this one stream's flush cadence differs
+	# from the shared 5s ring" with "every stream lost or reordered data."
+	# The wave-0 shot stream flushes its own buffer every 1s (KTPAMXX#102);
+	# under the old shared state its cadence alone made all twelve streams'
+	# ktp_capture_health rows read unhealthy even though every stream's
+	# emitted == daemon_received (confirmed via Lane B, 2026-09-11 — see
+	# runs/34659242759). Same root class as the 1.19.3 shot-stream saga:
+	# a stream on a different cadence than the rest, sharing one sequence
+	# space. manifest/health are metadata about the streams, not a stream
+	# of their own — they never get their own ktp_capture_health row, so
+	# they don't get (and can't skew) a per-type slot.
 	if ($marker ne "manifest" && $marker ne "health") {
+		my $slot = ($state->{seq}{$marker} ||= {
+			first => undef, last => undef, gaps => 0, duplicate_or_reordered => 0,
+		});
+		if (!defined($slot->{first})) {
+			$slot->{first} = $seq;
+			$slot->{gaps} += $seq - 1 if ($seq > 1);
+			$slot->{last} = $seq;
+		} elsif ($seq > $slot->{last}) {
+			$slot->{gaps} += $seq - $slot->{last} - 1;
+			$slot->{last} = $seq;
+		} else {
+			$slot->{duplicate_or_reordered}++;
+		}
 		$state->{received}++;
 		$state->{types}{$marker} = ($state->{types}{$marker} || 0) + 1;
 	}
@@ -6063,10 +6132,12 @@ sub doEvent_KTPCaptureHealth
 	$daemon_accepted = 0 if ($daemon_accepted < 0);
 	my $correlation_failures =
 		(($state->{correlation_failures} || {})->{$p->{event_type}} || 0);
-	my $first_sql = defined($state->{first}) ? int($state->{first}) : "NULL";
-	my $last_sql = defined($state->{last}) ? int($state->{last}) : "NULL";
-	my $gaps = $state->{gaps} || 0;
-	my $duplicates = $state->{duplicate_or_reordered} || 0;
+	# Per event type, not per (server,match,half) -- see ktpObserveCaptureMarker.
+	my $seq_slot = (($state->{seq} || {})->{$p->{event_type}} || {});
+	my $first_sql = defined($seq_slot->{first}) ? int($seq_slot->{first}) : "NULL";
+	my $last_sql = defined($seq_slot->{last}) ? int($seq_slot->{last}) : "NULL";
+	my $gaps = $seq_slot->{gaps} || 0;
+	my $duplicates = $seq_slot->{duplicate_or_reordered} || 0;
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
 	my $rv = &execNonQuery("
@@ -6478,7 +6549,15 @@ sub doEvent_KTPShot
 	# what `prone` carries here.
 	my ($player_id, $weapon_id, $position, $yaw, $pitch, $prone,
 		$map_name, $game_time, $event_epoch, $producer_matchid,
-		$producer_half, $producer_sequence) = @_;
+		$producer_half, $producer_sequence,
+		$tgt_userid,
+		$tgt_health, $tgt_dead, $tgt_team, $shooter_team,
+		$shot_ping, $shot_loss, $cmd_traces,
+		$trace_frac, $trace_flags,
+		$trace_start_off, $cmd_all_traces,
+		$net_lerp, $net_dropped, $net_backup, $net_cmds,
+		$shooter_flags, $shooter_punch_pitch, $shooter_punch_yaw,
+		$shooter_speed, $shooter_stamina) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -6517,13 +6596,94 @@ sub doEvent_KTPShot
 	}
 	my ($x, $y, $z) = ($1, $2, $3);
 
+	# Same validity test ktpObserveCaptureMarker (5428-5430) applies before
+	# trusting a sequence value. A missing/non-numeric sequence must become
+	# SQL NULL here, not 0: migrate_028's UNIQUE (server_id, match_id, half,
+	# producer_sequence) plus INSERT ... ON DUPLICATE KEY UPDATE would
+	# otherwise collapse every such row in the match/half onto one, turning
+	# an unrelated parse gap into silent mass loss. NULL never collides with
+	# NULL in a UNIQUE index, so this loses the dedup guard for exactly the
+	# rows that have no real sequence to dedup on, and nothing else.
+	my $wire_sequence = (defined($producer_sequence) && $producer_sequence =~ /^\d+$/ && $producer_sequence >= 1)
+		? int($producer_sequence) : "NULL";
+
+	# Target state at trace time. The producer writes all four together or sends
+	# -1 in all four for "no target state belongs to this shot" (the shot missed,
+	# or the stash was not this dispatch's to read), and the sentinel has to reach
+	# SQL as NULL: a -1 stored as data would be counted as a measurement by
+	# anything that later asks how many shots struck an already-dead target.
+	#
+	# tgt_dead is the presence key for the whole group, and it has to be -- it is
+	# the only one of the four that cannot legitimately be -1. tgt_health CAN be
+	# negative (a target already below zero in the same tick is precisely the case
+	# this stream exists to catch), so testing health against the sentinel would
+	# discard the most interesting rows it produces. Team ids are non-negative
+	# when present. An older producer emitting none of these fields lands as NULL
+	# the same way.
+	my $has_target = (defined($tgt_dead) && $tgt_dead =~ /^-?\d+$/
+		&& (int($tgt_dead) == 0 || int($tgt_dead) == 1));
+	# The packet-state group has its own presence key. tgt_dead cannot gate it:
+	# the native returns -1 for all four net fields whenever the sampled packet
+	# does not belong to this shot, while tgt_dead is simultaneously a perfectly
+	# valid 0/1. Gating them together writes -1 as DATA -- which migration 029
+	# forbids in terms, and which is indistinguishable from a real negative lerp
+	# (the producer clamps that floor at -999). Bots never reach the hook at all,
+	# so every bot row would have carried net_lerp = -1.
+	my $has_net = (defined($net_cmds) && $net_cmds =~ /^\d+$/ && $net_cmds >= 1);
+	my $wire_net = sub {
+		my ($v) = @_;
+		return "NULL" if (!$has_net || !defined($v) || $v !~ /^-?\d+$/);
+		return int($v);
+	};
+	my $wire_target = sub {
+		my ($v) = @_;
+		return "NULL" if (!$has_target || !defined($v) || $v !~ /^-?\d+$/);
+		return int($v);
+	};
+
+	# The target reaches us as an engine userid and is stored as the durable
+	# player id, so it joins ktp_damage_events.victim_id directly. Resolution
+	# failing is normal and must stay NULL rather than fall back to the raw
+	# userid: the two are different id spaces and a userid written into a
+	# player_id column would join to an unrelated player rather than to
+	# nothing.
+	my $wire_tgt_player = "NULL";
+	if ($has_target && defined($tgt_userid) && $tgt_userid =~ /^\d+$/ && $tgt_userid >= 1) {
+		my $resolved = ktpResolveShotTargetPlayerId($tgt_userid);
+		$wire_tgt_player = int($resolved) if (defined($resolved));
+	}
+
 	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
 		", ".int($player_id).", ".int($weapon_id).
 		", $x, $y, $z, ".($yaw + 0).", ".($pitch + 0).
-		", ".int($prone ? 1 : 0).
+		# pronestate verbatim: 0 upright, 1 prone, 2 prone with the weapon deployed.
+		# migrate_027 states there is deliberately no separate `deployed` column, so
+		# collapsing this to a boolean deletes the only deploy signal the stream has.
+		", ".((defined($prone) && $prone =~ /^\d+$/) ? int($prone) : 0).
 		", '".quoteSQL($map_name)."', ".($game_time + 0).
-		", ".int($event_epoch // 0).", ".int($producer_sequence // 0).
-		", FROM_UNIXTIME(".int($event_epoch // 0)."))";
+		", ".int($event_epoch // 0).", $wire_sequence".
+		", FROM_UNIXTIME(".int($event_epoch // 0).")".
+		", ".$wire_tgt_player.
+		", ".$wire_target->($tgt_health).
+		", ".$wire_target->($tgt_dead).
+		", ".$wire_target->($tgt_team).
+		", ".$wire_target->($shooter_team).
+		", ".$wire_target->($shot_ping).
+		", ".$wire_target->($shot_loss).
+		", ".$wire_target->($cmd_traces).
+		", ".$wire_target->($trace_frac).
+		", ".$wire_target->($trace_flags).
+		", ".$wire_target->($trace_start_off).
+		", ".$wire_target->($cmd_all_traces).
+		", ".$wire_net->($net_lerp).
+		", ".$wire_net->($net_dropped).
+		", ".$wire_net->($net_backup).
+		", ".$wire_net->($net_cmds).
+		", ".$wire_target->($shooter_flags).
+		", ".$wire_target->($shooter_punch_pitch).
+		", ".$wire_target->($shooter_punch_yaw).
+		", ".$wire_target->($shooter_speed).
+		", ".$wire_target->($shooter_stamina).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
@@ -6534,13 +6694,31 @@ sub flushShotEvents
 {
 	return if (scalar(@g_ktpShotQueue) == 0);
 	my $queued = scalar(@g_ktpShotQueue);
+	# ON DUPLICATE KEY UPDATE id=id, paired with migrate_028's UNIQUE
+	# (server_id, match_id, half, producer_sequence): execNonQuery retries
+	# this whole batch once on any transient failure, and if the first
+	# attempt's write actually landed before the ack was lost, a plain
+	# INSERT would silently double every row in it. producer_sequence is
+	# KTPAMXX's per-type counter, so a genuine duplicate key can only be a
+	# retried resend of the same marker, never two different shots -- safe
+	# to no-op. Deliberately not INSERT IGNORE: that downgrades every error
+	# (truncation, out-of-range, bad datetime) to a warning, not just a
+	# duplicate key; this converts only the one error this fix targets and
+	# leaves everything else loud.
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_shot_events
 			(server_id, match_id, half, player_id, weapon_id, pos_x, pos_y,
 			 pos_z, yaw, pitch, prone, map_name, game_time,
-			 event_epoch, producer_sequence, event_time)
+			 event_epoch, producer_sequence, event_time,
+			 tgt_player_id, tgt_health, tgt_dead, tgt_team, shooter_team,
+			 shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
+			 trace_start_off, cmd_all_traces,
+			 net_lerp, net_dropped, net_backup, net_cmds,
+			 shooter_flags, shooter_punch_pitch, shooter_punch_yaw,
+			 shooter_speed, shooter_stamina)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
+		ON DUPLICATE KEY UPDATE id=id
 	");
 	@g_ktpShotQueue = ();
 	# execNonQuery already reports the failure and the statement; what it
