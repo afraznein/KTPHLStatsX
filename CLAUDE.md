@@ -47,6 +47,27 @@ reads `hlstats_Options.version` from the database — the **upstream** number
 **Identify a build by md5 of `/opt/hlstatsx/scripts/hlstats.pl`**, never by the
 banner.
 
+Take the path from the unit (`systemctl show hlstatsx -p ExecStart`), not from memory, and compare
+its md5 with `git show origin/<branch>:scripts/hlstats.pl | md5sum`. Git stores the blob with LF, like
+the deployed copy, so that comparison is exact. ⚠️ **`VERSION` and the changelog do not track
+behaviour** — builds that behave differently have shipped under one `VERSION` — so the md5 is the
+only identity.
+
+**Verifying a restart:**
+- `systemctl restart` exiting 0 is not a health check. If the session drops right after, reconnect
+  and check again before calling it done.
+- Judge by database writes — `Flushing player updates to database is complete` in the journal — not
+  by frag or event counts. Off-peak the fleet can be empty, and an event-count check then reads as a
+  failed deploy.
+- A clean `journalctl -u hlstatsx -p err` only means something if the unfiltered journal for the same
+  window has lines.
+- `hlstats_Servers.players` is not a live player count.
+
+**Proving a new handler works:** compare first appearances, not counts.
+`GROUP BY <key> HAVING MIN(event_time) >= <swap time>` finds values that never existed before the
+deploy. Comparing a post-deploy window against a cumulative pre-deploy total fails on success, because
+the window only sees what was played in it.
+
 Two startup lines are worth reading after a restart, because both report a
 condition nothing else surfaces:
 
@@ -93,6 +114,12 @@ indistinguishable from one that worked.
 The ordering extends past this repo: seed `hlstats_Actions` and reload the daemon
 *before* shipping the KTPAMXX plugin that emits those actions, never after.
 
+The stats-capture schema follows the same rule. The daemon checks the schema each server announces,
+capability by capability, so deploy the daemon that accepts a new `KSC_SCHEMA_CONTRACT` **before** any
+server gets the plugin that announces it. Otherwise that server's newer streams stop while kills and
+damage keep flowing, which looks partly healthy. A newer daemon keeps accepting older plugins, so the
+daemon-first order is always safe.
+
 ⚠️ **`hlstats_Events_Frags` and `hlstats_Events_PlayerActions` are MyISAM**, so
 `ADD COLUMN` is a full table rebuild under a write lock — never MySQL 8's instant
 add — and Frags is the biggest table in the schema. The migration files here are
@@ -100,6 +127,11 @@ written one guarded `ALTER` per column for idempotency, which means running one
 verbatim rebuilds the table once per column. **Combine every column and index
 change for the same table into a single `ALTER` when you apply it**, and apply it
 in an idle window — the same live-match check a restart calls for.
+
+⚠️ **CI reads migration files from the branch's tree, never from the database.**
+The corpus-regression gate runs the `sql/` file out of the checkout, so a
+migration applied to production but merged only to `preprod` keeps `main`'s CI
+red. Applying it to the database again fixes nothing — promote the file.
 
 ### Reloading vs restarting
 

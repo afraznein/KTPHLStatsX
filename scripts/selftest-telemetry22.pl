@@ -261,7 +261,7 @@ ok(!ktpRevokeReplacedCaptureManifest(\%manifest_ok),
 ktpObserveCaptureMarker('manifest', \%manifest_ok);
 is($g_ktpCaptureSequences{$accepted_key}{received}, 1,
     'an exact manifest replay cannot erase already observed event counts');
-is($g_ktpCaptureSequences{$accepted_key}{last}, 2,
+is($g_ktpCaptureSequences{$accepted_key}{seq}{objective_attempt}{last}, 2,
     'an exact manifest replay preserves the sequence high-water mark');
 
 ok(ktpRevokeReplacedCaptureManifest(\%manifest23),
@@ -297,7 +297,7 @@ ok(ktpAuthorizeCaptureManifest(\%manifest_ok),
 ktpObserveCaptureMarker('manifest', \%manifest_ok);
 ktpObserveCaptureMarker('objective_attempt', \%observed_objective);
 my $gaps_before_unobserved_reject =
-    $g_ktpCaptureSequences{$accepted_key}{gaps};
+    $g_ktpCaptureSequences{$accepted_key}{seq}{objective_attempt}{gaps};
 my %semantic_reject = (
     matchid => 'telemetry-TEST', half => 1, sequence => 999,
 );
@@ -309,9 +309,9 @@ is($g_ktpCaptureSequences{$accepted_key}{types}{objective_attempt}, 2,
     'authorized semantic rejection is included in per-type health accounting');
 is($g_ktpCaptureSequences{$accepted_key}{rejected}{objective_attempt}, 1,
     'authorized semantic rejection increments the rejection counter');
-is($g_ktpCaptureSequences{$accepted_key}{last}, 2,
+is($g_ktpCaptureSequences{$accepted_key}{seq}{objective_attempt}{last}, 2,
     'semantic rejection cannot advance the sequence high-water mark');
-is($g_ktpCaptureSequences{$accepted_key}{gaps},
+is($g_ktpCaptureSequences{$accepted_key}{seq}{objective_attempt}{gaps},
     $gaps_before_unobserved_reject,
     'semantic rejection cannot manufacture sequence gaps');
 my %other_context = (%manifest_ok, matchid => 'other-TEST');
