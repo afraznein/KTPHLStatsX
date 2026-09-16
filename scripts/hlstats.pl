@@ -4495,6 +4495,40 @@ while ($loop = &getLine()) {
 			);
 			ktpRejectCaptureMarker("flag_state", \%ev_properties, 0)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+		} elsif ($s_output =~ /^KTP_SCORE_EVENT\s+(.*)$/) {
+			# KTP wave 2 (§3.2): the engine's own score attribution per player,
+			# with the control point that triggered it when the producer could
+			# resolve DLL index space (flag_index -1 otherwise, dll_index kept).
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 616;  # KTP score-event marker
+			ktpObserveCaptureMarker("score", \%ev_properties);
+			$ev_status = &doEvent_KTPScoreEvent(\%ev_properties);
+			ktpRejectCaptureMarker("score", \%ev_properties,
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+		} elsif ($s_output =~ /^KTP_PLAYER_STATE\s+(.*)$/) {
+			# KTP wave 2 (§3.7): prone/unprone from the module forward and
+			# deploy/undeploy edges from the producer's 0.5s poll.
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 617;  # KTP player-state marker
+			ktpObserveCaptureMarker("player_state", \%ev_properties);
+			$ev_status = &doEvent_KTPPlayerState(\%ev_properties);
+			ktpRejectCaptureMarker("player_state", \%ev_properties,
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+		} elsif ($s_output =~ /^KTP_DUEL\s+(.*)$/) {
+			# KTP wave 2 (§3.5): per-(attacker, victim) dodx vstats delta for one
+			# half, emitted in a burst at half close. No game_time on the wire.
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 618;  # KTP duel marker
+			ktpObserveCaptureMarker("duel", \%ev_properties);
+			$ev_status = &doEvent_KTPDuel(\%ev_properties);
+			ktpRejectCaptureMarker("duel", \%ev_properties,
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
 			# Matches:
@@ -6100,7 +6134,7 @@ sub ktpValidateCaptureHealthPayload
 	# whitelists and missed here, which would have left the highest-volume new
 	# stream with no drop detection at all -- and the wave-0 canary reads this
 	# table, per stream, to decide whether the rollout is safe.
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -6949,6 +6983,136 @@ sub doEvent_KTPFlagState
 	return "Flag state SQL failed" if (!defined($rv));
 	return "Flag state logged: match=$match_id half=$half flag=$flag_index owner=$owner initial=$initial_sql";
 }
+
+# BEGIN KTP WAVE-2 STREAMS
+# Shared shape for the three wave 2 markers: validate the producer clock and
+# resolve the (match, half) interval exactly like grenade_entity, then resolve
+# every player string through the durable identity path. An unresolved player
+# is a correlation failure (counted as such in capture health), never a row
+# with a guessed id.
+sub ktpWave2Context
+{
+	my ($stream, $p, @required) = @_;
+	for my $field (@required) {
+		return "missing $field" if (!defined($p->{$field}) || $p->{$field} eq "");
+	}
+	my ($half, $map, $context_error, $context_source) =
+		ktpResolveValidatedProducerEventContext(
+			$p->{matchid}, $p->{half}, $p->{game_time} // 0, $p->{event_epoch});
+	if ($context_error ne "" || $map ne $p->{map}) {
+		my $error = $context_error ne "" ? $context_error : "producer map disagrees with interval";
+		$p->{"_ktp_correlation_failure"} = 1;
+		&printEvent("KTP_".uc($stream)."_DROP", "$stream dropped: $error (match=$p->{matchid})", 1, 1);
+		return $error;
+	}
+	$p->{_half} = $half;
+	$p->{_map} = $map;
+	return "";
+}
+
+sub ktpWave2Player
+{
+	my ($stream, $p, $field) = @_;
+	my $identity = ktpParsePlayerIdentity($p->{$field});
+	my $player_id = $identity ? ktpResolvePlayerIdentity($identity) : 0;
+	if (!$identity || !$player_id) {
+		$p->{"_ktp_correlation_failure"} = 1;
+		&printEvent("KTP_".uc($stream)."_DROP", "$stream dropped: $field identity unresolved", 1, 1);
+		return (0, 0);
+	}
+	return ($player_id, int($identity->{userid}));
+}
+
+sub doEvent_KTPScoreEvent
+{
+	my ($p) = @_;
+	my $error = ktpWave2Context("score", $p, qw(matchid half map player delta total
+		flag_index dll_index identity_resolved game_time event_epoch sequence));
+	return "Score event dropped: $error" if ($error ne "");
+	my ($player_id, $userid) = ktpWave2Player("score", $p, "player");
+	return "Score event dropped: player identity unresolved" if (!$player_id);
+	my $flag_sql = (defined($p->{flag_name}) && $p->{flag_name} ne "" && $p->{flag_name} ne "-")
+		? "'".quoteSQL($p->{flag_name})."'" : "NULL";
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_score_events
+			(server_id, match_id, half, map_name, player_id, engine_userid,
+			 delta, total, flag_index, dll_index, flag_name, identity_resolved,
+			 game_time, event_epoch, producer_sequence, event_time)
+		VALUES
+			(".int($g_servers{$s_addr}->{'id'}).", '".quoteSQL($p->{matchid})."', ".int($p->{_half}).",
+			 '".quoteSQL($p->{_map})."', ".int($player_id).", ".int($userid).",
+			 ".int($p->{delta}).", ".int($p->{total}).", ".int($p->{flag_index}).",
+			 ".int($p->{dll_index}).", $flag_sql, ".($p->{identity_resolved} ? 1 : 0).",
+			 ".sprintf("%.2f", $p->{game_time} + 0).", ".int($p->{event_epoch}).",
+			 ".int($p->{sequence}).", FROM_UNIXTIME(".int($p->{event_epoch})."))
+	");
+	return "Score event SQL failed" if (!defined($rv));
+	return "Score event logged: player=$player_id delta=$p->{delta} flag=$p->{flag_index}";
+}
+
+sub doEvent_KTPPlayerState
+{
+	my ($p) = @_;
+	my $error = ktpWave2Context("player_state", $p, qw(kind matchid half map player class
+		position yaw game_time event_epoch sequence));
+	return "Player state dropped: $error" if ($error ne "");
+	return "Player state dropped: invalid kind"
+		if ($p->{kind} !~ /^(?:prone|unprone|deploy|undeploy)$/);
+	my ($player_id, $userid) = ktpWave2Player("player_state", $p, "player");
+	return "Player state dropped: player identity unresolved" if (!$player_id);
+	my ($x, $y, $z) = ("NULL", "NULL", "NULL");
+	($x, $y, $z) = (int($1), int($2), int($3))
+		if ($p->{position} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/);
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_player_state_events
+			(server_id, match_id, half, map_name, player_id, engine_userid, kind,
+			 player_class, pos_x, pos_y, pos_z, yaw, game_time, event_epoch,
+			 producer_sequence, event_time)
+		VALUES
+			(".int($g_servers{$s_addr}->{'id'}).", '".quoteSQL($p->{matchid})."', ".int($p->{_half}).",
+			 '".quoteSQL($p->{_map})."', ".int($player_id).", ".int($userid).",
+			 '".quoteSQL($p->{kind})."', ".ktpIntOrNull($p->{class}).", $x, $y, $z,
+			 ".ktpAngleOrNull($p->{yaw}).", ".sprintf("%.2f", $p->{game_time} + 0).",
+			 ".int($p->{event_epoch}).", ".int($p->{sequence}).",
+			 FROM_UNIXTIME(".int($p->{event_epoch})."))
+	");
+	return "Player state SQL failed" if (!defined($rv));
+	return "Player state logged: player=$player_id kind=$p->{kind}";
+}
+
+sub doEvent_KTPDuel
+{
+	my ($p) = @_;
+	my $error = ktpWave2Context("duel", $p, qw(matchid half map attacker victim kills
+		deaths headshots teamkills shots hits damage bodyhits event_epoch sequence));
+	return "Duel dropped: $error" if ($error ne "");
+	my ($attacker_id, $attacker_userid) = ktpWave2Player("duel", $p, "attacker");
+	return "Duel dropped: attacker identity unresolved" if (!$attacker_id);
+	my ($victim_id, $victim_userid) = ktpWave2Player("duel", $p, "victim");
+	return "Duel dropped: victim identity unresolved" if (!$victim_id);
+	my @bh = split(/\s+/, $p->{bodyhits});
+	return "Duel dropped: invalid bodyhits" if (@bh != 8 || grep { !/^-?\d+$/ } @bh);
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_duel_stats
+			(server_id, match_id, half, map_name, attacker_id, attacker_userid,
+			 victim_id, victim_userid, kills, deaths, headshots, teamkills, shots,
+			 hits, damage, bh_generic, bh_head, bh_chest, bh_stomach, bh_leftarm,
+			 bh_rightarm, bh_leftleg, bh_rightleg, event_epoch, producer_sequence,
+			 event_time)
+		VALUES
+			(".int($g_servers{$s_addr}->{'id'}).", '".quoteSQL($p->{matchid})."', ".int($p->{_half}).",
+			 '".quoteSQL($p->{_map})."', ".int($attacker_id).", ".int($attacker_userid).",
+			 ".int($victim_id).", ".int($victim_userid).", ".int($p->{kills}).",
+			 ".int($p->{deaths}).", ".int($p->{headshots}).", ".int($p->{teamkills}).",
+			 ".int($p->{shots}).", ".int($p->{hits}).", ".int($p->{damage}).",
+			 ".join(", ", map { int($_) } @bh).",
+			 ".int($p->{event_epoch}).", ".int($p->{sequence}).",
+			 FROM_UNIXTIME(".int($p->{event_epoch})."))
+	");
+	return "Duel SQL failed" if (!defined($rv));
+	return "Duel logged: attacker=$attacker_id victim=$victim_id kills=$p->{kills}";
+}
+# END KTP WAVE-2 STREAMS
 
 sub doEvent_KTPMatchStart
 {

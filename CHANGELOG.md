@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added - 0.3.20, expansion wave 2 streams (migration 033)
+
+Three new low-volume streams from KTPAMXX 1.22.0, each its own table and its
+own capture-health row: `ktp_score_events` (`KTP_SCORE_EVENT`, the engine's
+score attribution per player with the triggering control point when the
+producer could resolve DLL index space), `ktp_duel_stats` (`KTP_DUEL`, the
+per-(attacker, victim) dodx vstats matrix as a delta per half, eight hit
+groups included) and `ktp_player_state_events` (`KTP_PLAYER_STATE`,
+prone/unprone and bipod deploy/undeploy edges with position and yaw).
+
+All three share one handler shape: producer-clock validation and (match, half)
+interval resolution exactly as grenade_entity does it, then every player
+string through the durable identity path; an unresolved player is a
+correlation failure in capture health, never a guessed id. `INSERT IGNORE`
+on `(server, match, half, producer_sequence)`, the migration-028 dedup
+contract. The health validator's type set gains `score`, `duel`,
+`player_state`; without that every wave-2 health row would be dropped.
+
+Not in this wave: §3.3 detonations. The module's `dod_grenade_explosion`
+forward fires on `ACT_NADE_PUT` -- the throw, not the burst -- so an
+"exploded" kind would duplicate "tracked". A real detonation signal needs
+module work first.
+
+`selftest-wave2-streams.pl` pins column/writer parity with migration 033,
+the observe/reject dispatch under the health-type name, and the type set.
+
 ### Added - 0.3.19, expansion wave 1 additive fields (migration 032)
 
 Twenty nullable columns on rows that already exist, no new stream and no
