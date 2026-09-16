@@ -52,6 +52,9 @@ my $telemetry = between_markers($source,
 my $health = between_markers($source,
     '# BEGIN KTP CAPTURE HEALTH VALIDATION',
     '# END KTP CAPTURE HEALTH VALIDATION');
+my $wave1 = between_markers($source,
+    '# BEGIN KTP WAVE-1 OPTIONAL FIELD HELPERS',
+    '# END KTP WAVE-1 OPTIONAL FIELD HELPERS');
 
 our (%g_servers, %g_ktpCaptureSequences, %g_ktpAcceptedCaptureManifests,
      $s_addr, @query_rows, @query_batches, $query_count, $insert_count,
@@ -96,7 +99,7 @@ sub execNonQuery {
     return $exec_return;
 }
 
-my $loaded = eval "no strict 'vars';\n$clocks\n$manifest\n$manifest_persistence\n$authorization\n$observation\n$telemetry\n$health\n1;";
+my $loaded = eval "no strict 'vars';\n$clocks\n$manifest\n$manifest_persistence\n$authorization\n$observation\n$telemetry\n$health\n$wave1\n1;";
 die "cannot load shipped telemetry helpers: $@" unless $loaded;
 
 my $capabilities = join(',', qw(frag_context damage position assist life break
