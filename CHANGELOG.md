@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added - 0.3.19, expansion wave 1 additive fields (migration 032)
+
+Twenty nullable columns on rows that already exist, no new stream and no
+schema-contract bump: cap `progress`/`peak_progress`/`timetocap`/
+`round_time_left` on objective attempts; `health_before`/`health_after`/
+`damage_applied` on the damage ledger; per-life `shots`/`shots_hitscan`/
+`first_shot_delay`; `round_time_left` on flag state; the flag entity's
+`default_owner`/`points_for_cap`/`team_points`/`timetocap`/`identity_resolved`
+on `ktp_flag_positions` (refreshed on the upsert path too); and
+`k_yaw`/`k_pitch`/`v_yaw`/`v_pitch` on `hlstats_Events_Frags`.
+
+Every field is optional on the wire. A producer older than KTPAMXX 1.21.0
+omits them, a garbled marker sends junk, and the producer's own "no value"
+sentinels (progress -1, first_shot_delay -1, angle -999) all land as NULL --
+never 0, which is a real measurement on each of these. The frag-context angles
+are floats and deliberately sit outside the integer-only certification spec,
+so an unreadable angle never withholds `frag_context_certified` from a row
+whose integer context is complete. `selftest-wave1-additive-fields.pl` pins
+the NULL mapping and that every migrated column has a writer.
+
+Deploy order is the usual one: migration 032, then this daemon, then the
+1.21.0 plugin. The daemon tolerates either plugin; the old daemon against the
+new plugin simply ignores the extra properties.
+
 ### Added - 0.3.18, the shooter's stance and movement group (migration 031)
 
 `shooter_flags` (FL_ONGROUND/FL_DUCKING/IN_ATTACK2), `shooter_punch_pitch`/

@@ -3147,6 +3147,10 @@ while ($loop = &getLine()) {
 									v_clip = ".$fc_context{'v_clip'}.",
 									v_ammo = ".$fc_context{'v_ammo'}.",
 									is_last_flag_defense = ".$fc_context{'is_last_flag_defense'}.",
+									k_yaw = ".ktpAngleOrNull($ev_properties_hash{'k_yaw'}).",
+									k_pitch = ".ktpAngleOrNull($ev_properties_hash{'k_pitch'}).",
+									v_yaw = ".ktpAngleOrNull($ev_properties_hash{'v_yaw'}).",
+									v_pitch = ".ktpAngleOrNull($ev_properties_hash{'v_pitch'}).",
 									frag_context_recorded = 1,
 									frag_context_certified = ".$fc_certified."
 									$fc_pos_sql
@@ -3195,7 +3199,10 @@ while ($loop = &getLine()) {
 								$ev_properties_hash{"event_epoch"},
 								$ev_properties_hash{"matchid"},
 								$ev_properties_hash{"half"},
-								$ev_properties_hash{"sequence"}
+								$ev_properties_hash{"sequence"},
+								$ev_properties_hash{"health_before"},
+								$ev_properties_hash{"health_after"},
+								$ev_properties_hash{"damage_applied"}
 							);
 							ktpRejectCaptureMarker("damage", \%ev_properties_hash, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -3635,7 +3642,10 @@ while ($loop = &getLine()) {
 								$ev_properties{"round_live"},
 								$ev_properties{"game_time"},
 								$ev_properties{"event_epoch"},
-								$ev_properties{"sequence"}
+								$ev_properties{"sequence"},
+								$ev_properties{"shots"},
+								$ev_properties{"shots_hitscan"},
+								$ev_properties{"first_shot_delay"}
 							);
 							ktpRejectCaptureMarker("life", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -4452,7 +4462,12 @@ while ($loop = &getLine()) {
 				$ev_properties{"matchid"},
 				$ev_properties{"half"},
 				$ev_properties{"sequence"},
-				$ev_properties{"event_epoch"}
+				$ev_properties{"event_epoch"},
+				$ev_properties{"default_owner"},
+				$ev_properties{"points_for_cap"},
+				$ev_properties{"team_points"},
+				$ev_properties{"timetocap"},
+				$ev_properties{"identity_resolved"}
 			);
 			ktpRejectCaptureMarker("flag_position", \%ev_properties, 0)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -4475,7 +4490,8 @@ while ($loop = &getLine()) {
 				$ev_properties{"matchid"},
 				$ev_properties{"half"},
 				$ev_properties{"sequence"},
-				$ev_properties{"event_epoch"}
+				$ev_properties{"event_epoch"},
+				$ev_properties{"round_time_left"}
 			);
 			ktpRejectCaptureMarker("flag_state", \%ev_properties, 0)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -5059,7 +5075,8 @@ sub ktpDrainPendingLife
 			my $status = doEvent_KTPLifeBoundary(
 				$player_id, $identity->{userid}, $p->{matchid}, $p->{half},
 				$p->{kind}, $p->{reason}, $p->{team}, $p->{class}, $p->{slot},
-				$p->{round_live}, $p->{game_time}, $p->{event_epoch}, $p->{sequence});
+				$p->{round_live}, $p->{game_time}, $p->{event_epoch}, $p->{sequence},
+				$p->{shots}, $p->{shots_hitscan}, $p->{first_shot_delay});
 			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
 				ktpRejectCaptureMarker("life", $p, 0);
 			} else {
@@ -5122,7 +5139,7 @@ sub ktpDrainPendingDamage
 				$attacker_id, $victim_id, $pending->{weapon},
 				$p->{damage} // 0, $p->{damage_capped} // 0, $p->{hitplace} // 0,
 				$p->{game_time} // 0, $p->{event_epoch}, $p->{matchid}, $p->{half},
-				$p->{sequence});
+				$p->{sequence}, $p->{health_before}, $p->{health_after}, $p->{damage_applied});
 			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
 				ktpRejectCaptureMarker("damage", $p, 0);
 			} else {
@@ -5570,6 +5587,34 @@ sub ktpRejectUnobservedCaptureMarker
 }
 # END KTP CAPTURE SEQUENCE OBSERVATION
 
+# BEGIN KTP WAVE-1 OPTIONAL FIELD HELPERS
+# Wave 1 (ENGINE_STATS_EXPANSION_PLAN_20260909.md) adds optional numeric fields
+# to existing streams. A pre-wave-1 producer omits them and a garbled marker
+# sends junk; both land as NULL. Never a fabricated 0 -- 0 is a real value for
+# every one of these (0 % progress, 0 shots, heading 0).
+sub ktpIntOrNull {
+	my ($v) = @_;
+	return (defined($v) && $v =~ /^-?\d+\z/) ? int($v) : "NULL";
+}
+sub ktpNumOrNull {
+	my ($v) = @_;
+	return (defined($v) && $v =~ /^-?\d+(?:\.\d+)?\z/) ? ($v + 0) : "NULL";
+}
+# Producer sentinels for "no value" (cap progress -1 = no timer, first_shot_delay
+# -1 = never fired) are stored as NULL, not as a negative that averages wrong.
+sub ktpNonNegOrNull {
+	my ($v) = @_;
+	my $n = ktpNumOrNull($v);
+	return ($n eq "NULL" || $n < 0) ? "NULL" : $n;
+}
+# Angles: -999 is the producer's own "unreadable" sentinel, stored as NULL.
+sub ktpAngleOrNull {
+	my ($v) = @_;
+	my $n = ktpNumOrNull($v);
+	return ($n eq "NULL" || $n <= -999) ? "NULL" : $n;
+}
+# END KTP WAVE-1 OPTIONAL FIELD HELPERS
+
 # BEGIN KTP CAPTURE MANIFEST VALIDATION
 sub ktpValidateCaptureManifestPayload
 {
@@ -5935,7 +5980,8 @@ sub doEvent_KTPObjectiveAttempt
 		INSERT INTO ktp_objective_attempt_events
 			(server_id, match_id, half, map_name, attempt_id, event_kind,
 			 lifecycle_slot, flag_index, flag_name, capturing_team, owner_before,
-			 allies_in_zone, axis_in_zone, stop_reason, game_time, event_epoch,
+			 allies_in_zone, axis_in_zone, stop_reason, progress, peak_progress,
+			 timetocap, round_time_left, game_time, event_epoch,
 			 producer_sequence, event_time)
 		VALUES
 			(".int($server_id).", '".&quoteSQL($p->{matchid})."', ".int($half).",
@@ -5944,6 +5990,8 @@ sub doEvent_KTPObjectiveAttempt
 			 '".&quoteSQL($p->{flag_name})."', ".int($p->{capturing_team}).",
 			 ".int($p->{owner_before}).", ".int($p->{allies_in_zone}).",
 			 ".int($p->{axis_in_zone}).", $stop_reason_sql,
+			 ".ktpNonNegOrNull($p->{progress}).", ".ktpNonNegOrNull($p->{peak_progress}).",
+			 ".ktpNumOrNull($p->{timetocap}).", ".ktpNumOrNull($p->{round_time_left}).",
 			 ".sprintf("%.2f", $p->{game_time} + 0).", ".int($p->{event_epoch}).",
 			 ".int($p->{sequence}).", FROM_UNIXTIME(".int($p->{event_epoch})."))
 	");
@@ -6188,7 +6236,7 @@ sub doEvent_KTPLifeBoundary
 {
 	my ($player_id, $engine_userid, $matchid, $producer_half, $kind, $reason, $team,
 		$player_class, $player_slot, $round_live, $game_time, $event_epoch,
-		$producer_sequence) = @_;
+		$producer_sequence, $shots, $shots_hitscan, $first_shot_delay) = @_;
 
 	my $validation_error = ktpValidateLifeBoundaryPayload(
 		$matchid, $producer_half, $kind, $reason, $team, $player_class, $player_slot,
@@ -6233,12 +6281,14 @@ sub doEvent_KTPLifeBoundary
 		INSERT IGNORE INTO ktp_life_events
 			(server_id, match_id, half, map_name, player_id, player_slot,
 			 engine_userid, boundary_kind, reason, team, player_class,
-			 round_live, game_time, event_epoch, producer_sequence, event_time)
+			 round_live, shots, shots_hitscan, first_shot_delay,
+			 game_time, event_epoch, producer_sequence, event_time)
 		VALUES
 			(".int($server_id).", '".&quoteSQL($matchid)."', ".int($half).",
 			 '".&quoteSQL($map)."', ".int($player_id).", $slot_sql,
 			 $userid_sql, '".&quoteSQL($kind)."', '".&quoteSQL($reason)."',
 			 ".int($team).", $class_sql, $round_live_sql,
+			 ".ktpIntOrNull($shots).", ".ktpIntOrNull($shots_hitscan).", ".ktpNonNegOrNull($first_shot_delay).",
 			 $normalized_game_time, $event_epoch, ".int($producer_sequence // 0).",
 			 FROM_UNIXTIME($event_epoch))
 	");
@@ -6394,9 +6444,11 @@ sub doEvent_KTPDamage
 	# since that machinery is config-driven around the stock event set and
 	# this is a standalone KTP table. Same shape as doEvent_KTPMatchStart:
 	# direct execNonQuery, not a queue.
+	# Wave 1 trailing health_before/health_after/damage_applied are optional:
+	# NULL when a pre-wave-1 producer omits them, never a fabricated 0.
 	my ($attacker_id, $victim_id, $weapon, $damage, $damage_capped, $hitplace,
 		$game_time, $event_epoch, $producer_matchid, $producer_half,
-		$producer_sequence) = @_;
+		$producer_sequence, $health_before, $health_after, $damage_applied) = @_;
 
 	return 0 if (!defined($attacker_id) || !defined($victim_id));
 
@@ -6443,12 +6495,14 @@ sub doEvent_KTPDamage
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_damage_events
 			(server_id, match_id, half, attacker_id, victim_id, weapon,
-			 damage, damage_capped, hitplace, producer_match_id, producer_half,
+			 damage, damage_capped, hitplace, health_before, health_after,
+			 damage_applied, producer_match_id, producer_half,
 			 producer_sequence, game_time, event_epoch, event_time)
 		VALUES
 			($server_id, $match_id_sql, $half, $attacker_id, $victim_id,
 			 '".quoteSQL($weapon)."', ".int($damage).", ".int($damage_capped).",
-			 ".int($hitplace).", $producer_match_sql, $producer_half_sql,
+			 ".int($hitplace).", ".ktpIntOrNull($health_before).", ".ktpIntOrNull($health_after).",
+			 ".ktpIntOrNull($damage_applied).", $producer_match_sql, $producer_half_sql,
 			 ".int($producer_sequence // 0).",
 			 ".($game_time + 0).", $event_epoch_sql, $event_time_sql)
 	");
@@ -6808,7 +6862,14 @@ sub doEvent_KTPFlagPosition
 	# Fires once per map load (controlpoints_init), including warmup and
 	# halftime reloads -- harmless, this is idempotent on the unique key.
 	my ($map, $flag_index, $flag_name, $x, $y, $matchid, $half,
-		$producer_sequence, $event_epoch) = @_;
+		$producer_sequence, $event_epoch,
+		$default_owner, $points_for_cap, $team_points, $timetocap, $identity_resolved) = @_;
+	# Wave 1 static flag metadata; NULL from a pre-wave-1 producer.
+	my $meta_set = "default_owner = ".ktpIntOrNull($default_owner).",
+			points_for_cap = ".ktpIntOrNull($points_for_cap).",
+			team_points = ".ktpIntOrNull($team_points).",
+			timetocap = ".ktpNumOrNull($timetocap).",
+			identity_resolved = ".ktpIntOrNull($identity_resolved);
 
 	return 0 if (!defined($map) || $map eq "" || !defined($flag_index));
 
@@ -6817,10 +6878,14 @@ sub doEvent_KTPFlagPosition
 	my $rv = &execNonQuery("
 		INSERT INTO ktp_flag_positions
 			(server_id, map_name, flag_index, flag_name, origin_x, origin_y,
+			 default_owner, points_for_cap, team_points, timetocap, identity_resolved,
 			 last_match_id, last_half, last_producer_sequence, last_event_epoch)
 		VALUES
 			($server_id, '".quoteSQL($map)."', ".int($flag_index).",
 			 '".quoteSQL($flag_name)."', ".int($x // 0).", ".int($y // 0).",
+			 ".ktpIntOrNull($default_owner).", ".ktpIntOrNull($points_for_cap).",
+			 ".ktpIntOrNull($team_points).", ".ktpNumOrNull($timetocap).",
+			 ".ktpIntOrNull($identity_resolved).",
 			 ".(ktpHasExplicitProducerContext($matchid) ? "'".quoteSQL($matchid)."'" : "NULL").",
 			 ".int($half // 0).", ".int($producer_sequence // 0).",
 			 ".int($event_epoch // 0)."
@@ -6829,6 +6894,7 @@ sub doEvent_KTPFlagPosition
 			flag_name = '".quoteSQL($flag_name)."',
 			origin_x = ".int($x // 0).",
 			origin_y = ".int($y // 0).",
+			$meta_set,
 			last_match_id = ".(ktpHasExplicitProducerContext($matchid) ? "'".quoteSQL($matchid)."'" : "NULL").",
 			last_half = ".int($half // 0).",
 			last_producer_sequence = ".int($producer_sequence // 0).",
@@ -6842,7 +6908,8 @@ sub doEvent_KTPFlagPosition
 sub doEvent_KTPFlagState
 {
 	my ($map, $flag_index, $flag_name, $owner, $initial, $game_time,
-		$explicit_matchid, $explicit_half, $producer_sequence, $event_epoch) = @_;
+		$explicit_matchid, $explicit_half, $producer_sequence, $event_epoch,
+		$round_time_left) = @_;
 
 	return "Flag state dropped: missing map or flag index"
 		if (!defined($map) || $map eq "" || !defined($flag_index));
@@ -6869,11 +6936,12 @@ sub doEvent_KTPFlagState
 	my $rv = &execNonQuery("
 		INSERT IGNORE INTO ktp_flag_state_events
 			(server_id, match_id, half, map_name, flag_index, flag_name,
-			 owner_team, is_initial, game_time, producer_sequence, event_epoch, event_time)
+			 owner_team, is_initial, game_time, round_time_left,
+			 producer_sequence, event_epoch, event_time)
 		VALUES
 			($server_id, '".quoteSQL($match_id)."', ".int($half).",
 			 '".quoteSQL($map)."', ".int($flag_index).", $flag_sql,
-			 ".int($owner).", $initial_sql, $game_time_sql,
+			 ".int($owner).", $initial_sql, $game_time_sql, ".ktpNumOrNull($round_time_left).",
 			 ".int($producer_sequence // 0).", ".int($event_epoch // 0).",
 			 FROM_UNIXTIME(".int($event_epoch // 0)."))
 	");
