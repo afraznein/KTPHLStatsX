@@ -11,6 +11,7 @@ my $SCRIPT_DIR = $0;
 $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION33 = $SCRIPT_DIR . '../sql/migrate_033_wave2_streams.sql';
+my $MIGRATION34 = $SCRIPT_DIR . '../sql/migrate_034_grenade_throw_events.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -23,7 +24,7 @@ sub slurp {
 
 my $source = slurp($SRC);
 $source =~ s/\r//g;
-my $mig = slurp($MIGRATION33);
+my $mig = slurp($MIGRATION33) . slurp($MIGRATION34);
 $mig =~ s/\r//g;
 
 my %created;
@@ -37,13 +38,14 @@ while ($mig =~ /CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE/sg) {
         $created{$table}{$col} = $defaulted;
     }
 }
-is_deeply([sort keys %created], [qw(ktp_duel_stats ktp_player_state_events ktp_score_events)],
-    "migration creates the three wave-2 tables");
+is_deeply([sort keys %created], [qw(ktp_duel_stats ktp_grenade_throw_events ktp_player_state_events ktp_score_events)],
+    "migrations 033+034 create the four tables");
 
 my %stream = (
     ktp_score_events        => ["score",        "KTP_SCORE_EVENT"],
     ktp_duel_stats          => ["duel",         "KTP_DUEL"],
     ktp_player_state_events => ["player_state", "KTP_PLAYER_STATE"],
+    ktp_grenade_throw_events => ["grenade_throw", "KTP_GRENADE_THROW"],
 );
 for my $table (sort keys %stream) {
     my ($type, $marker) = @{$stream{$table}};
@@ -68,7 +70,7 @@ for my $table (sort keys %stream) {
 # health row is dropped as "unknown event type".
 my ($allowed) = $source =~ /my %allowed = map \{ \$_ => 1 \} qw\(([^)]*)\)/
     or die "health allowed set not found";
-for my $type (qw(score duel player_state)) {
+for my $type (qw(score duel player_state grenade_throw)) {
     like($allowed, qr/\b\Q$type\E\b/, "capture health accepts '$type'");
 }
 

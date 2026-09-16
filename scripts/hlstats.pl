@@ -4518,6 +4518,17 @@ while ($loop = &getLine()) {
 			ktpRejectCaptureMarker("player_state", \%ev_properties,
 				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+		} elsif ($s_output =~ /^KTP_GRENADE_THROW\s+(.*)$/) {
+			# KTP: the throw. The lifecycle tracker's "tracked" row is already the
+			# burst (Detonate's own TraceLine), so throw -> tracked is flight time.
+			$ev_properties = $1;
+			%ev_properties = &getProperties($ev_properties);
+			$ev_type = 619;  # KTP grenade-throw marker
+			ktpObserveCaptureMarker("grenade_throw", \%ev_properties);
+			$ev_status = &doEvent_KTPGrenadeThrow(\%ev_properties);
+			ktpRejectCaptureMarker("grenade_throw", \%ev_properties,
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_DUEL\s+(.*)$/) {
 			# KTP wave 2 (§3.5): per-(attacker, victim) dodx vstats delta for one
 			# half, emitted in a burst at half close. No game_time on the wire.
@@ -6134,7 +6145,7 @@ sub ktpValidateCaptureHealthPayload
 	# whitelists and missed here, which would have left the highest-volume new
 	# stream with no drop detection at all -- and the wave-0 canary reads this
 	# table, per stream, to decide whether the rollout is safe.
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -7111,6 +7122,35 @@ sub doEvent_KTPDuel
 	");
 	return "Duel SQL failed" if (!defined($rv));
 	return "Duel logged: attacker=$attacker_id victim=$victim_id kills=$p->{kills}";
+}
+sub doEvent_KTPGrenadeThrow
+{
+	my ($p) = @_;
+	my $error = ktpWave2Context("grenade_throw", $p, qw(matchid half map player weapon_id
+		weapon_type position yaw pitch game_time event_epoch sequence));
+	return "Grenade throw dropped: $error" if ($error ne "");
+	return "Grenade throw dropped: invalid weapon_type"
+		if ($p->{weapon_type} !~ /^(?:handgrenade|stickgrenade|mills_bomb|handgrenade_ex|stickgrenade_ex)$/);
+	my ($player_id, $userid) = ktpWave2Player("grenade_throw", $p, "player");
+	return "Grenade throw dropped: player identity unresolved" if (!$player_id);
+	my ($x, $y, $z) = ("NULL", "NULL", "NULL");
+	($x, $y, $z) = (int($1), int($2), int($3))
+		if ($p->{position} =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/);
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_grenade_throw_events
+			(server_id, match_id, half, map_name, player_id, engine_userid,
+			 weapon_id, weapon_type, pos_x, pos_y, pos_z, yaw, pitch, game_time,
+			 event_epoch, producer_sequence, event_time)
+		VALUES
+			(".int($g_servers{$s_addr}->{'id'}).", '".quoteSQL($p->{matchid})."', ".int($p->{_half}).",
+			 '".quoteSQL($p->{_map})."', ".int($player_id).", ".int($userid).",
+			 ".int($p->{weapon_id}).", '".quoteSQL($p->{weapon_type})."', $x, $y, $z,
+			 ".ktpAngleOrNull($p->{yaw}).", ".ktpAngleOrNull($p->{pitch}).",
+			 ".sprintf("%.2f", $p->{game_time} + 0).", ".int($p->{event_epoch}).",
+			 ".int($p->{sequence}).", FROM_UNIXTIME(".int($p->{event_epoch})."))
+	");
+	return "Grenade throw SQL failed" if (!defined($rv));
+	return "Grenade throw logged: player=$player_id weapon=$p->{weapon_type}";
 }
 # END KTP WAVE-2 STREAMS
 
