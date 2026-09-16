@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added - 0.3.21, grenade throw events (migration 034)
+
+`ktp_grenade_throw_events` from `KTP_GRENADE_THROW` (KTPAMXX 1.23.0): the
+throw, with the thrower's position and view angles. The burst was never
+missing -- `ktp_grenade_entity_events` kind `tracked` fires from Detonate's
+own TraceLine -- so throw -> tracked is flight time and cook time is the fuse
+minus that. The producer reads the throw off AmmoX because no module forward
+fires at the throw. Same handler shape and dedup key as the wave 2 streams;
+health type `grenade_throw` added. The daemon does not correlate throw to
+burst; the migration header gives analytics the join rule.
+
 ### Added - 0.3.20, expansion wave 2 streams (migration 033)
 
 Three new low-volume streams from KTPAMXX 1.22.0, each its own table and its
