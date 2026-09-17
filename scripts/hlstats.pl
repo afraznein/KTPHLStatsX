@@ -5428,10 +5428,21 @@ sub ktpParseCaptureMarkerEnvelope
 	my @legacy_manifest = qw(matchid half map producer producer_version schema
 		capabilities position_interval buffer_entries life_buffer_entries
 		sequence event_epoch);
+	# Wave 1 (KTPAMXX 1.21.0, migration 032) widened the attempt marker by four
+	# fields after stop_reason. Both shapes are exact and both are accepted;
+	# a shape is a producer version, not a free-form key set. The first full
+	# Lane B on the merged heads (run 35182281925) dropped every attempt
+	# because only the pre-wave-1 shape was listed here.
+	my @wave1_attempt = qw(kind matchid half map attempt_id flag_index
+		flag_name capturing_team owner_before allies_in_zone axis_in_zone
+		stop_reason progress peak_progress timetocap round_time_left game_time
+		event_epoch sequence);
 	my $key_shape = join("\x1f", @keys);
 	my $shape_ok = $key_shape eq join("\x1f", @{$expected{$marker}});
 	$shape_ok = 1 if ($marker eq "manifest" &&
 		$key_shape eq join("\x1f", @legacy_manifest));
+	$shape_ok = 1 if ($marker eq "objective_attempt" &&
+		$key_shape eq join("\x1f", @wave1_attempt));
 	return (undef, "marker field order/schema mismatch") if (!$shape_ok);
 	return (\%properties, "");
 }

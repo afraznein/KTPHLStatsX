@@ -188,6 +188,26 @@ like($order_error, qr/order\/schema/, 'out-of-order fields fail exact grammar');
     'manifest', $manifest_wire . ' forged-tail');
 like($grammar_error, qr/grammar/, 'trailing forged bytes fail exact grammar');
 
+# Both attempt shapes are exact: pre-wave-1 (1.20.x) and wave 1 (1.21.0+,
+# four fields after stop_reason). Lane B run 35182281925 dropped every
+# attempt from a 1.21.0 producer because only the first was listed.
+my $attempt_head = '(kind "start") (matchid "telemetry-TEST") (half "1") (map "dod_anzio") '
+    . '(attempt_id "7") (flag_index "2") (flag_name "flag_2") (capturing_team "1") '
+    . '(owner_before "2") (allies_in_zone "1") (axis_in_zone "0") (stop_reason "-")';
+my $attempt_tail = ' (game_time "12.50") (event_epoch "1700000010") (sequence "7")';
+my ($attempt_old, $attempt_old_error) = ktpParseCaptureMarkerEnvelope(
+    'objective_attempt', $attempt_head . $attempt_tail);
+is($attempt_old_error, '', 'pre-wave-1 attempt shape parses');
+my ($attempt_w1, $attempt_w1_error) = ktpParseCaptureMarkerEnvelope(
+    'objective_attempt',
+    $attempt_head . ' (progress "40") (peak_progress "40") (timetocap "10.0") (round_time_left "301.5")'
+    . $attempt_tail);
+is($attempt_w1_error, '', 'wave-1 attempt shape (progress..round_time_left) parses');
+is($attempt_w1->{peak_progress}, '40', 'wave-1 attempt fields are preserved');
+(undef, my $attempt_partial_error) = ktpParseCaptureMarkerEnvelope(
+    'objective_attempt', $attempt_head . ' (progress "40")' . $attempt_tail);
+like($attempt_partial_error, qr/order\/schema/, 'a half-widened attempt is still not a shape');
+
 %g_ktpCaptureSequences = ();
 %g_ktpAcceptedCaptureManifests = ();
 for my $n (1 .. 1000) {
