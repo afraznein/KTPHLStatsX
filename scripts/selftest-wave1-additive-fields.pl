@@ -46,6 +46,17 @@ is(ktpAngleOrNull("0.0"),    0,      "angle: 0.0 kept");
 
 # Every column the migration adds is one the daemon writes, per table.
 my $mig = slurp($MIGRATION32);
+
+# Each ADD COLUMN lives inside a single-quoted SQL literal that is PREPAREd
+# later, so an apostrophe in a COMMENT needs four quotes, not two. One stray
+# quote broke the ktp_flag_positions ALTER on Lane B (run 35181701156).
+while ($mig =~ /'(ADD COLUMN .*?)', NULL\)/g) {
+    my $raw = $1;
+    (my $ddl = $raw) =~ s/''/'/g;   # what PREPARE actually sees
+    my $quotes = () = $ddl =~ /'/g;
+    ok($quotes == 0 || $quotes == 2,
+        "COMMENT has no inner apostrophe in: " . substr($raw, 0, 60));
+}
 my %added;
 while ($mig =~ /TABLE_NAME='(\w+)' AND COLUMN_NAME='(\w+)'\), 'ADD COLUMN \2 /g) {
     push(@{$added{$1}}, $2);

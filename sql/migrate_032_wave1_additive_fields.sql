@@ -53,7 +53,7 @@ SET @clauses := CONCAT_WS(', ',
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='default_owner'), 'ADD COLUMN default_owner TINYINT DEFAULT NULL COMMENT ''CP_default_owner from the map entity (0 neutral, 1 allies, 2 axis)''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='points_for_cap'), 'ADD COLUMN points_for_cap TINYINT DEFAULT NULL COMMENT ''CP_points_for_cap''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='team_points'), 'ADD COLUMN team_points TINYINT DEFAULT NULL COMMENT ''CP_team_points''', NULL),
-    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='timetocap'), 'ADD COLUMN timetocap DECIMAL(6,1) DEFAULT NULL COMMENT ''CA_timetocap seconds for this flag''s capture area''', NULL),
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='timetocap'), 'ADD COLUMN timetocap DECIMAL(6,1) DEFAULT NULL COMMENT ''CA_timetocap seconds for the capture area of this flag''', NULL),
     IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_flag_positions' AND COLUMN_NAME='identity_resolved'), 'ADD COLUMN identity_resolved TINYINT DEFAULT NULL COMMENT ''dodx_cp_identity_resolved() at controlpoints_init''', NULL)
 );
 SET @ddl := IF(@clauses IS NULL OR @clauses = '', 'DO 0', CONCAT('ALTER TABLE ktp_flag_positions ', @clauses));
