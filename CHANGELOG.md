@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added - 0.3.21, grenade throw events (migration 034)
+
+`ktp_grenade_throw_events` from `KTP_GRENADE_THROW` (KTPAMXX 1.23.0): the
+throw, with the thrower's position and view angles. The burst was never
+missing -- `ktp_grenade_entity_events` kind `tracked` fires from Detonate's
+own TraceLine -- so throw -> tracked is flight time and cook time is the fuse
+minus that. The producer reads the throw off AmmoX because no module forward
+fires at the throw. Same handler shape and dedup key as the wave 2 streams;
+health type `grenade_throw` added. The daemon does not correlate throw to
+burst; the migration header gives analytics the join rule.
+
 ### Added - 0.3.20, expansion wave 2 streams (migration 033)
 
 Three new low-volume streams from KTPAMXX 1.22.0, each its own table and its
@@ -20,10 +31,13 @@ on `(server, match, half, producer_sequence)`, the migration-028 dedup
 contract. The health validator's type set gains `score`, `duel`,
 `player_state`; without that every wave-2 health row would be dropped.
 
-Not in this wave: §3.3 detonations. The module's `dod_grenade_explosion`
-forward fires on `ACT_NADE_PUT` -- the throw, not the burst -- so an
-"exploded" kind would duplicate "tracked". A real detonation signal needs
-module work first.
+Not in this wave: §3.3 detonations -- they are already captured. The
+TraceLine that fires `dod_grenade_explosion` and the `tracked` lifecycle row
+is `CGrenade::Detonate`'s own trace: production shows `tracked` -> `removed`
+0.00 s apart on 27,827 of 27,830 S10 lifecycles, so `tracked` in
+`ktp_grenade_entity_events` IS the burst, position included. An "exploded"
+kind would duplicate it. What nothing records is the throw (cook time).
+(Corrected 2026-09-16; an earlier version of this paragraph had it backwards.)
 
 `selftest-wave2-streams.pl` pins column/writer parity with migration 033,
 the observe/reject dispatch under the health-type name, and the type set.
