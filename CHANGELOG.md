@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added - hit-registration quality fact table (migration 036, schema only)
+
+`ktp_hitreg_quality`: one row per finished (match, half) with the number the
+2026-09 hitreg investigation ended on -- clean live-enemy trace hits
+(`tgt_dead = 0`, `tgt_team <> shooter_team`, no trace flag) and how many of
+them have a `ktp_damage_events` row for the same attacker/victim within
+300 ms (measured 99.9% on 17 real S10 12-mans). The daemon does not write it;
+KTPInfrastructure's `ktp-data-server-health.sh` computes it once per finished
+half and latches on a trailing 48 h window, so a registration regression
+pages instead of waiting for someone to re-run the analysis. Also adds
+`idx_damage_pair (match_id, attacker_id, victim_id, game_time)` on
+`ktp_damage_events`, INPLACE, which turns that per-shot lookup into a seek.
+Apply before deploying the health script that reads the table.
+
 ### Added - 0.3.23, capture gap repair over rcon (migration 035)
 
 The capture transport loses ~0.1% of markers in transit (measured 2026-09-18
