@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added - 0.3.23, capture gap repair over rcon (migration 035)
+
+The capture transport loses ~0.1% of markers in transit (measured 2026-09-18
+on the schema-24 fleet: `sequence_gap_count == emitted - daemon_received` on
+every stream, no reordering, and this host's socket shows no drops -- the
+loss is on the path from the game servers). The daemon now records the
+missing sequences when a per-type gap opens and asks the producer to re-log
+them: `ktp_capture_resend <stream> <seq,...>` over the rcon session it
+already holds, coalesced per (server, stream), at most one rcon per server
+every 2 s and 32 sequences per command, sent between drain cycles -- GoldSrc
+rcon is two blocking round trips, so never one per gap. A hole wider than
+64 is an outage and is counted, not requested.
+
+A resent line carries `(resent "1")` and is admitted only while its sequence
+is still missing; a late original closes the gap itself and the resend is
+then dropped before dispatch (counted as redundant), so tables with no
+producer-sequence key never double-insert. `ktp_capture_health` gains
+`repaired_count`; `sequence_gap_count` now means gaps still open, so every
+existing invariant and the Lane B check hold unchanged. Producer side:
+KTPAMXX 1.24.0 (retention ring + the server command).
+
+`selftest-capture-gap-repair.pl` drives observe -> request -> repair with a
+fake rcon: coalescing, rate limit, late-original-then-redundant-resend, a
+true duplicate staying a duplicate, and the wide-hole cap.
+
 ### Fixed - 0.3.22: SIGTERM flushes and exits 0 instead of dying in can_read
 
 systemd stops the unit with SIGTERM; the daemon handled SIGINT and SIGHUP
