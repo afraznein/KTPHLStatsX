@@ -40,6 +40,11 @@ no strict 'vars';
 $SIG{HUP} = 'HUP_handler';
 $SIG{INT} = 'INT_handler';  # unix
 $SIG{INT2} = 'INT_handler';  # windows
+# systemd stops the unit with SIGTERM. With no handler Perl died inside
+# IO::Select::can_read and the unit reported status=6/ABRT on every clean
+# restart, firing OnFailure= for a stop that was asked for. Same flush-and-exit
+# path as SIGINT.
+$SIG{TERM} = 'INT_handler';
 
 ##
 ## Settings
@@ -7537,7 +7542,8 @@ sub doEvent_KTPHalfEnd
 
 sub INT_handler
 {
-	print "SIGINT received. Flushing data and shutting down...\n";
+	my ($signal) = @_;
+	print "SIG".($signal // "INT")." received. Flushing data and shutting down...\n";
 	flushAll(1);
 	exit(0);
 }
