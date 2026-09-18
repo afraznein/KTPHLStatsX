@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed - 0.3.22: SIGTERM flushes and exits 0 instead of dying in can_read
+
+systemd stops the unit with SIGTERM; the daemon handled SIGINT and SIGHUP
+only, so every clean restart died inside `IO::Select::can_read` with
+`status=6/ABRT` and fired `OnFailure=` for a stop that was asked for
+(observed on the 2026-09-17 deploys). `$SIG{TERM}` now takes the same
+flush-and-exit path as SIGINT; the message names the signal it got. Verified
+with a forked probe blocked in `can_read`: TERM -> flush -> exit 0.
+
 ### Added - 0.3.21, grenade throw events (migration 034)
 
 `ktp_grenade_throw_events` from `KTP_GRENADE_THROW` (KTPAMXX 1.23.0): the
