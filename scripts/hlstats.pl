@@ -2606,6 +2606,15 @@ while ($loop = &getLine()) {
 			next;
 		}
 		
+		# Resent markers (gap repair): admit only while the gap is open.
+		if ($s_output =~ /\(resent "1"\)/) {
+			if (ktpResentLineIsRedundant($s_output)) {
+				$g_ktpResendRedundant++;
+				next;
+			}
+			$s_output =~ s/ ?\(resent "1"\)//;
+		}
+
 		# KTP DEBUG: Trace all lines containing KTP_MATCH
 		if ($s_output =~ /KTP_MATCH/) {
 			&printEvent("KTP_DEBUG", "RAW LINE RECEIVED: '$s_output'", 1);
@@ -4775,6 +4784,8 @@ EOT
 	}
 	} # end per-packet for loop
 
+	ktpFlushResendRequests() if (!$g_stdin);
+
 	while( my($server) = each(%g_servers))
 	{	
 		if($g_servers{$server}->{next_timeout}<$ev_daemontime)
@@ -5599,11 +5610,22 @@ sub ktpObserveCaptureMarker
 		});
 		if (!defined($slot->{first})) {
 			$slot->{first} = $seq;
-			$slot->{gaps} += $seq - 1 if ($seq > 1);
+			if ($seq > 1) {
+				$slot->{gaps} += $seq - 1;
+				ktpNoteMissingSequences($slot, $marker, $matchid, $half, 1, $seq - 1);
+			}
 			$slot->{last} = $seq;
 		} elsif ($seq > $slot->{last}) {
 			$slot->{gaps} += $seq - $slot->{last} - 1;
+			ktpNoteMissingSequences($slot, $marker, $matchid, $half,
+				$slot->{last} + 1, $seq - 1);
 			$slot->{last} = $seq;
+		} elsif (delete(($slot->{missing} ||= {})->{$seq})) {
+			# A sequence we had asked the producer to resend (or a late
+			# original of one). The gap is closed; the marker is data, not a
+			# duplicate, and dispatch handles it normally.
+			$slot->{gaps}-- if ($slot->{gaps} > 0);
+			$slot->{repaired}++;
 		} else {
 			$slot->{duplicate_or_reordered}++;
 		}
@@ -5646,6 +5668,100 @@ sub ktpRejectUnobservedCaptureMarker
 			($state->{correlation_failures}{$marker} || 0) + 1;
 	}
 }
+# BEGIN KTP CAPTURE GAP REPAIR
+# The transport is one-way UDP over the public internet and loses ~0.1% of
+# markers (measured 2026-09-18 on schema-24 servers: gaps == lost, no
+# reorder, no kernel drops on this host). The producer keeps a short
+# retention ring of what it emitted; when a per-type sequence gap appears
+# the daemon asks for the missing sequences over the rcon session it already
+# holds, coalesced per (server, stream) and rate-limited, never one rcon per
+# gap: GoldSrc rcon is two blocking round trips.
+our %g_ktpResendQueue;      # $s_addr -> marker -> { matchid, half, seqs => {seq => 1} }
+our %g_ktpResendLastSent;   # $s_addr -> epoch of last rcon sent
+our $KTP_RESEND_MAX_PER_GAP = 64;      # a wider hole is an outage, not loss
+our $KTP_RESEND_MAX_MISSING = 256;     # per stream slot
+our $KTP_RESEND_MAX_PER_CMD = 32;      # sequences per rcon command
+our $KTP_RESEND_MIN_INTERVAL = 2;      # seconds between rcon calls per server
+
+sub ktpNoteMissingSequences
+{
+	my ($slot, $marker, $matchid, $half, $from, $to) = @_;
+	return if ($to < $from || $to - $from + 1 > $KTP_RESEND_MAX_PER_GAP);
+	my $missing = ($slot->{missing} ||= {});
+	return if (scalar(keys %{$missing}) >= $KTP_RESEND_MAX_MISSING);
+	my $queue = ($g_ktpResendQueue{$s_addr}{$marker} ||=
+		{ matchid => $matchid, half => int($half), seqs => {} });
+	# A new half supersedes anything still queued for the old one.
+	if ($queue->{matchid} ne $matchid || $queue->{half} != int($half)) {
+		%{$queue} = (matchid => $matchid, half => int($half), seqs => {});
+	}
+	for my $seq ($from .. $to) {
+		$missing->{$seq} = 1;
+		$queue->{seqs}{$seq} = 1;
+	}
+}
+
+# Called once per drain cycle from the main loop, after the packets are
+# processed. One rcon per server per cycle at most, one command per stream.
+sub ktpFlushResendRequests
+{
+	my $now = time();
+	for my $addr (keys %g_ktpResendQueue) {
+		my $streams = $g_ktpResendQueue{$addr};
+		next if (!scalar(keys %{$streams}));
+		next if (($g_ktpResendLastSent{$addr} || 0) + $KTP_RESEND_MIN_INTERVAL > $now);
+		my $server = $g_servers{$addr};
+		if (!$server || !$server->{rcon_obj}) {
+			delete $g_ktpResendQueue{$addr};
+			next;
+		}
+		for my $marker (keys %{$streams}) {
+			my $queue = $streams->{$marker};
+			my @seqs = sort { $a <=> $b } keys %{$queue->{seqs}};
+			next if (!@seqs);
+			my @batch = splice(@seqs, 0, $KTP_RESEND_MAX_PER_CMD);
+			delete @{$queue->{seqs}}{@batch};
+			$server->dorcon("ktp_capture_resend $marker " . join(",", @batch));
+			delete $streams->{$marker} if (!scalar(keys %{$queue->{seqs}}));
+		}
+		$g_ktpResendLastSent{$addr} = $now;
+		delete $g_ktpResendQueue{$addr} if (!scalar(keys %{$streams}));
+	}
+}
+
+# A resent line carries (resent "1"). It is admitted only while its sequence
+# is still missing; a late original that already closed the gap makes the
+# resend redundant, and handling it would double-insert on tables with no
+# producer-sequence key. Returns 1 when the line must be dropped.
+sub ktpResentLineIsRedundant
+{
+	my ($line) = @_;
+	return 0 if ($line !~ /\(resent "1"\)/);
+	my ($matchid) = $line =~ /\(matchid "([^"]*)"\)/;
+	my ($half) = $line =~ /\(half "(\d+)"\)/;
+	my ($seq) = $line =~ /\(sequence "(\d+)"\)/;
+	return 1 if (!defined($matchid) || !defined($half) || !defined($seq));
+	my $marker;
+	if ($line =~ /^KTP_([A-Z_]+) /) {
+		my %by_prefix = (OBJECTIVE_ATTEMPT => "objective_attempt",
+			GRENADE_ENTITY => "grenade_entity", FLAG_POSITION => "flag_position",
+			FLAG_STATE => "flag_state", SCORE_EVENT => "score", DUEL => "duel",
+			PLAYER_STATE => "player_state", GRENADE_THROW => "grenade_throw");
+		$marker = $by_prefix{$1};
+	} elsif ($line =~ /triggered "([a-z_]+)"/) {
+		my %by_trigger = (damage => "damage", life_boundary => "life",
+			position_sample => "position", frag_context => "frag", assist => "assist",
+			cap_break => "break", break_context => "break",
+			team_membership => "team_membership", shot => "shot");
+		$marker = $by_trigger{$1};
+	}
+	return 1 if (!defined($marker));
+	my $key = join("\x1e", $s_addr, $matchid, int($half));
+	my $slot = (($g_ktpCaptureSequences{$key} || {})->{seq} || {})->{$marker};
+	return 1 if (!$slot || !$slot->{missing} || !$slot->{missing}{$seq});
+	return 0;
+}
+# END KTP CAPTURE GAP REPAIR
 # END KTP CAPTURE SEQUENCE OBSERVATION
 
 # BEGIN KTP WAVE-1 OPTIONAL FIELD HELPERS
@@ -6247,6 +6363,7 @@ sub doEvent_KTPCaptureHealth
 	my $last_sql = defined($seq_slot->{last}) ? int($seq_slot->{last}) : "NULL";
 	my $gaps = $seq_slot->{gaps} || 0;
 	my $duplicates = $seq_slot->{duplicate_or_reordered} || 0;
+	my $repaired = $seq_slot->{repaired} || 0;
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
 	my $rv = &execNonQuery("
@@ -6255,7 +6372,7 @@ sub doEvent_KTPCaptureHealth
 			 emitted, daemon_received, daemon_accepted, daemon_rejected,
 			 correlation_failure_count, sequence_first, sequence_last,
 			 daemon_sequence_first, daemon_sequence_last, sequence_gap_count,
-			 duplicate_or_reordered_count, producer_sequence, event_epoch, event_time)
+			 duplicate_or_reordered_count, repaired_count, producer_sequence, event_epoch, event_time)
 		VALUES (".int($server_id).", '".quoteSQL($p->{matchid})."', ".int($p->{half}).",
 			'".quoteSQL($p->{event_type})."', ".int($p->{attempted}).",
 			".int($p->{enqueued}).", ".int($p->{dropped}).", ".int($p->{emitted}).",
@@ -6263,7 +6380,7 @@ sub doEvent_KTPCaptureHealth
 			".int($daemon_rejected).", ".int($correlation_failures).",
 			".int($p->{sequence_first}).",
 			".int($p->{sequence_last}).", $first_sql, $last_sql, ".int($gaps).",
-			".int($duplicates).", ".int($p->{sequence}).", ".int($p->{event_epoch}).",
+			".int($duplicates).", ".int($repaired).", ".int($p->{sequence}).", ".int($p->{event_epoch}).",
 			FROM_UNIXTIME(".int($p->{event_epoch})."))
 		ON DUPLICATE KEY UPDATE attempted=VALUES(attempted), enqueued=VALUES(enqueued),
 			dropped=VALUES(dropped), emitted=VALUES(emitted),
@@ -6275,6 +6392,7 @@ sub doEvent_KTPCaptureHealth
 			daemon_sequence_last=VALUES(daemon_sequence_last),
 			sequence_gap_count=VALUES(sequence_gap_count),
 			duplicate_or_reordered_count=VALUES(duplicate_or_reordered_count),
+			repaired_count=VALUES(repaired_count),
 			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
 			event_time=VALUES(event_time)
 	");
