@@ -43,8 +43,7 @@ $SIG{INT2} = 'INT_handler';  # windows
 # systemd stops the unit with SIGTERM. With no handler Perl died inside
 # IO::Select::can_read and the unit reported status=6/ABRT on every clean
 # restart, firing OnFailure= for a stop that was asked for. Same flush-and-exit
-# path as SIGINT.
-$SIG{TERM} = 'INT_handler';
+# path as SIGINT. Set AFTER the requires below -- see there for why.
 
 ##
 ## Settings
@@ -82,6 +81,11 @@ require "$opt_libdir/HLstats_Player.pm";
 require "$opt_libdir/HLstats_Game.pm";
 do "$opt_libdir/HLstats_GameConstants.plib";
 do "$opt_libdir/HLstats.plib";
+
+# BASTARDrcon.pm has a bare `use sigtrap`, which is stack-trace
+# old-interface-signals -- a list carrying TERM but not INT or HUP. Loaded above,
+# it overwrites any earlier $SIG{TERM}, so this must come after the requires.
+$SIG{TERM} = 'INT_handler';
 do "$opt_libdir/HLstats_EventHandlers.plib";
 
 $|=1;
