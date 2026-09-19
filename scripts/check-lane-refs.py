@@ -65,6 +65,13 @@ UNDER_TEST = "daemon_ref"
 # pin on purpose -- see the module docstring.
 LINEAGE = "preprod"
 
+# KTPInfrastructure retired its `preprod` branch (ruled 2026-09-19), so the
+# HARNESS rides a different train from the components. Keeping one LINEAGE and
+# widening the equality test would defeat the file -- an accidental straddle is
+# exactly what it exists to catch -- so the exception is declared per ref.
+HARNESS_LINEAGE = "main"
+REF_LINEAGE = {"infrastructure_ref": HARNESS_LINEAGE}
+
 # Branch names the `uses:` pin must never be. A literal branch keeps moving after
 # it is written, which is the exact defect this file exists to catch.
 MOVING_REFS = {"preprod", "main"}
@@ -75,7 +82,9 @@ MOVING_REFS = {"preprod", "main"}
 # comparing is the only part of that check this file can still perform once the
 # `uses:` pin freezes which copy of the upstream template applies.
 JOB_ID = "corpus-regression"
-REQUIRED_CONTEXT = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, "corpus", LINEAGE)
+# The upstream job name interpolates the INFRASTRUCTURE ref, so the context
+# follows the harness train, not the component one.
+REQUIRED_CONTEXT = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, "corpus", HARNESS_LINEAGE)
 
 EXPRESSION = re.compile(r"\$\{\{")
 
@@ -175,12 +184,13 @@ def check_text(text):
                 "{} is a GitHub expression ({}). Every ref but {} must be a "
                 "literal equal to {!r}, or the harness and the repositories it "
                 "assembles can come from different lineages.".format(
-                    name, value, UNDER_TEST, LINEAGE))
-        elif value != LINEAGE:
+                    name, value, UNDER_TEST, REF_LINEAGE.get(name, LINEAGE)))
+        elif value != REF_LINEAGE.get(name, LINEAGE):
             errors.append(
                 "{} is {!r} but the harness lineage is {!r}. Straddling two "
                 "lineages fails during artifact assembly for reasons unrelated "
-                "to the pull request.".format(name, value, LINEAGE))
+                "to the pull request.".format(
+                    name, value, REF_LINEAGE.get(name, LINEAGE)))
 
     # The required status check's name is composed from this call's `lane` input
     # plus the fixed lineage name -- neither the reusable workflow's template nor
@@ -189,7 +199,8 @@ def check_text(text):
     # catch is an edit to THIS file quietly renaming the context, e.g. changing
     # `lane` away from `corpus`.
     lane_value = inputs.get("lane", "").strip()
-    composed = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, lane_value or "full", LINEAGE)
+    composed = "{} / Lane B ({}, {}, run 1)".format(
+        JOB_ID, lane_value or "full", HARNESS_LINEAGE)
     if composed != REQUIRED_CONTEXT:
         errors.append(
             "this call composes the status check {!r}, not the required {!r}. "
@@ -308,7 +319,8 @@ def main():
             print("::error::" + err, file=sys.stderr)
         return 1
 
-    print("OK: every Lane B ref but {} is a literal on the harness lineage".format(UNDER_TEST))
+    print("OK: every Lane B ref but {} is a literal on its declared train "
+          "(harness {}, components {})".format(UNDER_TEST, HARNESS_LINEAGE, LINEAGE))
     return 0
 
 
