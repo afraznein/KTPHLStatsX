@@ -110,18 +110,20 @@ jobs:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
     with:
       lane: corpus
-      # infrastructure_ref/amxx_ref stay the literal "preprod" -- that selects
-      # which commit of KTPInfrastructure/KTPAMXX gets CHECKED OUT once the
-      # pinned workflow code above is running, deliberately left live so the
-      # harness content (fixtures, schema, bot driver) keeps tracking preprod.
-      # Only the orchestration YAML is frozen. scripts/check-lane-refs.py no
-      # longer compares these against the `uses:` pin (which can now be a sha
-      # that no branch name equals) -- it compares them against the fixed
-      # lineage name "preprod" instead.
-      infrastructure_ref: preprod
+      # infrastructure_ref/amxx_ref are literals: they select which commit of
+      # KTPInfrastructure/KTPAMXX gets CHECKED OUT once the pinned workflow code
+      # above is running, deliberately left live so the harness content (fixtures,
+      # schema, bot driver) keeps tracking its branch. Only the orchestration YAML
+      # is frozen.
+      #
+      # They no longer name the same branch: KTPInfrastructure retired `preprod`
+      # (ruled 2026-09-19), so the harness rides `main` and KTPAMXX still rides
+      # `preprod`. scripts/check-lane-refs.py declares that split per ref rather
+      # than relaxing its equality test.
+      infrastructure_ref: main
       # Literal, not the PR's base ref. KTPAMXX is not the artifact under test
       # here — it is part of the stack the harness assembles, so it has to come
-      # from the same lineage as the harness. See scripts/check-lane-refs.py.
+      # from the COMPONENT lineage. See scripts/check-lane-refs.py.
       amxx_ref: preprod
       daemon_ref: ${{ github.event.pull_request.head.sha || github.sha }}
     secrets: inherit
