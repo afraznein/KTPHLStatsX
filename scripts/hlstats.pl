@@ -5682,7 +5682,7 @@ sub ktpRejectUnobservedCaptureMarker
 # gap: GoldSrc rcon is two blocking round trips.
 our %g_ktpResendQueue;      # $s_addr -> marker -> { matchid, half, seqs => {seq => 1} }
 our %g_ktpResendLastSent;   # $s_addr -> epoch of last rcon sent
-our $KTP_RESEND_MAX_PER_GAP = 64;      # a wider hole is an outage, not loss
+our $KTP_RESEND_MAX_PER_GAP = 256;     # a late-accepted manifest (replayed after a lost one) opens a hole this wide; wider is an outage
 our $KTP_RESEND_MAX_MISSING = 256;     # per stream slot
 our $KTP_RESEND_MAX_PER_CMD = 32;      # sequences per rcon command
 our $KTP_RESEND_MIN_INTERVAL = 2;      # seconds between rcon calls per server

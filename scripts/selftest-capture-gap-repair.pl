@@ -107,8 +107,8 @@ ktpFlushResendRequests();
 is($rcon[-1], 'ktp_capture_resend position 6,7,8', 'deferred request goes out on the next eligible flush');
 
 # A hole wider than the cap is an outage, not loss: counted, never requested.
-observe('position', 500);
-is($slot->()->{gaps}, 493, 'a wide hole is counted as gaps (490 + the 3 still open)');
+observe('position', 700);
+is($slot->()->{gaps}, 693, 'a wide hole is counted as gaps (690 + the 3 still open)');
 ok(!exists($slot->()->{missing}{10}), 'but not queued for resend');
 
 done_testing();
