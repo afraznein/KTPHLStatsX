@@ -150,7 +150,9 @@ CREATE TABLE IF NOT EXISTS ktp_matches (
     -- MySQL with errno 1824 (referenced-table open failure on a type mismatch).
     server_id INT UNSIGNED NOT NULL,
     map_name VARCHAR(32) NOT NULL,
-    half TINYINT DEFAULT 1 COMMENT '1=first half, 2=second half',
+    -- NOT NULL is load-bearing: two NULLs are never equal, so uk_match_id_half
+    -- below would guard nothing for a row whose half is NULL.
+    half TINYINT NOT NULL DEFAULT 1 COMMENT '1=first half, 2=second half, 3+=OT round',
     match_type TINYINT UNSIGNED DEFAULT NULL COMMENT 'KTPMatchHandler enum: 0=official, 1=scrim, 2=12man, 3=draft, 4=KTP OT, 5=draft OT',
     start_time DATETIME NOT NULL,
     end_time DATETIME DEFAULT NULL,
