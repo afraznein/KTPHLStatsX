@@ -128,6 +128,19 @@ sudo journalctl -u hlstatsx -f
 
 ## Database
 
+### 🔴 NEVER RUN A CORRELATED SUBQUERY OR A LONG SCAN AGAINST `hlstats_Events_*` IN PRODUCTION
+
+**`hlstats_Events_Frags` and its siblings are MyISAM, so reads take TABLE-LEVEL locks.** A read that takes minutes blocks the daemon's own `UPDATE` for exactly that long, and **the daemon does not error — it queues.** Nothing alerts.
+
+🔻 **Measured 2026-09-09, and it is why this section exists.** A read-only census written as ~36 correlated subqueries per match held a lock until the daemon's `UPDATE hlstats_Events_Frags` had been sitting in `Waiting for table level lock` for **614 s**. Blast radius, from the journal: a trough of **892** lines in the 17:50 bucket, a catch-up burst of **8,335** in 18:00, and **133 `KTP_NO_ROW_MATCHED`** (*“likely a dropped UDP frag line”*) against a **72–77** baseline in comparable live buckets.
+⚠️ **THE LOSS DURING THE STALL IS UNKNOWABLE, AND THAT IS THE REAL LESSON.** `RcvbufErrors` was read *after* the fact (2,356, unchanged across seven minutes and 1.2 M datagrams, so nothing is ongoing) — **but with no prior snapshot the delta cannot be recovered.** ➡️ **Snapshot `RcvbufErrors` BEFORE any heavy read**, or a stall's cost is permanently unmeasurable.
+
+✅ **The same census rewritten as index-driven grouped scans with literal `IN` lists ran in 20 s.** The query shape was the whole problem — not the volume, and not the fact that it was a read.
+
+⛔ **A paramiko channel timeout does NOT stop the query.** The client gave up; the server thread kept running and kept the lock. **Recovery requires `KILL <id>` on the server** — confirm with `SHOW PROCESSLIST` that the daemon's next statement drops to a low `Time`, because disconnecting looks identical to fixing it from the client side.
+
+➡️ **Before any ad-hoc read of these tables:** aggregate with `GROUP BY` over an indexed column, pass ids as a literal `IN` list rather than a correlated lookup, and check `information_schema.processlist` for `%lock%` waits afterward. **A read-only query is not a safe query here.**
+
 ### 🔑 Migrations land before the daemon, never after
 
 Schema ahead of code is inert — a column nothing writes yet costs nothing. Code
