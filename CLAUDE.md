@@ -21,15 +21,46 @@ Modified HLStatsX:CE Perl daemon with KTP Match Handler integration. Separates w
 
 ## Branches
 
-`preprod` is the integration branch: feature and fix work is based on it and
-merges into it. `main` is the release branch, advanced only by a promotion PR
-whose head is `preprod`. GitHub's *default* branch is `main`, which is why a new
-PR opens with the wrong base — reset it to `preprod` unless you are deliberately
-promoting.
+🔑 **`main` is the branch. Open PRs against it and leave the base alone.** It is the
+repo default, `origin/HEAD` resolves to it, and every one of the twelve most recently
+merged PRs was based on it.
 
-So `main` trails `preprod` by whatever has not been promoted yet, and a fix
-merged only to `preprod` is not visible from `main`. Read the branch you are
-about to build from, never the default.
+⛔ **This section used to say the opposite** — that `preprod` was the integration branch,
+that `main` *"trails preprod by whatever has not been promoted"*, and that a new PR's base
+should be reset to `preprod`. Following that today builds from a branch nobody has pushed
+to in weeks, which is the dangerous direction for a stale instruction to point.
+
+**`preprod` is retired in practice.** Measured 2026-09-24 against the refs: it is a strict
+ancestor of `main`, **0 ahead and 33 behind**, so it carries nothing `main` does not. PR #118
+(`ci/retire-infra-preprod`) is where the train moved. ➡️ **Re-derive rather than trusting
+those numbers:** `git rev-list --left-right --count origin/preprod...origin/main`.
+
+⚠️ **The branch is retired in practice, still named in CI config, and — until this
+edit — promoted in these docs. Three states at once. The REFS are authoritative**, because
+they are where the code and the merges actually are; the other two are residue that nobody
+has cleaned up, and neither of them moves a commit.
+
+🔴 **Do not open a PR against `preprod` "just to be safe" — it can never merge.**
+`preprod`'s branch protection still requires `corpus-regression / Lane B (corpus, preprod,
+run 1)`, but that context interpolates the INFRASTRUCTURE ref and `infrastructure_ref` is now
+`main`, so the lane emits `… (corpus, main, run 1)` and the required context never reports at
+all. **A required check that never reports blocks the branch instead of failing it** — there
+is no red X to point at. `main`'s protection already requires the context the lane really
+emits, which is why `main` PRs are unaffected.
+
+⛔ **`preprod` in `corpus-regression.yml` is mostly NOT this repo's branch — never sweep
+the word.** Of its ten occurrences, exactly one is this repo's: the `branches: [preprod, main]`
+trigger on line 5. One more is `amxx_ref: preprod`, which is **KTPAMXX's `preprod` — live,
+divergent, and 3 commits ahead of its own `main`** — and `scripts/check-lane-refs.py` ENFORCES
+that value, so deleting it fails the `ref-pairing` gate. The rest are comments about
+KTPInfrastructure's `preprod` (retired 2026-09-19) and the reusable-workflow sha cut from it.
+
+📌 **Scoped, deliberately not done here: dropping `preprod` from the line-5 trigger.**
+It is a CI change, and on its own it makes things worse rather than better — it stops the lane
+running for a `preprod` PR without removing the protection rule that is waiting on it. The real
+retire is a repo-admin act: drop or re-point `preprod`'s required status check, then delete the
+branch. Until someone does that, the line-5 trigger is inert (no PR targets `preprod`) and
+costs nothing.
 
 ## Deployment
 Deployed to `/opt/hlstatsx/` on the data server (<DATA_SERVER_IP>).
@@ -130,8 +161,8 @@ in an idle window — the same live-match check a restart calls for.
 
 ⚠️ **CI reads migration files from the branch's tree, never from the database.**
 The corpus-regression gate runs the `sql/` file out of the checkout, so a
-migration applied to production but merged only to `preprod` keeps `main`'s CI
-red. Applying it to the database again fixes nothing — promote the file.
+migration applied to production but merged only to a side branch keeps `main`'s CI
+red. Applying it to the database again fixes nothing — merge the file.
 
 ### Reloading vs restarting
 
@@ -263,7 +294,7 @@ always.
 
 **How to apply:**
 - Before trusting any hlstatsx feature, check applied-vs-expected migrations — the repo is `KTPHLStatsX`,
-  and it builds from **`preprod`**, never `main` (`origin/main` was six migrations behind).
+  and it builds from **`main`** (see § Branches — `preprod` is retired; it is 0 ahead of `main`).
 - ⛔ **`CREATE TABLE IF NOT EXISTS` makes a "fix by re-running the migration" a silent no-op** over a
   hand-made table with the wrong schema. Drop or `ALTER` to converge, then verify columns *and* indexes
   against the migration file.
@@ -685,9 +716,10 @@ migration ledger for hlstatsx — `support_schema_migrations` belongs to the sup
 applied-ness is probed by schema effect, and a rename carries no database state. Both are idempotent
 guards, so a re-apply under the new name is a no-op either way.
 
-⛔ **The general rule survives the fix, because the two branches still disagree:** `main`'s `023` is
-headshot provenance and `preprod`'s is position-state's prerequisite chain. Identify a migration here
-by its descriptive filename suffix and state which branch, never by number alone.
+⛔ **The general rule survives the fix even though the branches no longer disagree** — measured
+2026-09-24, `main` and `preprod` both carry `023_headshot_observed_provenance`,
+`024_team_membership_intervals` and `025_position_state_map_revision`. Identify a migration here by
+its descriptive filename suffix, never by number alone: the ordinals were renumbered once already.
 
 ## Frag-context join-window fix (#76) outcome, measured on real match traffic — and the health query to reuse
 
