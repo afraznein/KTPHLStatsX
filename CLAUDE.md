@@ -1099,6 +1099,7 @@ above. **That is why the row was created *before* promotion, not after.**
 which is why a positive control that quoted a fixed `hlstats_Servers` row count earlier in this file
 was already stale by the time it was written. Never quote a fixed number as a control here; check by
 `serverId` instead.
+
 ## Capture authorization is PER-STREAM, and a sequence gap is charged to the stream that lost the line
 
 ⛔ **The wording that circulates in the operator runbook — *"lost and gaps 0 or close to it = OK"* — is
@@ -1119,3 +1120,30 @@ emitted nothing. ➡️ **A gap is UDP intake loss: charge it to the stream whos
 ⚠️ **The unit of authorization is one stream across every observed half, never per-half** — consumers
 query a stream for the whole match, so a per-half verdict publishes a partial aggregate with nothing
 marking it partial.
+
+## Three things that have to hold before a restricted weapon's zero means the restriction works
+
+*(Measured 2026-09-25 on the live database, read-only. Relocated from the project `TODO.md`, which
+was the only copy.)*
+
+⚠️ **`eventTime` is server-local, not UTC.** MySQL runs `time_zone = SYSTEM` on an
+`America/New_York` box, and the newest `hlstats_Events_Frags` row carries `eventTime` equal to
+`FROM_UNIXTIME(event_epoch)` to the second — the two clocks agree because both are local. A
+UTC-framed window is therefore off by the current offset, and it drops the end of the evening, which
+is when matches are played.
+
+⚠️ **Demo promotion writes frags BACKWARDS in time, so a moved `MAX(eventTime)` is not a new leak.**
+serverId 99's S9 reconstruction (see the section above) inserts rows dated to when the demo was
+played, not when it was promoted, so a restricted weapon can gain history behind a sweep that already
+ran. `bazooka` acquired early-season rows after an archive had recorded none. Check `serverId` and
+`match_id` before reading a maximum that moved as live play.
+
+⛔ **Some restricted codes have never scored here at all, so a zero on them is not a measurement.**
+`30cal`, `fg42` and `bren` sit in `hlstats_Weapons` with no kills all-time, and `fg42s` is not a `dod`
+code in that table at all — against a `bar` control that is one of the largest counters in it. A zero
+on those cannot tell enforcement apart from a code the data has never carried, so pair every
+restricted-weapon query with a control that must return rows.
+
+⚠️ **And `hlstats_Weapons.kills` is not a safe control by itself** — it reads zero for `bazooka` while
+serverId 99 owns real `hlstats_Events_Frags` rows for it. The dictionary counter is maintained by the
+daemon; promoted rows were inserted underneath it. Count the event table, not the dictionary.
