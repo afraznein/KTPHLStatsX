@@ -683,6 +683,44 @@ so the per-hit damage ledger has no coverage here at all.
 listed in `_COMPARED`. To make it mean more, widen `_COMPARED` (and the baseline) rather than trusting a
 field just because the report happens to print it.
 
+## The `ktp_*` per-match telemetry tables — four ways an honest query returns a confident wrong number
+
+*(Moved 2026-09-25 from the KTP board, which had them only in a local spec file under `board-inbox/`.
+Measured 2026-09-15 while scoping per-match position normalisation; re-derive every figure before
+quoting one.)* These four bit the same investigation, and each of them survives review because the
+query is valid SQL over real rows.
+
+**1. `ktp_match_stats` carries a `half = 0` FULL-MATCH ROLLUP, so an unfiltered `SUM()` is exactly 2x.**
+`half` takes `{0, 1, 2}` and `h0 == h1 + h2` on every player-match checked. This is the same defect
+shape as `ktp_matches` being one row per half (above), but it fails the other way round: there the
+extra rows are halves, here the extra row is the whole match sitting beside its own parts. Filter
+`half <> 0` for per-half work, or read `half = 0` alone for a match total — never both.
+
+**2. Warmup is `match_id IS NULL`, and the rule is exact: `match_id IS NULL` if and only if `half = 0`.**
+Zero off-diagonal cells since-09-13, all-time, and on captures (whose NULL share is several times the
+damage table's). **Filter on `half <> 0`, never on `match_id IS NOT NULL`** — filtering on `match_id`
+throws away the full-match rollups you may want and still leaves you reasoning about the wrong axis.
+With the `half` filter, residual NULLs are zero.
+
+**3. A FIFTH SteamID shape lives in `ktp_match_players.steam_id` — it carries BOTH `0:` and `1:`
+prefixes, in comparable volume.** A join written against `'0:%'` silently loses about half the rows and
+returns a plausible, smaller answer. The correct transform is to strip `STEAM_0:` from
+`player_steam.steam_id_legacy` and match the remainder.
+
+**4. The three telemetry tables START ON DIFFERENT DAYS, and nothing says so.** `ktp_damage_events`
+begins 2026-08-21, `ktp_life_events` begins 2026-08-31, and `ktp_match_stats` spans all history — so
+the large majority of `ktp_match_stats` match-halves predate any damage telemetry at all.
+⛔ **Any cross-table join must state its era and DROP a missing row, never default it to `0`.**
+Defaulting a missing cross-table row to zero turned ten days of absent telemetry into a measured zero
+and moved a published effect size by more than fivefold; a second, unrestricted population averaged in
+tens of thousands of structural zeros. Both were caught only by re-deriving the same quantity through
+an independent source table, which is the control worth keeping: **compute it twice, from two tables,
+or do not publish it.**
+
+⚠️ Verified NOT a fan-out in that investigation — `ktp_match_players` holds one row per
+`(match_id, player_id)` — so if your counts do not reconcile here, suspect one of the four above
+before you suspect a join.
+
 ## Adding a Lane-B migration is six edits, not two
 
 *(Moved 2026-08-30 from the KTP board's `TODO.md`.)* A new `sql/migrate_0NN_*.sql` file in this repo is
