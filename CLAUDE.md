@@ -1077,3 +1077,23 @@ above. **That is why the row was created *before* promotion, not after.**
 which is why a positive control that quoted a fixed `hlstats_Servers` row count earlier in this file
 was already stale by the time it was written. Never quote a fixed number as a control here; check by
 `serverId` instead.
+## Capture authorization is PER-STREAM, and a sequence gap is charged to the stream that lost the line
+
+⛔ **The wording that circulates in the operator runbook — *"lost and gaps 0 or close to it = OK"* — is
+wrong twice over, and the runbook is in no repo we hold, so nothing we can grep will ever show it
+corrected.** Carried here because this was the only prose home it had.
+
+🔑 **The correct statement:** any non-zero `dropped` / `daemon_rejected` / `correlation_failure_count`
+fails **that one stream**; the match still publishes every other stream that reconciles. **There is no
+"close to it"** — there is no loss tolerance, by design.
+
+🔑 **`sequence_gap_count` and `duplicate_or_reordered_count` are HALF-scoped, not per-stream.**
+`doEvent_KTPCaptureHealth` reads both from per-half state keyed on `(addr, matchid, half)` and stamps
+the SAME value into every event type's row, while `daemon_received` / `daemon_rejected` /
+`correlation_failure_count` are indexed by event type. So a gap reads non-zero even on a stream that
+emitted nothing. ➡️ **A gap is UDP intake loss: charge it to the stream whose `emitted` exceeds its
+`daemon_received`, and only an unaccounted residual is a match-level failure.**
+
+⚠️ **The unit of authorization is one stream across every observed half, never per-half** — consumers
+query a stream for the whole match, so a per-half verdict publishes a partial aggregate with nothing
+marking it partial.
