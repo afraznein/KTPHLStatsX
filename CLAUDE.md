@@ -1185,3 +1185,17 @@ restricted-weapon query with a control that must return rows.
 ⚠️ **And `hlstats_Weapons.kills` is not a safe control by itself** — it reads zero for `bazooka` while
 serverId 99 owns real `hlstats_Events_Frags` rows for it. The dictionary counter is maintained by the
 daemon; promoted rows were inserted underneath it. Count the event table, not the dictionary.
+
+## Pre-2026-09-15 07:00 UTC accuracy is a LOWER BOUND, not a measurement
+
+*(Relocated from the project `TODO.md`, which was the only copy, so the fact would not be lost when
+that item was archived.)*
+
+A buggy weapon-fire flush walk both duplicated and DROPPED shots before it was repaired on
+2026-09-15. The repair removes duplicate copies only — the shots the walk never sent were never
+written anywhere, and are unrecoverable. Shots are an accuracy denominator, so pre-boundary rows
+undercount shots per player, unevenly, which inflates the accuracy computed from them.
+
+➡️ Any accuracy work must either start after 2026-09-15 07:00 UTC, or treat earlier rows as a lower
+bound rather than a measurement — comparing a pre-boundary accuracy figure against a post-boundary
+one silently compares two different quantities.
