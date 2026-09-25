@@ -332,8 +332,14 @@ for my $alias_pair (
         qr/\Q"$producer"\E\s*=>\s*\Q"$stock"\E/,
         "frag association explicitly maps DODX $producer to stock $stock");
 }
-like($frag_branch, qr/AND weapon IN \(\$fc_weapon_where\)/,
+like($frag_branch, qr/\$fc_weapon_where = "AND weapon IN \(".join\(", ", map \{/,
     'frag association uses only its explicit producer/base weapon candidates');
+# The one weapon label that is dropped rather than matched: DODX weaponData[0]
+# is "mortar" and both death paths fall back to weapon index 0, so "mortar" on
+# the wire means unresolved. Killer, victim and the producer window still bound
+# it -- a victim cannot die twice inside two seconds.
+like($frag_branch, qr/if \(\$fc_weapon ne "mortar"\) \{/,
+    'the unresolved-weapon label is the only case with no weapon clause');
 unlike($frag_branch, qr/OR\s+weapon\s*=/,
     'frag association has no unconstrained weapon fallback');
 like($frag_branch, qr/\$fc_clock_sql = "".*?legacy receipt window/s,
