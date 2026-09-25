@@ -278,6 +278,28 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 *Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
 assistant's recall. Each was measured; the date it was measured is stated inline.*
 
+## An md5 guard proves a row is UNCHANGED, never that it is UNIQUE — assert the count before the write
+
+Measured 2026-09-18 on a staged operator apply. The guard hashed the row it meant to edit, confirmed the
+hash, and then ran an `UPDATE` whose `WHERE` was not unique. **It matched twenty-four rows.** The write
+would have rewritten twenty-four identities and returned a row count that looked entirely plausible, because
+a plausible row count is the only thing an md5 guard leaves you to judge by.
+
+⚠️ **The two properties are unrelated and the guard only ever tests the first.** An md5 answers *has this
+content moved since I read it*. It says nothing about *how many rows this predicate reaches*, and an apply
+that passes its hash check feels pre-checked precisely when it is not.
+
+➡️ **Before any guarded `UPDATE` or `DELETE`, run `SELECT count(*)` against the predicate the write will
+use — the same predicate, not a narrower one — and require exactly one.** Put it in the same transaction as
+the write, so a concurrent insert cannot open a gap between the assertion and the statement.
+
+⛔ **Do not describe an apply as safe to run verbatim on the strength of a hash.** That sentence is what
+makes the foot-gun look inspected, and it is the reason this one reached a staged file. Say what the guard
+proves and what it does not.
+
+🔑 The same shape reaches any hash-guarded edit, not just SQL: a file whose md5 matches is the file you
+read, but it is not evidence that only one copy of it exists.
+
 ## The `--timestamp` daemon flag was RULED DROPPED, not deferred — and the magnitude nobody had measured is ONE SECOND
 
 Measured 2026-09-09 over **74,655 rows** (2026-08-24 → 09-09). `hlstats_Events_Frags` already carries **both clocks on the same row** — `eventTime` (daemon receipt) and `event_epoch` (the game server’s own clock) — so their difference *is* the quantity the flag would remove. It is about one second.
