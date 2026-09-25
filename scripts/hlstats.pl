@@ -3008,6 +3008,7 @@ while ($loop = &getLine()) {
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".int($ktp_actor_player_id)."
 								AND victimId = ".int($ktp_victim_player_id)."
+								
 								AND weapon = '".quoteSQL($hs_weapon)."'
 								AND headshot = 0
 								AND frag_context_recorded = 0
@@ -3035,6 +3036,7 @@ while ($loop = &getLine()) {
 							flushEventTable("Frags");
 
 							my $fc_weapon   = $ev_obj_c || "";
+							# BEGIN KTP FRAG WEAPON CLAUSE
 							# DODX reports the precise alternate-fire weapon while the
 							# stock DoD log records the owning/base weapon.  Keep the
 							# association exact on server, actors and producer second,
@@ -3050,12 +3052,30 @@ while ($loop = &getLine()) {
 								"scoped_enfield" => "enfield",
 								"enf_bayonet"    => "enfield",
 							);
-							my @fc_weapon_candidates = ($fc_weapon);
-							push @fc_weapon_candidates, $fc_stock_weapon_alias{$fc_weapon}
-								if exists $fc_stock_weapon_alias{$fc_weapon};
-							my $fc_weapon_where = join(", ", map {
-								"'".quoteSQL($_)."'"
-							} @fc_weapon_candidates);
+							# "mortar" is not a weapon here, it is DODX's unresolved slot.
+							# weaponData[0] in dodx/Utils.cpp is labelled "mortar" (the real
+							# mortar is DODW_MORTAR=40, labelled "mortar" a second time), and
+							# both death paths in dodx/usermsg.cpp leave the weapon index at 0
+							# when they cannot resolve one -- the Damage hook reads the
+							# attacker's CURRENTLY HELD weapon (0 before the first CurWeapon
+							# message, or when the grenade lookup misses) and the DeathMsg path
+							# falls back to 0 on an unknown weapon name. So the marker says
+							# "mortar" while the stock DoD log records the real weapon:
+							# hlstats_Events_Frags has never held one weapon='mortar' row in
+							# its history, against 122 such markers in five days. The weapon
+							# clause can only fail on these, so drop it and rely on server,
+							# both actors and the producer window -- a victim cannot die twice
+							# inside it, so killer+victim already identifies the kill.
+							my $fc_weapon_where = "";
+							if ($fc_weapon ne "mortar") {
+								my @fc_weapon_candidates = ($fc_weapon);
+								push @fc_weapon_candidates, $fc_stock_weapon_alias{$fc_weapon}
+									if exists $fc_stock_weapon_alias{$fc_weapon};
+								$fc_weapon_where = "AND weapon IN (".join(", ", map {
+									"'".quoteSQL($_)."'"
+								} @fc_weapon_candidates).") ";
+							}
+							# END KTP FRAG WEAPON CLAUSE
 							# The claim guard cannot also vouch for what was claimed: getProperties yields
 							# "" for an empty field, which Perl numifies into a measured-looking 0. Bounds
 							# are the narrower of column and producer, so a bad value cannot abort the UPDATE.
@@ -3121,12 +3141,19 @@ while ($loop = &getLine()) {
 								# clock offset pushes 15-45% of kills into the neighboring
 								# second and the exact-second join drops them (28.4% of
 								# corpus frags untagged; FRAG_CONTEXT_COVERAGE_TRIAGE
-								# 20260906). Widen to [epoch-1, epoch+2) and pick the row
+								# 20260906). Widen to [epoch-2, epoch+2) and pick the row
 								# closest to the producer epoch.
+								#
+								# The first cut of this used [epoch-1, epoch+2): one second of
+								# headroom below the producer epoch, two above. Measured drift on
+								# rows that DID match (in-match, 2026-09-20 on) is almost entirely
+								# negative -- delta -1: 7,107, 0: 30,108, +1: 269 -- so 19% sat
+								# against the tight edge while the wide edge went nearly unused,
+								# and the residual misses pile up just below it. Symmetric at 2s.
 								$fc_time_where =
-									"AND eventTime >= FROM_UNIXTIME(".($fc_event_epoch - 1).") ".
+									"AND eventTime >= FROM_UNIXTIME(".($fc_event_epoch - 2).") ".
 									"AND eventTime < FROM_UNIXTIME(".($fc_event_epoch + 2).")";
-								$fc_match_description = "producer second (+/-1s)";
+								$fc_match_description = "producer second (+/-2s)";
 								$fc_order_by =
 									"ABS(UNIX_TIMESTAMP(eventTime) - ".$fc_event_epoch.") ASC, id ASC";
 							} elsif ($fc_has_explicit_context) {
@@ -3176,7 +3203,7 @@ while ($loop = &getLine()) {
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
 								AND killerId = ".int($ktp_actor_player_id)."
 								AND victimId = ".int($ktp_victim_player_id)."
-								AND weapon IN ($fc_weapon_where)
+								$fc_weapon_where
 								AND frag_context_recorded = 0
 								$fc_time_where
 								ORDER BY $fc_order_by
@@ -3184,7 +3211,7 @@ while ($loop = &getLine()) {
 							");
 							if (defined($fc_rv) && $fc_rv == 0) {
 								ktpRejectCaptureMarker("frag", \%ev_properties_hash, 1);
-								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no $fc_match_description frag for killer=".$ktp_actor_player_id." victim=".$ktp_victim_player_id." weapon=$fc_weapon -- likely a dropped UDP frag line", 1, 1);
+								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no $fc_match_description frag for killer=".$ktp_actor_player_id." victim=".$ktp_victim_player_id." weapon=$fc_weapon -- the frag line never arrived, or it landed outside the window (both happen, roughly half each)", 1, 1);
 							}
 							ktpRejectCaptureMarker("frag", \%ev_properties_hash, 0)
 								if (!defined($fc_rv));

@@ -141,14 +141,44 @@ like($frag_branch, qr/AND frag_context_recorded = 0/,
 unlike($frag_branch, qr/AND frag_context_certified = 0/,
     'certification must not gate the claim, or a partial payload becomes re-claimable');
 
+# --- the weapon clause -------------------------------------------------------
+# Runs the shipped block, same reason as the payload above: the failure mode is
+# a clause that is merely too strict, which no count makes obvious.
+my $weapon_block = between_markers($source,
+    '# BEGIN KTP FRAG WEAPON CLAUSE',
+    '# END KTP FRAG WEAPON CLAUSE');
+our $fc_weapon;
+sub quoteSQL { my ($v) = @_; $v =~ s/'/\\'/g; return $v; }
+sub weapon_clause {
+    ($fc_weapon) = @_;
+    my $clause = eval "no strict 'vars';\n$weapon_block\n" . '$fc_weapon_where;';
+    die "cannot run shipped weapon clause: $@" if $@;
+    return $clause;
+}
+
+is(weapon_clause('kar'), "AND weapon IN ('kar') ",
+    'an unaliased weapon is matched exactly');
+is(weapon_clause('bayonet'), "AND weapon IN ('bayonet', 'kar') ",
+    'a documented alternate-fire weapon also accepts its stock base weapon');
+# DODX weaponData[0] is labelled "mortar" and both death paths fall back to
+# weapon index 0 when they cannot resolve one, so "mortar" on the wire means
+# "unknown", not a mortar. hlstats_Events_Frags has never held a weapon='mortar'
+# row, so keeping the clause could only ever reject the kill.
+is(weapon_clause('mortar'), '',
+    'the unresolved-weapon label drops the clause instead of failing on it');
+like($frag_branch, qr/AND victimId = "\.int\(\$ktp_victim_player_id\)\."\r?\n\s*\$fc_weapon_where/,
+    'the UPDATE takes the weapon clause from the variable, not inline');
+
 # --- the producer join window ------------------------------------------------
 # eventTime is daemon receipt time; an exact-second join loses every kill whose
 # receipt lands in the neighboring second (28.4% of the Tier-2 corpus --
-# FRAG_CONTEXT_COVERAGE_TRIAGE_20260906). The window is [epoch-1, epoch+2),
-# nearest row to the producer epoch first.
+# FRAG_CONTEXT_COVERAGE_TRIAGE_20260906). The window is [epoch-2, epoch+2),
+# nearest row to the producer epoch first. It was [epoch-1, epoch+2) until
+# 2026-09-25: measured drift on rows that matched is almost all negative
+# (delta -1: 7,107, 0: 30,108, +1: 269), so the tight edge was the wrong one.
 like($frag_branch,
-    qr/FROM_UNIXTIME\("\.\(\$fc_event_epoch - 1\)\."\)/,
-    'producer join window opens one second early');
+    qr/FROM_UNIXTIME\("\.\(\$fc_event_epoch - 2\)\."\)/,
+    'producer join window opens two seconds early -- the drift is negative');
 like($frag_branch,
     qr/FROM_UNIXTIME\("\.\(\$fc_event_epoch \+ 2\)\."\)/,
     'and closes after epoch+1, half-open');
