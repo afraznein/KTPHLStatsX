@@ -36,11 +36,9 @@
 -- ============================================================================
 -- WHAT THIS IS FOR, AND WHAT IT DELIBERATELY IS NOT
 -- ============================================================================
--- Repeated crouch input is alleged to interact with DoD's stamina model and
--- with footstep emission. Nothing in this stack has ever measured either claim,
--- and nothing can measure it client-side: the four quantities involved
--- (velocity, ground contact, stamina, footstep emission) are all server-held
--- and none of them is visible to a client. This table is where they meet.
+-- A movement census. The four quantities it records -- velocity, ground contact,
+-- stamina and footstep emission -- are all server-held, and none of them is
+-- visible to a client, so this table is the only place they meet.
 --
 -- THIS TABLE CARRIES NO THRESHOLD AND SUPPORTS NO VERDICT. There is no
 -- positive class yet -- a controlled reproduction has not been run -- so
@@ -204,6 +202,6 @@ CREATE TABLE IF NOT EXISTS ktp_move_census (
 --   ORDER BY c.player_id, n.i;
 --
 -- ⚠️ Any query that reports a footstep rate must carry the tap census and
--- step_timer_fires alongside it. A step count on its own describes a
--- crouch-walker exactly as well as it describes the thing this stream was
--- built to look for, and the two are not the same finding.
+-- step_timer_fires alongside it. A step count on its own is not interpretable:
+-- a player who crouch-walks deliberately emits few footsteps, which is ordinary
+-- play. The tap census and step_timer_fires are what separate the cases.
