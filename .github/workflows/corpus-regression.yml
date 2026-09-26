@@ -43,6 +43,8 @@ jobs:
         run: perl scripts/selftest-position-batching.pl
       - name: Shot target userid resolves to a player id, or to nothing
         run: perl scripts/selftest-shot-target-resolve.pl
+      - name: Move census is named in every whitelist that gates it
+        run: perl scripts/selftest-move-census.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL

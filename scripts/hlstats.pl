@@ -3620,10 +3620,11 @@ while ($loop = &getLine()) {
 					);
 				}
 			} elsif ($ev_verb eq "triggered") {
-				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot)$/) {
+				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census)$/) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
 						break_context => "break", position_sample => "position",
-						team_membership => "team_membership", shot => "shot");
+						team_membership => "team_membership", shot => "shot",
+						move_census => "move");
 					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties);
 				}
 
@@ -3631,7 +3632,7 @@ while ($loop = &getLine()) {
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
 				my $ktp_buffered_identity;
-			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot)$/) {
+			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
@@ -3885,6 +3886,30 @@ while ($loop = &getLine()) {
 								$ev_properties{"shooter_stamina"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+						}
+					} elsif ($ev_obj_a eq "move_census") {
+						# KTP: crouch-input and footstep-emission census from
+						# ktp_stats_capture.inc's ksc_move_flush_task. Same manifest gate
+						# and buffered-identity resolution as shot, but one row per
+						# player-window rather than per event, so it is not batched --
+						# its ceiling is roughly one row per second across a full server.
+						#
+						# No schema ordinal of its own: the capability bit is the gate,
+						# so a producer without it is refused here rather than having its
+						# whole manifest rejected upstream.
+						#
+						# MEASURE-ONLY. Nothing here or downstream thresholds any of it;
+						# the stream exists so the question can be asked of real data
+						# instead of guessed at.
+						$ev_type = 620;  # KTP move-census marker
+
+						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "move")) {
+							ktpRejectCaptureMarker("move", \%ev_properties, 0);
+							$ev_status = "Move census dropped: manifest does not carry the move capability";
+						} elsif ($ktp_buffered_player_id) {
+							$ev_status = &doEvent_KTPMove($ktp_buffered_player_id, \%ev_properties);
+							ktpRejectCaptureMarker("move", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
@@ -5563,6 +5588,7 @@ sub ktpAuthorizeCaptureManifest
 		team_membership => $capabilities{team_membership} ? 1 : 0,
 		position => $capabilities{position_state} && $capabilities{map_revision} ? 1 : 0,
 		shot => $capabilities{shot} ? 1 : 0,
+		move => $capabilities{move} ? 1 : 0,
 		map_revision_algorithm => $p->{map_revision_algorithm},
 		map_revision => $p->{map_revision},
 	};
@@ -5573,7 +5599,7 @@ sub ktpCaptureManifestAuthorizes
 {
 	my ($p, $event_type) = @_;
 	return 0 if (!defined($event_type) ||
-		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot)$/);
+		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot|move)$/);
 	my $key = ktpCaptureContextKey($p);
 	return 0 if (!defined($key) ||
 		!defined($g_ktpAcceptedCaptureManifests{$key}));
@@ -5583,6 +5609,10 @@ sub ktpCaptureManifestAuthorizes
 	# team-transition ledger but cannot authorize schema-22-only rich facts.
 	# >= 23, not == 23: schema 24 (wave 0, "shot") is a superset of 23's
 	# contract, not a replacement -- everything 23 authorizes, 24 does too.
+	#
+	# The per-event CAPABILITY bit above is what actually gates a stream, which is
+	# why "move" needs no schema of its own: a producer that does not announce it
+	# is refused there, on the bit, whatever ordinal it claims.
 	return 1 if ($manifest->{schema} >= 23);
 	return $event_type ne "position" if ($manifest->{schema} == 22);
 	return $manifest->{schema} == 21 && $event_type eq "team_membership";
@@ -5783,7 +5813,8 @@ sub ktpResentLineIsRedundant
 		my %by_trigger = (damage => "damage", life_boundary => "life",
 			position_sample => "position", frag_context => "frag", assist => "assist",
 			cap_break => "break", break_context => "break",
-			team_membership => "team_membership", shot => "shot");
+			team_membership => "team_membership", shot => "shot",
+			move_census => "move");
 		$marker = $by_trigger{$1};
 	}
 	return 1 if (!defined($marker));
@@ -6308,7 +6339,7 @@ sub ktpValidateCaptureHealthPayload
 	# whitelists and missed here, which would have left the highest-volume new
 	# stream with no drop detection at all -- and the wave-0 canary reads this
 	# table, per stream, to decide whether the rollout is safe.
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw move);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -6351,7 +6382,17 @@ sub ktpCaptureHealthSilentStreamWarning
 	# objective_attempt stays out (a map without area captures produces none),
 	# and so do the legitimately sparse streams (assist, break, team_membership).
 	my %always_active = map { $_ => 1 } qw(life damage frag);
-	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot);
+	# `move` belongs in the MANIFEST-GATED set, not outside both: a stream named in
+	# neither hash falls through the elsif below and returns "" unconditionally, so it
+	# can go completely dark -- forward lost, capability skew, task never re-armed --
+	# and nothing ever warns. That is the same miss as `shot` in the allow-list above.
+	#
+	# It belongs there rather than in always_active because the census is
+	# capability-gated, so the manifest bit is what distinguishes "not authorised" from
+	# "authorised and silent". And it is NOT a legitimately sparse stream: the producer
+	# charges standing-still ground time, so every alive player in a tracked half emits
+	# a row every window. Zero attempts on a busy half is a wiring loss, not a quiet one.
+	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot move);
 	if ($manifest_gated{$type}) {
 		return "" if (!$manifest->{$type});
 	} elsif (!$always_active{$type}) {
@@ -6997,6 +7038,169 @@ sub flushShotEvents
 	return $rv;
 }
 # END KTP SHOT CONTEXT STREAM
+
+# BEGIN KTP MOVE CENSUS STREAM
+# Crouch-input and footstep-emission counters, one row per player per producer
+# window, from ktp_stats_capture.inc's ksc_move_flush_task.
+#
+# MEASURE-ONLY, AND THAT IS A CONTRACT, NOT A PHASE. Nothing in this handler or
+# in the table it writes applies a threshold, and the stream has no positive
+# class to calibrate against yet. A step count is not evidence on its own: a
+# player who crouch-walks deliberately emits few steps, which is ordinary play.
+# The producer keeps both halves in one marker so they cannot be read apart, and
+# this handler stores them in one row for the same reason.
+#
+# Not batched, unlike shot. The producer emits at most one marker per connected
+# player per window, so the ceiling is about one row a second on a full server --
+# two orders of magnitude under the rate that made shot worth batching, and a
+# per-row INSERT keeps the dedup guard simple.
+sub doEvent_KTPMove
+{
+	my ($player_id, $p) = @_;
+	return 0 if (!defined($player_id));
+
+	my $manifest_key = ktpCaptureContextKey({
+		matchid => $p->{matchid}, half => $p->{half},
+	});
+	my $manifest = defined($manifest_key)
+		? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
+	# Gated on the capability bit, not on a schema ordinal. 23 is the floor the
+	# authorizer itself uses; the bit is what says this producer ships the stream.
+	return "Move census dropped: no accepted manifest carrying the move capability"
+		if (!defined($manifest) || $manifest->{schema} < 23 || !$manifest->{move});
+
+	# The histogram geometry travels with the row. Without it a later producer
+	# change to the bucket width would silently reinterpret every row already
+	# stored, and no query would notice.
+	my $buckets = $p->{buckets};
+	my $width   = $p->{bucket_width};
+	return "Move census dropped: invalid buckets"
+		if (!defined($buckets) || $buckets !~ /^\d+$/ ||
+			int($buckets) < 1 || int($buckets) > 32);
+	return "Move census dropped: invalid bucket_width"
+		if (!defined($width) || $width !~ /^\d+$/ ||
+			int($width) < 1 || int($width) > 4096);
+	$buckets = int($buckets);
+	$width   = int($width);
+
+	# Every histogram must have exactly `buckets` non-negative integers. A short
+	# or ragged one is rejected rather than padded: a padded row reads as a
+	# measured zero in whichever bucket was invented, and zero is the answer this
+	# whole stream is most likely to be asked about.
+	my %hist;
+	for my $field (qw(taps_ground taps_air ground_ms_standing ground_ms_ducked air_ms_ducked)) {
+		my $raw = $p->{$field};
+		return "Move census dropped: missing $field" if (!defined($raw));
+		my @v = split(/\s+/, $raw);
+		return "Move census dropped: $field has " . scalar(@v) . " buckets, expected $buckets"
+			if (scalar(@v) != $buckets);
+		for my $cell (@v) {
+			return "Move census dropped: non-numeric $field"
+				if ($cell !~ /^\d+$/);
+		}
+		$hist{$field} = join(" ", @v);
+		# The rendered field has to fit the column. The bucket bound above is a
+		# sanity check on the geometry; this is the one that matches storage, and
+		# without it a wide-but-legal geometry is rejected by MySQL in strict mode
+		# (row lost) or truncated silently in non-strict -- producing exactly the
+		# ragged list this validation exists to prevent, by way of the validation.
+		return "Move census dropped: $field is ".length($hist{$field}).
+			" chars, wider than the column"
+			if (length($hist{$field}) > 160);
+	}
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (ktpHasExplicitProducerContext($p->{matchid})) {
+		my ($validated_half, $validated_map, $clock_error, $clock_source) =
+			ktpResolveValidatedProducerEventContext(
+				$p->{matchid}, $p->{half}, $p->{game_time} // 0, $p->{event_epoch});
+		if ($clock_error ne "") {
+			ktpWarnProducerClock("move", $clock_error);
+			return "Move census dropped: $clock_error";
+		}
+		$match_id_sql = "'".quoteSQL($p->{matchid})."'";
+		$half = $validated_half;
+	} elsif (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	# Same rule as doEvent_KTPShot: a missing or non-numeric sequence must become
+	# SQL NULL, not 0. The UNIQUE key includes producer_sequence, and NULL never
+	# collides with NULL, so the rows that have no real sequence lose only their
+	# dedup guard instead of collapsing onto one another.
+	my $wire_sequence = (defined($p->{sequence}) && $p->{sequence} =~ /^\d+$/ && $p->{sequence} >= 1)
+		? int($p->{sequence}) : "NULL";
+
+	# -1 is the producer's "no tap was observed this window". It must not be
+	# stored: stamina 0 is a real reading, so there is no in-range value that can
+	# stand for absence, which is what NULL is for.
+	my $stam_min = "NULL";
+	if (defined($p->{stam_tap_min}) && $p->{stam_tap_min} =~ /^-?\d+$/ &&
+		int($p->{stam_tap_min}) >= 0) {
+		$stam_min = int($p->{stam_tap_min});
+	}
+
+	my $counter = sub {
+		my ($v) = @_;
+		return 0 if (!defined($v) || $v !~ /^\d+$/);
+		return int($v);
+	};
+
+	# Guarded like every other numeric field rather than left to Perl numification.
+	# Numification is injection-safe, but "inf"/"nan" numify to Inf/NaN and then
+	# stringify into the SQL literal -- which fails as a syntax error attributed to the
+	# database instead of as a malformed marker attributed to the producer.
+	return "Move census dropped: invalid game_time"
+		if (defined($p->{game_time}) && $p->{game_time} !~ /^-?\d+(?:\.\d+)?$/);
+	my $game_time = defined($p->{game_time}) ? ($p->{game_time} + 0) : 0;
+
+	# stam_tap_min has no module-side clamp (-1 is its no-tap sentinel, and a clamp
+	# would collide with it), so its bound is here, at the column it lands in. Out of
+	# range is unusable rather than fatal: NULL says "no trustworthy reading", which is
+	# exactly what an impossible one is.
+	$stam_min = "NULL" if ($stam_min ne "NULL" && ($stam_min < 0 || $stam_min > 32767));
+
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_move_census
+			(server_id, match_id, half, player_id, map_name,
+			 window_ms, buckets, bucket_width,
+			 taps, taps_ground, taps_air,
+			 ground_ms_standing, ground_ms_ducked, air_ms_ducked,
+			 stam_tap_sum, stam_tap_min,
+			 steps_ground, steps_ladder, sounds_water, pmove_sounds,
+			 step_timer_fires,
+			 game_time, event_epoch, producer_sequence, event_time)
+		VALUES
+			(".int($server_id).", $match_id_sql, ".int($half).", ".int($player_id).
+			", '".quoteSQL($p->{map} // "")."'".
+			", ".$counter->($p->{window_ms}).", $buckets, $width".
+			", ".$counter->($p->{taps}).
+			", '".quoteSQL($hist{taps_ground})."'".
+			", '".quoteSQL($hist{taps_air})."'".
+			", '".quoteSQL($hist{ground_ms_standing})."'".
+			", '".quoteSQL($hist{ground_ms_ducked})."'".
+			", '".quoteSQL($hist{air_ms_ducked})."'".
+			", ".$counter->($p->{stam_tap_sum}).", $stam_min".
+			", ".$counter->($p->{steps_ground}).
+			", ".$counter->($p->{steps_ladder}).
+			", ".$counter->($p->{sounds_water}).
+			", ".$counter->($p->{pmove_sounds}).
+			", ".$counter->($p->{step_timer_fires}).
+			", ".$game_time.
+			", ".int($p->{event_epoch} // 0).", $wire_sequence".
+			", FROM_UNIXTIME(".int($p->{event_epoch} // 0)."))
+	");
+	return "Move census SQL failed" if (!defined($rv));
+
+	return "Move census logged: player=$player_id taps=".$counter->($p->{taps}).
+		" steps=".$counter->($p->{steps_ground})." timer=".$counter->($p->{step_timer_fires});
+}
+# END KTP MOVE CENSUS STREAM
 
 # BEGIN KTP POSITION BATCH FLUSH
 sub flushPositionEvents
