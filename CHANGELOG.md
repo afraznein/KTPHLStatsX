@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### Added - crouch-input and footstep-emission census (migration 038, PROPOSED)
+### Added - crouch-input and footstep-emission census (migration 038, APPLIED 2026-09-26)
 
 `ktp_move_census`: one row per player per producer window, carrying crouch button
 presses and time-in-movement-state as histograms over horizontal speed, plus the
@@ -35,9 +35,14 @@ running ahead of its daemon losing *one stream* and having its *whole manifest*
 refused, which would take every other capture stream down with it for that half.
 It also leaves the next ordinal free for the bump already ruled against it.
 
-⚠️ **Migration 038 is proposed, not applied and not staged.** Deploy order is
-still migration, then daemon, then producer: schema ahead of code is harmless,
-code ahead of schema is data loss.
+✅ **Migration 038 was applied to production 2026-09-26** on operator authorisation
+(`hlstatsx` on the data server; `ktp_move_census` verified at 27/27 columns in
+declared order and all six indexes, 0 rows). ⚠️ **Only the first of the three
+steps has run — the daemon and producer are NOT deployed.** Deploy order is still
+migration, then daemon, then producer: schema ahead of code is harmless, code
+ahead of schema is data loss, so the table will sit empty until the daemon ships.
+The table being present is therefore not evidence the stream works, and an empty
+`ktp_move_census` today says nothing about the producer.
 
 ### Added - `selftest-move-census.pl`, and it is in the workflow
 

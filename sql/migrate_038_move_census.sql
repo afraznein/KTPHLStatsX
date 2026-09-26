@@ -1,10 +1,14 @@
 -- ENGINE: mysql (hlstatsx on the data server -- NOT the Supabase editor)
 -- KTP HLStatsX Migration 038: crouch-input and footstep-emission census.
 --
--- STATUS: PROPOSED. Not applied, and not staged into the root migration queue.
---   Staging it is the operator's act, and it has to happen before the daemon
---   change that writes this table ships -- schema ahead of code is harmless,
---   code ahead of schema is data loss.
+-- STATUS: APPLIED to production 2026-09-26 on operator authorisation, straight
+--   from this file rather than through the root migration queue. Nothing after
+--   it in the deploy order has run: the daemon and producer that write this
+--   table are NOT deployed. That is the safe direction -- schema ahead of code
+--   is harmless, code ahead of schema is data loss.
+--   The bytes that ran are md5 8561151cdc07d0b555c0eeb265332ab4 (this file at
+--   144c3e8, before this header edit); the copy kept as the queue's record is
+--   migrations-to-apply/applied/MYSQL_hlstatsx_038_move_census_APPLIED_20260926.sql.
 --
 -- Apply once as: sudo mysql hlstatsx < migrate_038_move_census.sql
 --
