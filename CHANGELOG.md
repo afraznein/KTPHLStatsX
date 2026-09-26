@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+### Added - crouch-input and footstep-emission census (migration 038, PROPOSED)
+
+`ktp_move_census`: one row per player per producer window, carrying crouch button
+presses and time-in-movement-state as histograms over horizontal speed, plus the
+footsteps the server actually emitted for that player. Pairs with KTPAMXX's
+`move_census` marker, which is gated by a new `move` **capability** rather than
+by a schema ordinal -- see below.
+
+**Measure-only, and that is a contract rather than a phase.** Neither the handler
+nor the table applies a threshold; there is no calibrated positive class for what
+this measures yet. Time is stored as a distribution rather than as "time above a
+cut-point" precisely because the cut-point is the whole open question -- storing one
+number above a guessed bound would bake today's guess into every row permanently.
+
+**The one misreading the table must not support:** a footstep count on its own, or
+any ratio built from it alone, is not evidence. A player who crouch-walks
+deliberately emits few footsteps; that is ordinary play. The tap census and the
+footstep counts are written in the same row, by one INSERT, so the two cannot be
+queried apart by accident -- `selftest-move-census.pl` asserts that they still are.
+
+`step_timer_fires` is the sensor control: it comes from the engine's own step timer
+rather than from the emitted sound, so timer fires with no steps means the server
+stopped emitting footsteps, not that the fleet went quiet. Check it before reading
+any per-player footstep figure; the migration carries the query.
+
+**No schema ordinal is taken.** The daemon already authorizes each stream on
+`schema >= 23` **and** a per-event capability bit, and its capability list is a
+minimum rather than an exact set -- so an extra name validates against a receiver
+that has never heard of the stream. That is the difference between a producer
+running ahead of its daemon losing *one stream* and having its *whole manifest*
+refused, which would take every other capture stream down with it for that half.
+It also leaves the next ordinal free for the bump already ruled against it.
+
+⚠️ **Migration 038 is proposed, not applied and not staged.** Deploy order is
+still migration, then daemon, then producer: schema ahead of code is harmless,
+code ahead of schema is data loss.
+
+### Added - `selftest-move-census.pl`, and it is in the workflow
+
+A `triggered` stream has to be named in nine separate hand-maintained places in
+`hlstats.pl`. `shot` was added to four of them and missed in the capture-health
+allow-list, which would have left the highest-volume stream of its wave with no drop
+detection and nothing would have failed. This test is that miss written down; each
+of the nine was verified to break it when removed. It is enumerated in
+`corpus-regression.yml`, because a committed selftest that is not listed there never
+runs -- which is the state `selftest-position-batching.pl` sat in from the day it was
+written.
+
 ### Added - hit-registration quality fact table (migration 036, schema only)
 
 `ktp_hitreg_quality`: one row per finished (match, half) with the number the
