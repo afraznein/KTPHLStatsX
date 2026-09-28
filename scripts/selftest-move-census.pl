@@ -66,11 +66,16 @@ has($source, 'move => $capabilities{move} ? 1 : 0',
 has($source, '|team_membership|position|shot|move)$/);',
     'ktpCaptureManifestAuthorizes accepts "move" as an event type');
 # Deliberately NOT an assertion that a new schema ordinal was accepted. This
-# stream takes none: the capability bit is the gate, and the next ordinal is
-# already promised to a different, ruled change. Assert the opposite instead --
-# that nothing here quietly widened the manifest whitelist.
-unlike($source, qr/int\(\$p->\{schema\}\) != 25/,
-    'no schema ordinal was claimed for this stream; the capability bit gates it');
+# stream takes none: the capability bit is the gate. 25 went to the ruled
+# shooter_punch drop (KTPAMXX #144), so pin the whitelist to exactly 21..25 --
+# anything widening it further has to name the ruled change that owns the ordinal.
+{
+    my $validator = body_of('ktpValidateCaptureManifestPayload');
+    my ($clause) = (($validator // '') =~ /return "unsupported schema"(.*?);/s);
+    my @ordinals = sort { $a <=> $b } (($clause // '') =~ /!= (\d+)/g);
+    is(join(',', @ordinals), '21,22,23,24,25',
+        'no schema ordinal was claimed for this stream; the capability bit gates it');
+}
 
 {
     my $resend = body_of('ktpResentLineIsRedundant');

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed - the manifest validator accepts capture schema 25 (KTPAMXX stats_logging 1.26.0)
+
+KTPAMXX #144 bumped `KSC_SCHEMA_CONTRACT` to 25 when it dropped `shooter_punch_pitch`
+and `shooter_punch_yaw` from the shot line. The shot handler already copes: both
+fields go through `$wire_target`, which stores an absent property as NULL. The
+manifest validator did not cope. It whitelisted 21-24 exactly, so a 1.26.0 producer
+would have had every manifest refused as `unsupported schema`, and a refused manifest
+drops every manifest-gated stream for that half (shot, position, objective attempt,
+grenade entity, team membership, move), not just the stream that changed.
+
+Schema 25 authorizes exactly what 24 does. No migration: the two columns stay in
+`ktp_shot_events` and go NULL from 1.26.0 on.
+
+**Deploy order: this daemon first, then stats_logging 1.26.0.**
+
 ### Added - crouch-input and footstep-emission census (migration 038, APPLIED 2026-09-26)
 
 `ktp_move_census`: one row per player per producer window, carrying crouch button
