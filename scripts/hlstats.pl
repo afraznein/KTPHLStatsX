@@ -5875,10 +5875,15 @@ sub ktpValidateCaptureManifestPayload
 	return "invalid producer" if ($p->{producer} ne "stats_logging");
 	return "invalid producer_version"
 		if ($p->{producer_version} !~ /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
+	# A refused manifest takes every gated stream down for that half, not just
+	# the one whose shape changed -- a producer must never ship ahead of this list.
+	# 25 drops shooter_punch_pitch/yaw from shot; doEvent_KTPShot already stores
+	# an absent field as NULL, so 25 authorizes exactly what 24 does.
 	return "unsupported schema"
 		if ($p->{schema} !~ /^\d+$/ ||
 			(int($p->{schema}) != 21 && int($p->{schema}) != 22 &&
-			 int($p->{schema}) != 23 && int($p->{schema}) != 24));
+			 int($p->{schema}) != 23 && int($p->{schema}) != 24 &&
+			 int($p->{schema}) != 25));
 	# KTP: map_revision fields are unconditional in ksc_emit_manifest (not
 	# schema-gated on the plugin side), so every schema from 23 onward carries
 	# them -- >= 23, not == 23, or a schema-24 manifest (wave 0, "shot") would

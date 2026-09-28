@@ -121,10 +121,10 @@ my %manifest_ok = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest_ok), '',
     'schema-22 manifest accepts the two-second paired contract');
-for my $bad_schema (25) {
+for my $bad_schema (20, 26) {
     my %bad = (%manifest_ok, schema => $bad_schema);
     like(ktpValidateCaptureManifestPayload(\%bad), qr/schema/,
-        "schema $bad_schema is rejected by the schema-24 receiver");
+        "schema $bad_schema is rejected by the schema-25 receiver");
 }
 my %manifest23 = (
     %manifest_ok, producer_version => '1.19.0', schema => 23,
@@ -140,6 +140,12 @@ my %manifest24 = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest24), '',
     'schema-24 manifest carries the same map-revision fields as schema-23, plus shot');
+# Schema 25 (stats_logging 1.26.0) only removes two shot fields, so its manifest
+# is the schema-24 manifest with a new ordinal. Refusing it would drop every
+# gated stream for the half, not just shot.
+my %manifest25 = (%manifest24, producer_version => '1.26.0', schema => 25);
+is(ktpValidateCaptureManifestPayload(\%manifest25), '',
+    'schema-25 manifest (shot without shooter_punch_pitch/yaw) is accepted');
 my %bad_revision = (%manifest23, map_revision => 'A' x 64);
 like(ktpValidateCaptureManifestPayload(\%bad_revision), qr/map_revision/,
     'schema-23 manifest rejects noncanonical revision text');
@@ -258,6 +264,15 @@ ok(ktpCaptureManifestAuthorizes(\%manifest24, 'objective_attempt') &&
    ktpCaptureManifestAuthorizes(\%manifest24, 'grenade_entity') &&
    ktpCaptureManifestAuthorizes(\%manifest24, 'team_membership'),
     'schema-24 manifest retains every schema-22/23 capability it still declares');
+%g_ktpAcceptedCaptureManifests = ();
+ok(ktpAuthorizeCaptureManifest(\%manifest25),
+    'complete schema-25 manifest authorizes its exact context');
+ok(ktpCaptureManifestAuthorizes(\%manifest25, 'shot') &&
+   ktpCaptureManifestAuthorizes(\%manifest25, 'position') &&
+   ktpCaptureManifestAuthorizes(\%manifest25, 'objective_attempt') &&
+   ktpCaptureManifestAuthorizes(\%manifest25, 'grenade_entity') &&
+   ktpCaptureManifestAuthorizes(\%manifest25, 'team_membership'),
+    'schema-25 manifest authorizes every stream schema 24 does');
 %g_ktpAcceptedCaptureManifests = ();
 ok(ktpAuthorizeCaptureManifest(\%manifest_ok),
     'schema-22 manifest remains accepted for its legacy contract');
