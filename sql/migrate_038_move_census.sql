@@ -56,6 +56,21 @@
 -- ROW so the two cannot be queried apart by accident. Keep it that way.
 --
 -- ============================================================================
+-- PUBLICATION: THE FEATURE SET MAY BE PUBLIC, THE THRESHOLDS MAY NOT
+-- ============================================================================
+-- Operator ruling, recorded 2026-09-27 -- a decision, not a measurement. The
+-- feature set this census records, and the resolution it records it at, may
+-- stay in the public repos. The column names ship with the code either way, so
+-- the feature set is public by construction; and the only evasion that knowing
+-- it enables is a player simply stopping the behaviour, which is the remedy we
+-- wanted. Publishing it therefore costs nothing.
+--
+-- A FEATURE SET IS NOT A THRESHOLD. This licenses the feature set and the
+-- resolution, and nothing else: detection thresholds stay private, always.
+-- Read no wider licence into it -- the reasoning above turns entirely on there
+-- being no cut-point here to leak, so it does not carry to work that has one.
+--
+-- ============================================================================
 -- THE HISTOGRAMS
 -- ============================================================================
 -- Five space-separated fixed-length integer lists, `buckets` values each,
