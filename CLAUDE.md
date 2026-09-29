@@ -248,7 +248,7 @@ Debug points:
 - `KTP_DEBUG KTP_MATCH_END parsed` - Parsed match end properties
 - `KTP_DEBUG doEvent_KTPMatchStart CALLED` - Function entry with args
 - `KTP_DEBUG doEvent_KTPMatchStart: half_num=` - Parsed half number and server_id
-- `KTP_DEBUG KTP_ROUND_FREEZE: match=` - Round went to freeze; match_id tagging paused (0.3.3+)
+- `KTP_DEBUG KTP_ROUND_FREEZE: match=` - Round went to freeze; receipt-time match_id tagging paused (0.3.3+). Flag-state and damage rows whose producer context validates keep their match regardless
 - `KTP_DEBUG KTP_ROUND_LIVE: match=` - Round went live; match_id tagging resumed (0.3.3+)
 - `KTP_DEBUG doEvent_KTPHalfEnd: Clearing match context for inter-half gap` (0.3.3+)
 
