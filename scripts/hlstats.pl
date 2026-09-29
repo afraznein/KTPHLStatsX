@@ -6710,21 +6710,6 @@ sub doEvent_KTPDamage
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
 
-	# Same match_id/round_live gating recordEvent() uses -- only tag with
-	# match_id while the round is live, so freeze-time and warmup damage
-	# lands with match_id NULL rather than attributed to a match that isn't
-	# actually running.
-	my $match_id_sql = "NULL";
-	my $half = 0;
-	if (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
-		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
-			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
-			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
-		}
-	}
-
-	# Producer context is additive and must be the analytics join key. Keep the
-	# historical receipt-time match_id/half gate above unchanged for compatibility.
 	# Populate clocks only after the exact producer tuple is proven against one DB
 	# interval; legacy/sentinel markers still keep their preexisting damage row.
 	my $producer_match_sql = "NULL";
@@ -6746,6 +6731,20 @@ sub doEvent_KTPDamage
 		$event_time_sql = "FROM_UNIXTIME($event_epoch)";
 	} elsif ($has_explicit_context) {
 		ktpWarnProducerClock("damage", $producer_context_error);
+	}
+
+	# A proven producer tuple decides the match: damage is buffered and the freeze
+	# marker is not, so a receipt-time gate NULLs a round's last hits. Legacy only.
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if ($producer_context_error eq "") {
+		$match_id_sql = $producer_match_sql;
+		$half = int($validated_half);
+	} elsif (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
 	}
 
 	my $rv = &execNonQuery("
@@ -7335,18 +7334,33 @@ sub doEvent_KTPFlagState
 	return "Flag state dropped: invalid owner"
 		if (!defined($owner) || $owner !~ /^\d+$/ || $owner < 0 || $owner > 2);
 
-	# Unlike samples that may be useful for warmup diagnostics, ownership rows
-	# exist only to reconstruct match intervals. Fail closed outside a live
-	# match instead of creating ambiguous NULL-match history.
-	return "Flag state ignored outside live match context"
-		if (!defined($g_ktpMatchContext{$s_addr}) ||
-			$g_ktpMatchContext{$s_addr}{match_id} eq "" ||
-			(defined($g_ktpMatchContext{$s_addr}{round_live}) &&
-			 !$g_ktpMatchContext{$s_addr}{round_live}));
+	# Never a NULL-match row. A proven producer tuple decides the match, because the
+	# freeze-time flag reset and a late round-winning capture both arrive after
+	# KTP_ROUND_FREEZE; only legacy producers keep the receipt-time round_live gate.
+	my ($match_id, $half);
+	if (ktpHasExplicitProducerContext($explicit_matchid)) {
+		my ($validated_half, $validated_map, $context_error) =
+			ktpResolveValidatedProducerEventContext(
+				$explicit_matchid, $explicit_half, $game_time, $event_epoch);
+		$context_error = "producer map disagrees with interval"
+			if ($context_error eq "" && $validated_map ne $map);
+		if ($context_error eq "") {
+			($match_id, $half) = ($explicit_matchid, int($validated_half));
+		} else {
+			ktpWarnProducerClock("flag_state", $context_error);
+		}
+	}
+	if (!defined($match_id)) {
+		return "Flag state dropped: outside live match context"
+			if (!defined($g_ktpMatchContext{$s_addr}) ||
+				$g_ktpMatchContext{$s_addr}{match_id} eq "" ||
+				(defined($g_ktpMatchContext{$s_addr}{round_live}) &&
+				 !$g_ktpMatchContext{$s_addr}{round_live}));
+		$match_id = $g_ktpMatchContext{$s_addr}{match_id};
+		$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+	}
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
-	my $match_id = $g_ktpMatchContext{$s_addr}{match_id};
-	my $half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
 	my $flag_sql = defined($flag_name) && $flag_name ne ""
 		? "'".quoteSQL($flag_name)."'" : "NULL";
 	my $initial_sql = $initial ? 1 : 0;

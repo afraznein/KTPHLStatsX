@@ -47,6 +47,8 @@ jobs:
         run: perl scripts/selftest-move-census.pl
       - name: Score rows carry round_time_left, and rows without it still land
         run: perl scripts/selftest-score-round-time-left.pl
+      - name: Round freeze un-tags frags but not proven flag-state or damage rows
+        run: perl scripts/selftest-round-state.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL
