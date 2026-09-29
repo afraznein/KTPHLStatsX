@@ -12,6 +12,7 @@ $SCRIPT_DIR =~ s{[^/\\]+$}{};
 my $SRC = $SCRIPT_DIR . 'hlstats.pl';
 my $MIGRATION33 = $SCRIPT_DIR . '../sql/migrate_033_wave2_streams.sql';
 my $MIGRATION34 = $SCRIPT_DIR . '../sql/migrate_034_grenade_throw_events.sql';
+my $MIGRATION39 = $SCRIPT_DIR . '../sql/migrate_039_score_round_time_left.sql';
 
 sub slurp {
     my ($path) = @_;
@@ -41,6 +42,17 @@ while ($mig =~ /CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE/sg) {
 is_deeply([sort keys %created], [qw(ktp_duel_stats ktp_grenade_throw_events ktp_player_state_events ktp_score_events)],
     "migrations 033+034 create the four tables");
 
+# Later migrations add nullable columns to these tables by ALTER (039:
+# ktp_score_events.round_time_left); every one of them is DEFAULT NULL.
+my $alter = slurp($MIGRATION39);
+$alter =~ s/\r//g;
+my $added = 0;
+while ($alter =~ /TABLE_NAME='(\w+)' AND COLUMN_NAME='(\w+)'\), 'ADD COLUMN \2 [^']*DEFAULT NULL/g) {
+    $created{$1}{$2} = 1;
+    $added++;
+}
+is($added, 1, "migration 039 adds one defaulted column");
+
 my %stream = (
     ktp_score_events        => ["score",        "KTP_SCORE_EVENT"],
     ktp_duel_stats          => ["duel",         "KTP_DUEL"],
@@ -53,7 +65,7 @@ for my $table (sort keys %stream) {
         or die "no INSERT for $table";
     my @written = $cols =~ /(\w+)/g;
     for my $col (@written) {
-        ok(exists $created{$table}{$col}, "$table.$col exists in migration 033");
+        ok(exists $created{$table}{$col}, "$table.$col exists in migrations 033/034/039");
     }
     my %w = map { $_ => 1 } @written;
     for my $col (sort keys %{$created{$table}}) {

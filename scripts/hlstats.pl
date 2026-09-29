@@ -7408,6 +7408,9 @@ sub ktpWave2Player
 	return ($player_id, int($identity->{userid}));
 }
 
+# round_time_left is optional (schema 25, stats_logging 1.26.1): absent from
+# older producers and stored NULL, never required, so schema 21-25 rows without
+# it still land.
 sub doEvent_KTPScoreEvent
 {
 	my ($p) = @_;
@@ -7422,12 +7425,13 @@ sub doEvent_KTPScoreEvent
 		INSERT IGNORE INTO ktp_score_events
 			(server_id, match_id, half, map_name, player_id, engine_userid,
 			 delta, total, flag_index, dll_index, flag_name, identity_resolved,
-			 game_time, event_epoch, producer_sequence, event_time)
+			 round_time_left, game_time, event_epoch, producer_sequence, event_time)
 		VALUES
 			(".int($g_servers{$s_addr}->{'id'}).", '".quoteSQL($p->{matchid})."', ".int($p->{_half}).",
 			 '".quoteSQL($p->{_map})."', ".int($player_id).", ".int($userid).",
 			 ".int($p->{delta}).", ".int($p->{total}).", ".int($p->{flag_index}).",
 			 ".int($p->{dll_index}).", $flag_sql, ".($p->{identity_resolved} ? 1 : 0).",
+			 ".ktpNumOrNull($p->{round_time_left}).",
 			 ".sprintf("%.2f", $p->{game_time} + 0).", ".int($p->{event_epoch}).",
 			 ".int($p->{sequence}).", FROM_UNIXTIME(".int($p->{event_epoch})."))
 	");

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added - `ktp_score_events.round_time_left` (schema 25, migration 039)
+
+Schema 25 is one bundle (ruled 2026-09-23): #135 made the validator accept it, and
+this gives score rows the half clock that migration 032 gave objective_attempt and
+flag_state rows. KTPAMXX stats_logging 1.26.1 emits `(round_time_left "%.1f")` on
+`KTP_SCORE_EVENT`; the daemon stores it through `ktpNumOrNull`, the same helper and
+the same NULL semantics as the other two tables (absent or malformed -> NULL, the
+producer's -1.0 "no time limit" stored as sent).
+
+The field is optional, not required. The live fleet runs schema 24 until the plugin
+swap, and a 1.26.0 build (#144 alone) is schema 25 without it, so a score row that
+lacks the field is stored with NULL rather than dropped.
+
+`shooter_flags` bit2 (IN_ATTACK2) also leaves the shot wire in 1.26.1. Nothing here
+changes for it: the column is an opaque TINYINT UNSIGNED the daemon passes through, and
+bit2 was 0 on every production row that carries the field.
+
+**Deploy order: migration 039, then this daemon, then stats_logging 1.26.1.** The
+score INSERT names the new column, so this daemon ahead of the migration loses every
+score row.
+
 ### Fixed - the manifest validator accepts capture schema 25 (KTPAMXX stats_logging 1.26.0)
 
 KTPAMXX #144 bumped `KSC_SCHEMA_CONTRACT` to 25 when it dropped `shooter_punch_pitch`
