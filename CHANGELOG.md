@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Fixed - `ktp_move_census.step_timer_fires` was documented as a control it cannot be
+
+Migration 038 and the 038 note further down both call `step_timer_fires` the sensor control
+for the footstep half -- "an independent sensor for the same event as `steps_ground`", to be
+read before any per-player footstep figure. Measured against 15,207 live `ktp_move_census`
+rows on 2026-09-30, it is not:
+
+- it co-moves with the exposure under test -- coefficient on ducked fraction **+4.02**
+  [+3.72, +4.32], on duck-tap rate **+0.49** [+0.24, +0.76];
+- its row-level correlation with emitted steps per second is **r = 0.005**, so it is not
+  tracking the event the comment said it observed;
+- so `steps_ground / step_timer_fires` is a ratio whose denominator is the variable under
+  test, and it renders a clean, monotone "footstep suppression" of **-4% to -28%** across
+  the duck range that is entirely the denominator moving. That was drafted as a finding
+  before the co-movement was measured.
+
+What resets `v.flTimeStepSound` across a duck transition is not readable from our trees --
+DoD owns those constants and `pm_shared` is not in KTP-ReHLDS (only `pm_defs.h`) -- so the
+correction states the co-movement and stops rather than theorising a mechanism.
+
+The hazard 038's text named is real and now has no remedy in this stream: a server that
+stopped emitting footsteps reads exactly like quiet players. **A per-player footstep figure
+has no control here**, and saying so is the correction -- substituting this column is what
+went wrong.
+
+⛔ **Migration 038 is applied and is NOT edited here.** Its header prose, its column
+`COMMENT` and its closing query note still carry the old claim, as the record of what
+shipped. The **live** column `COMMENT` is corrected by a forward migration staged in the
+operator queue as `1_MYSQL_hlstatsx_move_census_step_timer_comment.sql` (`-- ENGINE: mysql`,
+staged and **not applied**), deliberately not as a numbered `sql/migrate_0NN`: a migration
+Lane B has no apply position for is a hard build error, and 040 is spoken for by schema 26.
+⚠️ A **fresh** install still runs 038 and recreates the old comment, so the next migration
+that legitimately touches `ktp_move_census` should carry the corrected `COMMENT`.
+Producer-side comments are corrected in afraznein/KTPAMXX#151.
+
+Documentation only: no daemon change, no schema change, nothing to deploy.
+
 ### Added - `ktp_score_events.round_time_left` (schema 25, migration 039)
 
 Schema 25 is one bundle (ruled 2026-09-23): #135 made the validator accept it, and
@@ -62,6 +99,10 @@ queried apart by accident -- `selftest-move-census.pl` asserts that they still a
 rather than from the emitted sound, so timer fires with no steps means the server
 stopped emitting footsteps, not that the fleet went quiet. Check it before reading
 any per-player footstep figure; the migration carries the query.
+
+🔻 **CORRECTED -- see the `step_timer_fires` entry under [Unreleased].** It co-moves
+with duck actuation and cannot serve as a control. The paragraph above is what shipped,
+not what holds.
 
 **No schema ordinal is taken.** The daemon already authorizes each stream on
 `schema >= 23` **and** a per-event capability bit, and its capability list is a
