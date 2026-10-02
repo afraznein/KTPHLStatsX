@@ -278,6 +278,12 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 *Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
 assistant's recall. Each was measured; the date it was measured is stated inline.*
 
+## The daemon's journal is mostly its OWN stdout — grep it for systemd transitions with `-t systemd`
+
+`journalctl -u hlstatsx | grep -c 'Started|Stopping'` once returned 2,936 hits and read as "lots of restarts". Nearly all
+were the daemon's own output (`E019: Started map "dod_harrington"`): it counted map changes. Unit transitions
+come from systemd, so filter on it: `journalctl -u hlstatsx -t systemd`. *(measured 2026-09-21)*
+
 ## An md5 guard proves a row is UNCHANGED, never that it is UNIQUE — assert the count before the write
 
 Measured 2026-09-18 on a staged operator apply. The guard hashed the row it meant to edit, confirmed the
