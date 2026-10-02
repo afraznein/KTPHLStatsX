@@ -1148,12 +1148,23 @@ corrected.** Carried here because this was the only prose home it had.
 fails **that one stream**; the match still publishes every other stream that reconciles. **There is no
 "close to it"** — there is no loss tolerance, by design.
 
-🔑 **`sequence_gap_count` and `duplicate_or_reordered_count` are HALF-scoped, not per-stream.**
-`doEvent_KTPCaptureHealth` reads both from per-half state keyed on `(addr, matchid, half)` and stamps
-the SAME value into every event type's row, while `daemon_received` / `daemon_rejected` /
-`correlation_failure_count` are indexed by event type. So a gap reads non-zero even on a stream that
-emitted nothing. ➡️ **A gap is UDP intake loss: charge it to the stream whose `emitted` exceeds its
-`daemon_received`, and only an unaccounted residual is a match-level failure.**
+🔑 **From schema 24, `sequence_gap_count` and `duplicate_or_reordered_count` are PER-STREAM, like every
+other counter in the row.** The producer numbers each stream from its own sequence (`g_kscTypeSequence`
+in `ktp_stats_capture.inc`), and `ktpObserveCaptureMarker` keeps a per-type `{first, last, gaps,
+duplicate_or_reordered}` slot that `doEvent_KTPCaptureHealth` writes into that type's row. So one half's
+rows carry DIFFERENT gap values (measured read-only on the live table: schema-24 halves with any gap carry
+several distinct values; a schema-23 half carries one). ➡️ **A lost line shows up as BOTH a gap and an
+`emitted − daemon_received` shortfall on the same row.** Only a gap that row's own shortfall cannot
+explain is new evidence, and it fails that stream alone. A shortfall with a SMALLER gap is tail loss (a
+line lost after the last one received opens no hole), so compare with a clipped residual, never equality.
+⚠️ **Schema 22/23 rows are the exception, and they are still in the table:** those producers shared one
+sequence across all streams, so the daemon wrote one half-wide value into every row and a gap read
+non-zero even on a stream that emitted nothing. For those halves only the residual left after every
+stream's shortfall is a match-level failure. ⛔ **Do not read a schema-24 half with that half-wide rule**
+— a sibling's shortfall absorbs another stream's unexplained gap, so the gap goes unseen.
+⚠️ A few schema-23 halves from mid-September, written after the per-type daemon shipped but before the
+per-type producer did, carry differing values too: per-type slots counting a SHARED sequence, so each
+"gap" counts the other streams' lines in between. That is not a loss signal at all.
 
 ⚠️ **The unit of authorization is one stream across every observed half, never per-half** — consumers
 query a stream for the whole match, so a per-half verdict publishes a partial aggregate with nothing
