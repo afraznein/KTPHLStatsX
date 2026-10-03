@@ -1216,3 +1216,46 @@ undercount shots per player, unevenly, which inflates the accuracy computed from
 ➡️ Any accuracy work must either start after 2026-09-15 07:00 UTC, or treat earlier rows as a lower
 bound rather than a measurement — comparing a pre-boundary accuracy figure against a post-boundary
 one silently compares two different quantities.
+
+## HUD-observer `match_end` rosters are TRUNCATED before ~2026-09-30 — 745 of 785 matches, and no build fixes them retroactively
+
+⛔ **This is not `KTP_MATCH_END`.** That is KTPMatchHandler's log event and is documented above. This is
+the `reason` field on a `player_stats_summary` event in the HUD observer's own corpus
+(`/opt/hud-observer/matches/<matchid>/events.jsonl` on the data server). **A grep for `match_end` finds
+the KTPMatchHandler one and reads as though this is already covered.** Two different things, one name.
+
+**The defect:** up to KTPHudObserver 2.9.1 the `match_end` roster was truncated — it carried fewer
+players than the match actually had. `half_end` was intact throughout. Fixed by the upstream author in
+**2.9.3** (`md5 3d2e705e`), which he deployed himself; verified **24/24** with zero instances on 2.9.1.
+
+📊 **Measured 2026-10-03, and the canary window is a clean A/B because only NY1 had the fix:**
+
+| window | matches with `match_end` | whole | truncated | whole |
+|---|---|---|---|---|
+| pre-canary, all on 2.9.1 | 785 | 40 | 745 | **5%** |
+| canary window, **NY1** on 2.9.3 | 21 | 21 | 0 | **100%** |
+| canary window, **not NY1** (control, still 2.9.1) | 52 | 1 | 51 | **2%** |
+| after the fleet deploy (≥ 2026-09-30) | 43 | 40 | 3 | **93%** |
+
+🔑 **Same calendar days, same play, 100% against 2% — the fix is isolated, not inferred.**
+
+➡️ **WHAT THIS MEANS FOR A QUERY: anything computed from a HUD-observer `match_end` roster before
+~2026-09-30 is reading a partial board, and that is permanent.** Use `half_end` for that era — it is
+intact, and the plugin's own `half_end` is already the gate this file recommends elsewhere for the
+score figures.
+
+⚠️ **The 3 post-deploy residuals are probably NOT truncation.** The completeness test is
+`match_end >= max(half_end)`, and a player who disconnects between the last half and match end
+legitimately lowers the count; 13→12 twice fits that exactly. One case (`1790728388-NY5`, 12→9) does
+not fit as neatly — re-read it before concluding either way, and do not re-open the truncation finding
+on the strength of these three.
+
+⚠️ **PROBE TRAP, kept because it returns a reassuring zero.** The corpus is
+`matches/<matchid>/events.jsonl`; **`matches/*.json` matches nothing** — those 1,200-odd entries are
+directories. A first run of this measurement returned 0 whole / 0 truncated across every bucket, which
+reads as *"no truncation found"*. It was caught only because **the positive control returned 0 too**.
+➡️ Carry controls: corpus size > 0, distinct event names in one file > 1, and a fake event name = 0.
+
+⚠️ **And `match_end` is a `reason`, not an event name.** `grep '"event":"match_end"'` returns 0 of
+every file and reads as *"we never receive it"*. Grep the string you actually want, never the
+remembered spelling.
