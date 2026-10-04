@@ -282,6 +282,24 @@ def summarise(rows, skipped, out=None):
 
 # ---------------------------------------------------------------- database
 
+_ESC = {"t": "\t", "n": "\n", "0": "\0", "\\": "\\"}
+
+
+def _unescape(f):
+    """Undo mysql --batch escaping, so a tab or newline inside a value cannot split a row."""
+    if "\\" not in f:
+        return f
+    out, i = [], 0
+    while i < len(f):
+        if f[i] == "\\" and i + 1 < len(f):
+            out.append(_ESC.get(f[i + 1], f[i + 1]))
+            i += 2
+        else:
+            out.append(f[i])
+            i += 1
+    return "".join(out)
+
+
 class MysqlCli:
     """Thin wrapper over the mysql client so the tool needs no Python driver."""
 
@@ -291,16 +309,16 @@ class MysqlCli:
 
     def _run(self, sql):
         proc = subprocess.run(
-            self.command + ["--batch", "--raw", "--skip-column-names", self.database],
-            input=sql, capture_output=True, text=True, encoding="utf-8")
+            self.command + ["--batch", "--skip-column-names", self.database],
+            input=sql.encode("utf-8"), capture_output=True)
         if proc.returncode != 0:
-            raise RuntimeError(f"mysql failed ({proc.returncode}): {proc.stderr.strip()}\n-- SQL:\n{sql[:2000]}")
-        return proc.stdout
+            raise RuntimeError(f"mysql failed ({proc.returncode}): {proc.stderr.decode('utf-8', 'replace').strip()}\n-- SQL:\n{sql[:2000]}")
+        return proc.stdout.decode("utf-8", "replace")  # bytes: text mode would turn a \r in a value into a newline
 
     def rows(self, sql):
         out = []
-        for line in self._run(sql).splitlines():
-            out.append([None if f == "NULL" else f for f in line.split("\t")])
+        for line in self._run(sql).split("\n")[:-1]:
+            out.append([None if f == "NULL" else _unescape(f) for f in line.split("\t")])
         return out
 
     def scalar(self, sql):
