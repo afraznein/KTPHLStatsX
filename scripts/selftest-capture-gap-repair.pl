@@ -48,7 +48,10 @@ my @rcon;
 %g_servers = ($s_addr => FakeServer->new(id => 7, rcon_obj => 1));
 sub printEvent { return 1; }
 
-my $loaded = eval "no strict 'vars';\n$observation\n1;";
+# Tunables live above the main loop; read them from there so moving them back below it breaks this test.
+my ($before_loop) = split /^while \(\$loop = &getLine\(\)\) \{/m, $source, 2;
+my $tunables = join("\n", $before_loop =~ /^(our \$KTP_RESEND_\w+\s*=\s*\d+;)/mg);
+my $loaded = eval "no strict 'vars';\n$tunables\n$observation\n1;";
 die "cannot load observation block: $@" unless $loaded;
 
 # Seed accepted state the way a persisted manifest would.
