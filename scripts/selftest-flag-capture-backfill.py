@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import time
+import textwrap
 import unittest
 import uuid
 from datetime import datetime, timedelta
@@ -198,6 +199,53 @@ class Statements(unittest.TestCase):
             bf.main(["--apply"])
 
 
+FAKE_MYSQL = textwrap.dedent("""
+    import sys
+    sys.stdout.buffer.write(bytes.fromhex(sys.argv[1]))
+""")
+
+
+def canned(raw: bytes):
+    """A stand-in client whose stdout is exactly these bytes, so the real subprocess path is exercised."""
+    return bf.MysqlCli([sys.executable, "-c", FAKE_MYSQL, raw.hex()], "db")
+
+
+class ReaderEscapes(unittest.TestCase):
+    def test_unescape_batch_sequences(self):
+        self.assertEqual(bf._unescape(r"a\tb"), "a\tb")
+        self.assertEqual(bf._unescape(r"a\nb"), "a\nb")
+        self.assertEqual(bf._unescape(r"a\0b"), "a\0b")
+        bs = chr(92)
+        self.assertEqual(bf._unescape("a" + bs + bs + "b"), "a" + bs + "b")
+        self.assertEqual(bf._unescape(bs + bs + "n"), bs + "n")  # an escaped backslash, then a plain n
+        self.assertEqual(bf._unescape("plain"), "plain")
+        self.assertEqual(bf._unescape("trailing\\"), "trailing\\")
+
+    def test_rows_keep_control_characters_in_a_field(self):
+        raw = (b"1\t\r\t101\n"
+               b"2\t\x1e\t102\n"
+               b"3\ta" + bytes([92]) + b"tb\t103\n"
+               b"4\ta" + bytes([92]) + b"nb\t104\n"
+               b"5\t\x08\x0b\x0c\x1c\x1d\x1f\xc2\x85\xe2\x80\xa8\t105\n"
+               b"6\tNULL\t106\n")
+        got = canned(raw).rows("ignored")
+        self.assertEqual(got, [
+            ["1", "\r", "101"],
+            ["2", "\x1e", "102"],
+            ["3", "a\tb", "103"],
+            ["4", "a\nb", "104"],
+            ["5", "\x08\x0b\x0c\x1c\x1d\x1f\x85\u2028", "105"],
+            ["6", None, "106"],
+        ])
+
+    def test_rows_empty_output_and_empty_field(self):
+        self.assertEqual(canned(b"").rows("x"), [])
+        self.assertEqual(canned(b"1\t\t3\n").rows("x"), [["1", "", "3"]])
+
+    def test_non_utf8_bytes_do_not_abort_the_read(self):
+        self.assertEqual(canned(b"1\ta\xffb\n").rows("x"), [["1", "a\ufffdb"]])
+
+
 # ---------------------------------------------------------------- database tests
 
 IMAGE = os.environ.get("KTP_SELFTEST_MYSQL_IMAGE")
@@ -245,6 +293,20 @@ def lift_daemon_insert():
     return f"INSERT INTO ktp_flag_captures ({m.group(1)}) VALUES ({values});"
 
 
+DROP_ALL_SQL = ("DROP TABLE IF EXISTS ktp_flag_captures, hlstats_Actions, hlstats_Events_PlayerActions, "
+                "hlstats_Events_ChangeTeam, ktp_matches;")
+
+# Maps carrying control characters, as found in production: written by hex so no client escaping is involved.
+ODD_MAPS = [(104, "0D"), (105, "1E"), (106, "610962"), (107, "610A62")]
+ODD_MAP_SQL = (
+    "INSERT INTO hlstats_Events_ChangeTeam (eventTime, serverId, map, playerId, team) VALUES "
+    + ", ".join(f"('2026-03-01 19:59:00', 7, UNHEX('{h}'), {p}, 'Allies')" for p, h in ODD_MAPS)
+    + ", ('2026-03-01 19:59:00', 7, UNHEX('0D'), 108, 'Axis');\n"
+    "INSERT INTO hlstats_Events_PlayerActions (eventTime, serverId, map, match_id, playerId, actionId) VALUES "
+    + ", ".join(f"('2026-03-01 20:10:00', 7, UNHEX('{h}'), 'fx-1', {p}, 6)" for p, h in ODD_MAPS)
+    + ", ('2026-03-01 20:11:00', 7, UNHEX('0D'), 'fx-1', 108, 6);"
+)
+
 @unittest.skipUnless(IMAGE, "set KTP_SELFTEST_MYSQL_IMAGE to run the database tests")
 class Database(unittest.TestCase):
     @classmethod
@@ -288,7 +350,37 @@ class Database(unittest.TestCase):
                     print(code, file=err)
         return code, out.getvalue() + err.getvalue()
 
+    def test_control_characters_in_map_values(self):
+        self.sql(DROP_ALL_SQL)
+        self.addCleanup(self.sql, DROP_ALL_SQL)
+        self.load("migrate_010_flag_captures.sql")
+        self.load("migrate_040_flag_captures_provenance.sql")
+        self.sql(FIXTURE_SQL)
+        self.sql(ODD_MAP_SQL)
+        self.sql(lift_daemon_insert())
+        self.sql("UPDATE ktp_flag_captures SET event_time = '2026-08-20 20:05:03'")
+
+        db = bf.MysqlCli(self.mysql.split(), "hlstatsx")
+        got = {int(r[0]): r for r in db.rows(
+            "SELECT playerId, map, HEX(map), serverId FROM hlstats_Events_ChangeTeam WHERE playerId >= 104")}
+        self.assertEqual(len(got), 5)
+        for player, hexmap in ODD_MAPS + [(108, "0D")]:
+            self.assertEqual(len(got[player]), 4, got[player])
+            self.assertEqual(got[player][1].encode("utf-8").hex().upper(), hexmap)
+            self.assertEqual(got[player][3], "7")
+
+        code, out = self.run_tool("--control-point-until", "2026-09-01 00:00:00")
+        self.assertEqual(code, 0, out)
+        self.assertIn("source events read: 11", out)
+
+        code, out = self.run_tool("--control-point-until", "2026-09-01 00:00:00", "--apply", "--expect", "9")
+        self.assertEqual(code, 0, out)
+        teams = self.sql("SELECT player_id, IFNULL(team,'<null>') FROM ktp_flag_captures "
+                         "WHERE provenance='inferred' AND player_id >= 104 ORDER BY player_id")
+        self.assertEqual(teams.splitlines(), ["104	Allies", "105	Allies", "106	Allies", "107	Allies", "108	Axis"])
+
     def test_migration_daemon_insert_and_backfill(self):
+        self.sql(DROP_ALL_SQL)
         self.load("migrate_010_flag_captures.sql")
         self.sql(FIXTURE_SQL)
         self.sql(lift_daemon_insert())  # a pre-040 live row
