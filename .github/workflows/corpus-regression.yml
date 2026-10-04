@@ -53,6 +53,8 @@ jobs:
         run: perl scripts/selftest-capture-gap-repair.pl
       - name: Nothing assigns at file scope after the daemon main loop
         run: perl scripts/selftest-no-code-after-main-loop.pl
+      - name: Schema 26 shot hitgroup and rewind group, and older rows still land NULL
+        run: perl scripts/selftest-shot-hitgroup-rewind.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL
