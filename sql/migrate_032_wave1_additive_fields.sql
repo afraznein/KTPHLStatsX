@@ -2,7 +2,8 @@
 -- streams. Apply after migration 031. No schema-contract bump: every column
 -- is optional and NULL from a pre-wave-1 producer (KTPAMXX < 1.21.0), so a
 -- mixed fleet keeps writing. Spec: ENGINE_STATS_EXPANSION_PLAN_20260909.md
--- sections 3.1, 3.4, 3.6a, 3.8, 3.9, 3.10.
+-- sections 3.1, 3.4, 3.6a, 3.8, 3.9, 3.10 (reconstructed in
+-- docs/ENGINE_STATS_EXPANSION_PLAN.md, as the original is in no repo).
 --
 -- WHY. The producer already had every one of these in hand at emit time and
 -- threw them away: how far a cap got before it was broken, how much of a hit

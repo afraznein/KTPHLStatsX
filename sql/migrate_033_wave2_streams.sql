@@ -2,7 +2,8 @@
 -- Apply after migration 032. No schema-contract bump: the producer declares
 -- `score`, `duel` and `player_state` in KSC_CAPABILITIES (KTPAMXX 1.22.0) and
 -- a daemon without this migration simply drops the markers.
--- Spec: ENGINE_STATS_EXPANSION_PLAN_20260909.md sections 3.2, 3.5, 3.7.
+-- Spec: ENGINE_STATS_EXPANSION_PLAN_20260909.md sections 3.2, 3.5, 3.7
+-- (reconstructed in docs/ENGINE_STATS_EXPANSION_PLAN.md, as the original is in no repo).
 --
 -- WHY. Three facts the module already had and never surfaced:
 --   ktp_score_events        the engine's own score attribution -- who was
