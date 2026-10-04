@@ -49,6 +49,10 @@ jobs:
         run: perl scripts/selftest-score-round-time-left.pl
       - name: Round freeze un-tags frags but not proven flag-state or damage rows
         run: perl scripts/selftest-round-state.pl
+      - name: Capture gap repair queues and closes resend requests
+        run: perl scripts/selftest-capture-gap-repair.pl
+      - name: Nothing assigns at file scope after the daemon main loop
+        run: perl scripts/selftest-no-code-after-main-loop.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL
