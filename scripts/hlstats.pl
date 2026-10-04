@@ -3072,8 +3072,9 @@ while ($loop = &getLine()) {
 							# both actors and the producer window -- a victim cannot die twice
 							# inside it, so killer+victim already identifies the kill.
 							my $fc_weapon_where = "";
+							my @fc_weapon_candidates;
 							if ($fc_weapon ne "mortar") {
-								my @fc_weapon_candidates = ($fc_weapon);
+								@fc_weapon_candidates = ($fc_weapon);
 								push @fc_weapon_candidates, $fc_stock_weapon_alias{$fc_weapon}
 									if exists $fc_stock_weapon_alias{$fc_weapon};
 								$fc_weapon_where = "AND weapon IN (".join(", ", map {
@@ -3134,6 +3135,7 @@ while ($loop = &getLine()) {
 								"AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")";
 							my $fc_match_description = "legacy receipt window";
 							my $fc_order_by = "id ASC";
+							my ($fc_seen, $fc_seen_offset);
 							if ($fc_context_error eq "") {
 								my $fc_event_epoch = int($ev_properties_hash{"event_epoch"});
 								$fc_clock_sql = ", game_time = ".($ev_properties_hash{"game_time"} + 0).
@@ -3155,12 +3157,47 @@ while ($loop = &getLine()) {
 								# negative -- delta -1: 7,107, 0: 30,108, +1: 269 -- so 19% sat
 								# against the tight edge while the wide edge went nearly unused,
 								# and the residual misses pile up just below it. Symmetric at 2s.
+								# BEGIN KTP FRAG TIME CLAUSE
 								$fc_time_where =
 									"AND eventTime >= FROM_UNIXTIME(".($fc_event_epoch - 2).") ".
 									"AND eventTime < FROM_UNIXTIME(".($fc_event_epoch + 2).")";
 								$fc_match_description = "producer second (+/-2s)";
 								$fc_order_by =
 									"ABS(UNIX_TIMESTAMP(eventTime) - ".$fc_event_epoch.") ASC, id ASC";
+								# A backlogged daemon stamps the row seconds after the kill was
+								# logged, so join on the kill's own log second when we saw it.
+								($fc_seen, $fc_seen_offset) = ktpFindRecordedFrag(
+									$g_servers{$s_addr}->{'id'}, int($ktp_actor_player_id),
+									int($ktp_victim_player_id), \@fc_weapon_candidates, $fc_event_epoch);
+								if (defined($fc_seen) && !ref($fc_seen)) {
+									$fc_time_where = "AND 1 = 0";
+									$fc_match_description = "unambiguous logged-second";
+								} elsif (defined($fc_seen)) {
+									$fc_time_where = "AND eventTime = FROM_UNIXTIME(".int($fc_seen->{row_at}).")";
+									$fc_match_description = "logged-second";
+									$fc_order_by = "id ASC";
+									if ($fc_seen_offset > 0) {
+										# An earlier same-pair kill read in the same second is still
+										# unclaimed, so ORDER BY id alone would hand us its row.
+										my $fc_skip = &doQuery("
+											SELECT id FROM hlstats_Events_Frags
+											WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
+											AND killerId = ".int($ktp_actor_player_id)."
+											AND victimId = ".int($ktp_victim_player_id)."
+											$fc_weapon_where
+											AND frag_context_recorded = 0
+											$fc_time_where
+											ORDER BY id ASC
+											LIMIT ".int($fc_seen_offset).", 1
+										");
+										my ($fc_seen_id) = $fc_skip->fetchrow_array();
+										$fc_skip->finish();
+										$fc_time_where = defined($fc_seen_id)
+											? "AND id = ".int($fc_seen_id)
+											: "AND 1 = 0";
+									}
+								}
+								# END KTP FRAG TIME CLAUSE
 							} elsif ($fc_has_explicit_context) {
 								ktpWarnProducerClock("frag_context", $fc_context_error);
 							}
@@ -3220,6 +3257,8 @@ while ($loop = &getLine()) {
 							}
 							ktpRejectCaptureMarker("frag", \%ev_properties_hash, 0)
 								if (!defined($fc_rv));
+							$fc_seen->{claimed} = 1
+								if (defined($fc_rv) && $fc_rv > 0 && ref($fc_seen));
 							if (defined($fc_rv) && $fc_rv > 0 &&
 								!defined($g_ktpMatchContext{$s_addr})) {
 								ktpRefreshLateHeadshots(
@@ -5467,6 +5506,56 @@ sub ktpWarnProducerClock
 		"$marker authoritative clocks suppressed ($count occurrences): $error; preserving legacy facts",
 		1, 1);
 }
+
+# BEGIN KTP RECENT FRAGS
+# eventTime is when the daemon read the kill, not when it was logged, so keep the
+# logged second beside the row's second for the frag_context join.
+sub ktpNoteRecordedFrag
+{
+	my ($server_id, $killer_id, $victim_id, $weapon, $logged_at, $row_at) = @_;
+	my $by_pair = ($g_ktpRecentFrags{$server_id} ||= {});
+	my $horizon = $row_at - 60;
+	if (($g_ktpRecentFragsSwept{$server_id} || 0) < $horizon) {
+		foreach my $pair (keys %{$by_pair}) {
+			@{$by_pair->{$pair}} = grep { $_->{row_at} >= $horizon } @{$by_pair->{$pair}};
+			delete $by_pair->{$pair} if (!@{$by_pair->{$pair}});
+		}
+		$g_ktpRecentFragsSwept{$server_id} = $row_at;
+	}
+	push(@{$by_pair->{int($killer_id)." ".int($victim_id)}}, {
+		weapon => $weapon, logged_at => $logged_at, row_at => $row_at, claimed => 0 });
+}
+
+# Returns (frag, how many earlier unclaimed frags of the pair share its row second),
+# a bare "ambiguous" when two kills sit equally near the epoch, or () when unseen.
+# An empty weapon list accepts any weapon, as the UPDATE does.
+sub ktpFindRecordedFrag
+{
+	my ($server_id, $killer_id, $victim_id, $weapons, $epoch) = @_;
+	my $frags = $g_ktpRecentFrags{$server_id}{int($killer_id)." ".int($victim_id)};
+	return () if (!$frags);
+	my %accept = map { $_ => 1 } @{$weapons};
+	my @eligible = grep { !$_->{claimed} && (!@{$weapons} || $accept{$_->{weapon}}) } @{$frags};
+	my ($best, $best_gap, $tied);
+	foreach my $frag (@eligible) {
+		my $gap = abs($frag->{logged_at} - $epoch);
+		next if ($gap > 1);
+		if (!defined($best) || $gap < $best_gap) {
+			($best, $best_gap, $tied) = ($frag, $gap, 0);
+		} elsif ($gap == $best_gap) {
+			$tied = 1;
+		}
+	}
+	return () if (!defined($best));
+	return ("ambiguous") if ($tied);
+	my $offset = 0;
+	foreach my $frag (@eligible) {
+		last if ($frag == $best);
+		$offset++ if ($frag->{row_at} == $best->{row_at});
+	}
+	return ($best, $offset);
+}
+# END KTP RECENT FRAGS
 
 # BEGIN KTP CAPTURE AUTHORIZATION
 # Parse the bare schema-21/22/23 marker shapes with a bounded, exact grammar.

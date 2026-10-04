@@ -1180,6 +1180,8 @@ sub doEvent_Frag
 						$vz,
 						$half_num
 					);
+					&ktpNoteRecordedFrag($g_servers{$s_addr}->{'id'}, $killer->{playerid},
+						$victim->{playerid}, $weapon, $ev_remotetime, $ev_unixtime);
 
 					# KTP: Track players participating in match
 					&ktpTrackMatchPlayer($killer);
