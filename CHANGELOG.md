@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added - `ktp_flag_captures` provenance, and a backfill for the captures before its go-live
+
+`ktp_flag_captures` holds nothing before its own go-live, while every earlier capture still sits in
+`hlstats_Events_PlayerActions` as `dod_capture_area` / `dod_control_point`. Those rows carry the
+daemon's match_id tag but no half, no side and no flag name, so anything backfilled from them is
+derived, and without a marker it would read as measured forever.
+
+- `sql/migrate_040_flag_captures_provenance.sql` adds `provenance` (`recorded` | `inferred`, NOT NULL,
+  default `recorded`) and `source_action_id` (the PlayerActions id, unique). The daemon's one INSERT
+  names its columns, so it needs no change and no restart; live rows take the default.
+- `scripts/backfill-flag-captures-inferred.py` writes `inferred` rows. Dry run by default; writes only
+  with `--apply --expect N`. half comes from the `ktp_matches` window that contains the event (none or
+  several: skipped and counted, never guessed); team from the latest same-map `ChangeTeam` no older
+  than the half's start; `flag_name` is always NULL. Re-runs insert nothing. The dry run ends with a
+  control that re-derives half and team for recent recorded rows and scores the agreement.
+- `dod_control_point` has a second gap: the daemon began writing that code into the table later than
+  `dod_capture_area`. `--control-point-until` covers it, with a guard that drops any candidate a
+  recorded row already covers.
+- Tests: `scripts/selftest-flag-capture-backfill.py` (set `KTP_SELFTEST_MYSQL_IMAGE=mysql:8.0` for the
+  database half, which runs the migration twice, the daemon's INSERT lifted from `hlstats.pl`, and the
+  backfill end to end in a throwaway container).
+
 ### Fixed - `ktp_move_census.step_timer_fires` was documented as a control it cannot be
 
 Migration 038 and the 038 note further down both call `step_timer_fires` the sensor control
