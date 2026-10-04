@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Fixed - a fresh install no longer recreates the false `step_timer_fires` COMMENT
+
+Migration 038's `CREATE TABLE` now gives `ktp_move_census.step_timer_fires` the same COMMENT the
+live correction set on 2026-09-30, and its two prose claims carry a correction note pointing at the
+"documented as a control it cannot be" entry below. Only the COMMENT text moved: the column is still `INT UNSIGNED NOT NULL DEFAULT 0`, and
+because 038 is `CREATE TABLE IF NOT EXISTS`, re-running it on a database that has the table does
+nothing. Production already has the corrected comment, so this edit makes the file agree with the
+database. The bytes that ran on 2026-09-26 are still the md5 the header records.
+
+Why edit an applied migration instead of waiting for the next one that touches `ktp_move_census`:
+none is planned, and a new numbered migration breaks Lane B until KTPInfrastructure registers it.
+This repo already edits applied migrations' comments (029's COMMENT semicolon, 038's own header),
+and applied-ness here is probed by schema effect, not by file content.
+
+`selftest-move-census.pl` now pins the COMMENT text, that it no longer claims to be a control, and
+that it has no semicolon. Two of its new assertions fail against `origin/main`'s 038.
+
+### Added - `docs/ENGINE_STATS_EXPANSION_PLAN.md`, reconstructed from its citations
+
+Migrations 032 and 033, the shot-stream batching in `hlstats.pl`, and the KTPAMXX capture code cite
+`ENGINE_STATS_EXPANSION_PLAN_20260909.md` by section number, and no repo has ever held that file.
+The new doc rebuilds it from the citing sites: a citation index, and for each cited section what the
+shipped code and migrations actually do, with sources. Uncited sections are marked as gaps, not
+filled in. The 032 and 033 headers and the wave-0 entry below now point at it.
+`hlstats.pl`'s four citations are left alone on purpose: editing them would move the daemon's md5
+off the deployed build for a comment.
+
 ### Added - `ktp_flag_captures` provenance, and a backfill for the captures before its go-live
 
 `ktp_flag_captures` holds nothing before its own go-live, while every earlier capture still sits in
@@ -82,6 +109,7 @@ staged and **not applied**), deliberately not as a numbered `sql/migrate_0NN`: a
 Lane B has no apply position for is a hard build error, and 040 is spoken for by schema 26.
 ⚠️ A **fresh** install still runs 038 and recreates the old comment, so the next migration
 that legitimately touches `ktp_move_census` should carry the corrected `COMMENT`.
+Superseded: 038 now carries the corrected `COMMENT` itself (see the entry above).
 Producer-side comments are corrected in afraznein/KTPAMXX#151.
 
 Documentation only: no daemon change, no schema change, nothing to deploy.
@@ -415,7 +443,8 @@ type is still rejected (155 assertions, up from 153).
 ### Added - shot-context stream (ktp_shot_events, migration 027)
 
 Pairs with KTPAMXX's `dod_client_weapon_fire` handler (wave 0,
-`ENGINE_STATS_EXPANSION_PLAN_20260909.md`, schema 24). Shooter
+`ENGINE_STATS_EXPANSION_PLAN_20260909.md`, reconstructed as
+`docs/ENGINE_STATS_EXPANSION_PLAN.md`; schema 24). Shooter
 position/facing/prone/deployed on every weapon actuation, joinable to
 KTPMatchHandler's existing per-shot ledger (`ktp_ac_weapon_fires`) by
 player + weapon + nearest clock. Not a duplicate ledger.
