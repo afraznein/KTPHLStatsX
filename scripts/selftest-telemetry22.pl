@@ -121,10 +121,10 @@ my %manifest_ok = (
 );
 is(ktpValidateCaptureManifestPayload(\%manifest_ok), '',
     'schema-22 manifest accepts the two-second paired contract');
-for my $bad_schema (20, 26) {
+for my $bad_schema (20, 27) {
     my %bad = (%manifest_ok, schema => $bad_schema);
     like(ktpValidateCaptureManifestPayload(\%bad), qr/schema/,
-        "schema $bad_schema is rejected by the schema-25 receiver");
+        "schema $bad_schema is rejected by the schema-26 receiver");
 }
 my %manifest23 = (
     %manifest_ok, producer_version => '1.19.0', schema => 23,

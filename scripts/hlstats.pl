@@ -3853,7 +3853,7 @@ while ($loop = &getLine()) {
 
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "shot")) {
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0);
-							$ev_status = "Shot dropped: no accepted schema-24 manifest";
+							$ev_status = "Shot dropped: no accepted schema-24+ manifest";
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPShot(
 								$ktp_buffered_player_id,
@@ -3888,7 +3888,11 @@ while ($loop = &getLine()) {
 								$ev_properties{"shooter_punch_pitch"},
 								$ev_properties{"shooter_punch_yaw"},
 								$ev_properties{"shooter_speed"},
-								$ev_properties{"shooter_stamina"}
+								$ev_properties{"shooter_stamina"},
+								$ev_properties{"hitgroup"},
+								$ev_properties{"rw_flags"},
+								$ev_properties{"rw_depth"},
+								$ev_properties{"rw_want"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -5510,6 +5514,10 @@ sub ktpParseCaptureMarkerEnvelope
 	# a shape is a producer version, not a free-form key set. The first full
 	# Lane B on the merged heads (run 35182281925) dropped every attempt
 	# because only the pre-wave-1 shape was listed here.
+	# Schema 26 adds the sv_maxunlag in force, after the revision pair.
+	my @schema26_manifest = qw(matchid half map producer producer_version schema
+		capabilities position_interval buffer_entries life_buffer_entries
+		map_revision_algorithm map_revision sv_maxunlag sequence event_epoch);
 	my @wave1_attempt = qw(kind matchid half map attempt_id flag_index
 		flag_name capturing_team owner_before allies_in_zone axis_in_zone
 		stop_reason progress peak_progress timetocap round_time_left game_time
@@ -5518,6 +5526,8 @@ sub ktpParseCaptureMarkerEnvelope
 	my $shape_ok = $key_shape eq join("\x1f", @{$expected{$marker}});
 	$shape_ok = 1 if ($marker eq "manifest" &&
 		$key_shape eq join("\x1f", @legacy_manifest));
+	$shape_ok = 1 if ($marker eq "manifest" &&
+		$key_shape eq join("\x1f", @schema26_manifest));
 	$shape_ok = 1 if ($marker eq "objective_attempt" &&
 		$key_shape eq join("\x1f", @wave1_attempt));
 	return (undef, "marker field order/schema mismatch") if (!$shape_ok);
@@ -5879,12 +5889,14 @@ sub ktpValidateCaptureManifestPayload
 	# A refused manifest takes every gated stream down for that half, not just
 	# the one whose shape changed -- a producer must never ship ahead of this list.
 	# 25 drops shooter_punch_pitch/yaw from shot; doEvent_KTPShot already stores
-	# an absent field as NULL, so 25 authorizes exactly what 24 does.
+	# an absent field as NULL, so 25 authorizes exactly what 24 does. 26 adds
+	# hitgroup and the rewind group to shot and retires trace_start_off; no
+	# stream is added or required, so it too authorizes what 24 does.
 	return "unsupported schema"
 		if ($p->{schema} !~ /^\d+$/ ||
 			(int($p->{schema}) != 21 && int($p->{schema}) != 22 &&
 			 int($p->{schema}) != 23 && int($p->{schema}) != 24 &&
-			 int($p->{schema}) != 25));
+			 int($p->{schema}) != 25 && int($p->{schema}) != 26));
 	# KTP: map_revision fields are unconditional in ksc_emit_manifest (not
 	# schema-gated on the plugin side), so every schema from 23 onward carries
 	# them -- >= 23, not == 23, or a schema-24 manifest (wave 0, "shot") would
@@ -5899,6 +5911,10 @@ sub ktpValidateCaptureManifestPayload
 	} elsif (defined($p->{map_revision_algorithm}) || defined($p->{map_revision})) {
 		return "map revision fields require schema 23";
 	}
+	# The value itself is never a reason to refuse: persistence stores a malformed
+	# ceiling as NULL, while a refused manifest would drop the whole half.
+	return "sv_maxunlag requires schema 26"
+		if (defined($p->{sv_maxunlag}) && int($p->{schema}) < 26);
 	return "invalid position_interval"
 		if ($p->{position_interval} !~ /^\d+(?:\.\d+)?$/ ||
 			($p->{position_interval} + 0) != 2);
@@ -5943,6 +5959,8 @@ sub doEvent_KTPCaptureManifest
 		? "'".quoteSQL($p->{map_revision_algorithm})."'" : "NULL";
 	my $map_revision_sql = defined($p->{map_revision})
 		? "'".quoteSQL($p->{map_revision})."'" : "NULL";
+	my $sv_maxunlag_sql = (defined($p->{sv_maxunlag}) &&
+		$p->{sv_maxunlag} =~ /^\d{1,2}(?:\.\d{1,3})?$/) ? ($p->{sv_maxunlag} + 0) : "NULL";
 	delete $g_ktpPendingLife{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
 	delete $g_ktpPendingDamage{join("\x1e", $s_addr, $p->{matchid}, int($p->{half}))};
 	my $rv = &execNonQuery("
@@ -5950,13 +5968,13 @@ sub doEvent_KTPCaptureManifest
 			(server_id, match_id, half, map_name, producer, producer_version,
 			 schema_version, capabilities, position_interval, buffer_entries,
 			 life_buffer_entries, map_revision_algorithm, map_revision_sha256,
-			 producer_sequence, event_epoch, event_time)
+			 sv_maxunlag, producer_sequence, event_epoch, event_time)
 		VALUES (".int($server_id).", '".quoteSQL($p->{matchid})."', ".int($p->{half}).",
 			'".quoteSQL($p->{map})."', '".quoteSQL($p->{producer})."',
 			'".quoteSQL($p->{producer_version})."', ".int($p->{schema}).",
 			'".quoteSQL($p->{capabilities})."', ".($p->{position_interval} + 0).",
 			".int($p->{buffer_entries}).", ".int($p->{life_buffer_entries}).",
-			$map_revision_algorithm_sql, $map_revision_sql,
+			$map_revision_algorithm_sql, $map_revision_sql, $sv_maxunlag_sql,
 			".int($p->{sequence}).", ".int($p->{event_epoch}).",
 			FROM_UNIXTIME(".int($p->{event_epoch})."))
 		ON DUPLICATE KEY UPDATE map_name=VALUES(map_name),
@@ -5965,6 +5983,7 @@ sub doEvent_KTPCaptureManifest
 			buffer_entries=VALUES(buffer_entries), life_buffer_entries=VALUES(life_buffer_entries),
 			map_revision_algorithm=VALUES(map_revision_algorithm),
 			map_revision_sha256=VALUES(map_revision_sha256),
+			sv_maxunlag=VALUES(sv_maxunlag),
 			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
 			event_time=VALUES(event_time)
 	");
@@ -6867,7 +6886,8 @@ sub doEvent_KTPShot
 		$trace_start_off, $cmd_all_traces,
 		$net_lerp, $net_dropped, $net_backup, $net_cmds,
 		$shooter_flags, $shooter_punch_pitch, $shooter_punch_yaw,
-		$shooter_speed, $shooter_stamina) = @_;
+		$shooter_speed, $shooter_stamina,
+		$hitgroup, $rw_flags, $rw_depth, $rw_want) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -6950,6 +6970,23 @@ sub doEvent_KTPShot
 		return "NULL" if (!$has_target || !defined($v) || $v !~ /^-?\d+$/);
 		return int($v);
 	};
+	# Schema 26. hitgroup rides the target group: it is stamped in the same
+	# first-wins window, so it has a value exactly when tgt_dead does, and the
+	# producer's -1 (no target, or outside 0-99) is NULL like every sentinel here.
+	my $wire_hitgroup = ($has_target && defined($hitgroup) && $hitgroup =~ /^\d+$/
+		&& int($hitgroup) <= 99) ? int($hitgroup) : "NULL";
+	# The rewind group cannot share $has_target: a miss has no target state but
+	# does have a rewind record, and misses are half of what it is for. A flags
+	# value outside 0-127 voids the whole group rather than any one field of it.
+	# depth and want exist only once lag compensation was attempted (bit0).
+	my $has_rw = (defined($rw_flags) && $rw_flags =~ /^\d+$/ && int($rw_flags) <= 127);
+	my $wire_rw_flags = $has_rw ? int($rw_flags) : "NULL";
+	my $wire_rw = sub {
+		my ($v) = @_;
+		return "NULL" if (!$has_rw || !(int($rw_flags) & 1) ||
+			!defined($v) || $v !~ /^\d+$/ || int($v) > 9999);
+		return int($v);
+	};
 
 	# The target reaches us as an engine userid and is stored as the durable
 	# player id, so it joins ktp_damage_events.victim_id directly. Resolution
@@ -6993,7 +7030,11 @@ sub doEvent_KTPShot
 		", ".$wire_target->($shooter_punch_pitch).
 		", ".$wire_target->($shooter_punch_yaw).
 		", ".$wire_target->($shooter_speed).
-		", ".$wire_target->($shooter_stamina).")";
+		", ".$wire_target->($shooter_stamina).
+		", ".$wire_hitgroup.
+		", ".$wire_rw_flags.
+		", ".$wire_rw->($rw_depth).
+		", ".$wire_rw->($rw_want).")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
@@ -7025,7 +7066,8 @@ sub flushShotEvents
 			 trace_start_off, cmd_all_traces,
 			 net_lerp, net_dropped, net_backup, net_cmds,
 			 shooter_flags, shooter_punch_pitch, shooter_punch_yaw,
-			 shooter_speed, shooter_stamina)
+			 shooter_speed, shooter_stamina,
+			 hitgroup, rw_flags, rw_depth, rw_want)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 		ON DUPLICATE KEY UPDATE id=id

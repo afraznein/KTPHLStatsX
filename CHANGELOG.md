@@ -24,6 +24,31 @@ derived, and without a marker it would read as measured forever.
   database half, which runs the migration twice, the daemon's INSERT lifted from `hlstats.pl`, and the
   backfill end to end in a throwaway container).
 
+### Added - schema 26: shot hitgroup, per-shot rewind, and the sv_maxunlag in force
+
+Daemon side of schema 26 (design: KTPInfrastructure
+`docs/handover/SCHEMA_26_SHOT_HITGROUP_AND_REWIND.md`; the four open questions in its
+section 10 were ruled yes on 2026-09-29).
+
+- `ktpValidateCaptureManifestPayload` accepts schema 26 alongside 21-25. No stream is added
+  and the required capabilities are unchanged, so 26 authorizes what 24/25 do.
+- The manifest envelope gains one exact shape: `sv_maxunlag` after the revision pair. The
+  value lands in `ktp_capture_manifests.sv_maxunlag`; a malformed value is stored NULL and
+  never refuses the manifest, because a refused manifest drops every gated stream for the
+  half. A pre-26 manifest that carries the field is refused, as a pre-23 one carrying the
+  revision pair already is.
+- Shot rows store `hitgroup`, `rw_flags`, `rw_depth`, `rw_want`. `hitgroup` is gated on the
+  target group's presence key (`tgt_dead`); the rewind group has its own, because a miss has
+  a rewind record and no target. `-1` is NULL. `rw_flags` outside 0-127 voids the group;
+  `rw_depth`/`rw_want` are NULL unless bit0 (attempted) is set.
+- Schema 26 no longer sends `trace_start_off` (0 on every stored sample). Its column stays;
+  an absent property is NULL, as for every older-producer field.
+- `sql/migrate_041_shot_hitgroup_rewind.sql` adds the five columns, guarded on
+  `information_schema`. **It must be applied before this daemon runs**: the shot INSERT names
+  the four shot columns and the manifest INSERT names `sv_maxunlag`.
+- New `scripts/selftest-shot-hitgroup-rewind.pl`, listed in `corpus-regression.yml`. The
+  move-census ordinal pin moves to 21..26 and the telemetry22 refusal probe to 27.
+
 ### Fixed - `ktp_move_census.step_timer_fires` was documented as a control it cannot be
 
 Migration 038 and the 038 note further down both call `step_timer_fires` the sensor control
