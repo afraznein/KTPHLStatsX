@@ -196,6 +196,185 @@ is($trailing_newline->{certified}, 0,
 unlike($frag_branch, qr/\$ev_properties_hash\{"(?:k_prone|k_clip|is_last_flag_defense)"\}\s*\/\//,
     'context properties are validated rather than defaulted with //');
 
+# --- the join keys on the kill's log second, not when the daemon read it ----
+# UseTimestamp is off, so eventTime is the daemon's processing time. In a flush
+# backlog it trails the logged kill by seconds (a kill logged at E lands at E+4)
+# and the producer window misses it. The shipped index and time clause run here
+# against an in-memory table; the clause interpreter dies on any SQL it does not
+# know, so a clause it cannot evaluate cannot pass by being ignored.
+my $recent_block = between_markers($source,
+    '# BEGIN KTP RECENT FRAGS', '# END KTP RECENT FRAGS');
+my $time_block = between_markers($source,
+    '# BEGIN KTP FRAG TIME CLAUSE', '# END KTP FRAG TIME CLAUSE');
+eval "no strict 'vars';\n$recent_block\n1;" or die "cannot load recent-frags block: $@";
+
+our (%g_ktpRecentFrags, %g_ktpRecentFragsSwept, %g_servers, $s_addr);
+our ($fc_event_epoch, $fc_seen, $fc_seen_offset);
+our ($fc_time_where, $fc_match_description, $fc_order_by);
+$s_addr = '10.0.0.1:27015';
+%g_servers = ($s_addr => { id => 7 });
+my (@table, $next_id, @selects);
+
+sub reset_world {
+    %g_ktpRecentFrags = (); %g_ktpRecentFragsSwept = ();
+    @table = (); $next_id = 100; @selects = ();
+}
+
+# What doEvent_Frag does for one stock "killed" line: queue the row stamped with
+# the processing second, and note it with the second the line was logged.
+sub stock_kill {
+    my (%k) = @_;
+    my $row = { id => $next_id++, serverId => $k{server} // 7, killerId => $k{killer},
+        victimId => $k{victim}, weapon => $k{weapon}, eventTime => $k{read_at}, claimed => 0 };
+    push(@table, $row);
+    main::ktpNoteRecordedFrag($row->{serverId}, $k{killer}, $k{victim}, $k{weapon},
+        $k{logged_at}, $k{read_at});
+    return $row->{id};
+}
+
+sub rows_where {
+    my ($sql) = @_;
+    my @rows = @table;
+    my $rest = $sql;
+    while ($rest =~ s/\b(serverId|killerId|victimId|id) = (\d+)//) {
+        my ($col, $v) = ($1, $2);
+        @rows = grep { $_->{$col} == $v } @rows;
+    }
+    while ($rest =~ s/\bweapon IN \(([^)]*)\)//) {
+        my %ok = map { my $w = $_; $w =~ s/^\s*'|'\s*$//g; ($w => 1) } split(/,/, $1);
+        @rows = grep { $ok{$_->{weapon}} } @rows;
+    }
+    @rows = grep { !$_->{claimed} } @rows if ($rest =~ s/\bfrag_context_recorded = 0//);
+    @rows = () if ($rest =~ s/\b1 = 0//);
+    while ($rest =~ s/\beventTime (>=|<|=) FROM_UNIXTIME\((-?\d+)\)//) {
+        my ($op, $t) = ($1, $2);
+        @rows = grep { $op eq '>=' ? $_->{eventTime} >= $t
+            : $op eq '<' ? $_->{eventTime} < $t : $_->{eventTime} == $t } @rows;
+    }
+    $rest =~ s/\b(?:AND|WHERE)\b|\s+//g;
+    die "clause interpreter does not understand: '$rest' in [$sql]" if ($rest ne '');
+    return @rows;
+}
+
+sub ordered {
+    my ($order, @rows) = @_;
+    return sort { $a->{id} <=> $b->{id} } @rows if ($order eq 'id ASC');
+    if ($order =~ /^ABS\(UNIX_TIMESTAMP\(eventTime\) - (-?\d+)\) ASC, id ASC$/) {
+        my $e = $1;
+        return sort { abs($a->{eventTime} - $e) <=> abs($b->{eventTime} - $e)
+            || $a->{id} <=> $b->{id} } @rows;
+    }
+    die "unknown ORDER BY: $order";
+}
+
+{
+    package FakeSth;
+    sub new { my ($c, @r) = @_; return bless { rows => [@r] }, $c; }
+    sub fetchrow_array { my ($s) = @_; my $r = shift(@{$s->{rows}}); return defined($r) ? ($r) : (); }
+    sub finish { 1 }
+}
+sub doQuery {
+    my ($sql) = @_;
+    push(@selects, $sql);
+    my ($where, $order, $off) = ($sql =~
+        /WHERE(.*)ORDER BY\s+(.*?)\s+LIMIT\s+(\d+),\s*1/s) or die "unexpected SELECT: $sql";
+    my @rows = ordered($order, rows_where($where));
+    return FakeSth->new(defined($rows[$off]) ? $rows[$off]{id} : ());
+}
+
+# One frag_context marker through the shipped weapon and time clauses, then the
+# UPDATE's own WHERE shape. Returns the claimed row id, or undef.
+sub marker {
+    my (%m) = @_;
+    ($fc_weapon, $fc_event_epoch) = ($m{weapon}, $m{epoch});
+    ($ktp_actor_player_id, $ktp_victim_player_id) = ($m{killer}, $m{victim});
+    ($fc_seen, $fc_seen_offset) = (undef, undef);
+    my $where = eval "no strict 'vars';\n$weapon_block\n$time_block\n"
+        . '"serverId = 7 AND killerId = $ktp_actor_player_id AND victimId = '
+        . '$ktp_victim_player_id $fc_weapon_where AND frag_context_recorded = 0 $fc_time_where";';
+    die "cannot run shipped time clause: $@" unless defined($where);
+    my ($row) = ordered($fc_order_by, rows_where($where));
+    return undef unless $row;
+    $row->{claimed} = 1;
+    $fc_seen->{claimed} = 1 if ref($fc_seen);
+    return $row->{id};
+}
+
+my $E = 1_791_000_000;
+
+reset_world();
+my $on_time = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), $on_time,
+    'an on-time frag still matches');
+
+reset_world();
+my $late = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E + 4);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), $late,
+    'a frag the daemon read four seconds late matches -- the producer window alone misses it');
+
+reset_world();
+my $late_alias = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E + 6);
+is(marker(killer => 1, victim => 2, weapon => 'bayonet', epoch => $E + 1), $late_alias,
+    'the weapon alias and a one-second log/epoch boundary still find a late row');
+
+# Same killer, victim and weapon twice, both read in one backlogged second that
+# sits inside the producer window of the later kill. The earlier kill's marker is
+# lost; nearest-row-then-id would hand its row to the later marker.
+reset_world();
+my $first = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E + 4);
+my $second = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E + 3, read_at => $E + 4);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E + 3), $second,
+    'an ambiguous same-second pair attaches the later marker to the later kill');
+ok(!(grep { $_->{id} == $first && $_->{claimed} } @table),
+    'and leaves the earlier kill unclaimed rather than stealing it');
+is(scalar(@selects), 1, 'skipping an unclaimed earlier row costs one id lookup');
+
+reset_world();
+$first = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E + 4);
+$second = stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E + 3, read_at => $E + 4);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), $first,
+    'in-order markers: the first claims the first kill');
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E + 3), $second,
+    'and the second claims the second');
+is(scalar(@selects), 0, 'in-order markers need no id lookup');
+
+reset_world();
+stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E + 3);
+stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E + 2, read_at => $E + 3);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E + 1), undef,
+    'two kills equally near the epoch claim nothing rather than guess');
+is($fc_match_description, 'unambiguous logged-second', 'and the rejection says why');
+
+reset_world();
+stock_kill(killer => 1, victim => 2, weapon => 'kar', logged_at => $E, read_at => $E + 4, server => 8);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), undef,
+    'a kill on another server is never a candidate');
+
+reset_world();
+my $unknown = stock_kill(killer => 1, victim => 2, weapon => 'garand', logged_at => $E, read_at => $E + 4);
+is(marker(killer => 1, victim => 2, weapon => 'mortar', epoch => $E), $unknown,
+    'the unresolved-weapon label still accepts any weapon');
+
+# Rows queued before a daemon restart are not in the index; the producer window
+# still serves them, so nothing that matched before stops matching.
+reset_world();
+push(@table, { id => 50, serverId => 7, killerId => 1, victimId => 2, weapon => 'kar',
+    eventTime => $E + 1, claimed => 0 });
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), 50,
+    'an unindexed on-time row falls back to the producer window');
+
+reset_world();
+main::ktpNoteRecordedFrag(7, 1, 2, 'kar', $E, $E);
+main::ktpNoteRecordedFrag(7, 3, 4, 'kar', $E + 120, $E + 120);
+ok(!exists($g_ktpRecentFrags{7}{'1 2'}), 'the index forgets kills older than a minute');
+ok(exists($g_ktpRecentFrags{7}{'3 4'}), 'and keeps the one just noted');
+
+like($frag_branch, qr/\$fc_seen->\{claimed\} = 1\s*\n\s*if \(defined\(\$fc_rv\) && \$fc_rv > 0 && ref\(\$fc_seen\)\)/,
+    'an index entry is marked claimed only when the UPDATE took a row');
+my $handlers = slurp($SCRIPT_DIR . 'HLstats_EventHandlers.plib');
+like($handlers, qr/&recordEvent\(\s*"Frags".*?\);\s*&ktpNoteRecordedFrag\(\$g_servers\{\$s_addr\}->\{'id'\}, \$killer->\{playerid\},\s*\$victim->\{playerid\}, \$weapon, \$ev_remotetime, \$ev_unixtime\);/s,
+    'every recorded frag is indexed with its logged second and its row second');
+
 # --- migration 020 -----------------------------------------------------------
 my $migration20 = slurp($MIGRATION20);
 like($migration20, qr/COLUMN_NAME = 'frag_context_certified'/,
