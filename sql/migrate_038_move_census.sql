@@ -9,6 +9,9 @@
 --   The bytes that ran are md5 8561151cdc07d0b555c0eeb265332ab4 (this file at
 --   144c3e8, before this header edit); the copy kept as the queue's record is
 --   migrations-to-apply/applied/MYSQL_hlstatsx_038_move_census_APPLIED_20260926.sql.
+--   The step_timer_fires COMMENT was later corrected live (2026-09-30) and here, so a
+--   fresh install matches production. CREATE TABLE IF NOT EXISTS makes that edit a
+--   no-op on any database that already has the table.
 --
 -- Apply once as: sudo mysql hlstatsx < migrate_038_move_census.sql
 --
@@ -106,6 +109,12 @@
 -- client predicts its own), so what is counted here is exactly what the other
 -- players were sent -- not an approximation of it.
 --
+-- CORRECTED 2026-09-30: the claim below is false. step_timer_fires co-moves with
+-- duck actuation, so it is NOT a control for steps_ground and a per-player
+-- footstep figure has no control in this stream (see CHANGELOG). The column
+-- COMMENT in the CREATE TABLE below now says so, and this paragraph is kept as
+-- the record of what shipped.
+--
 -- step_timer_fires is the control, and it is not optional. It observes the
 -- engine's own step timer resetting, which is a different sensor for the same
 -- event. Rows with timer fires but no steps mean the SERVER stopped emitting
@@ -159,7 +168,7 @@ CREATE TABLE IF NOT EXISTS ktp_move_census (
     steps_ladder INT UNSIGNED NOT NULL DEFAULT 0,
     sounds_water INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'wade/swim -- not driven by the step timer',
     pmove_sounds INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'every player sound the movement code emitted; the superset',
-    step_timer_fires INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'CONTROL: engine step-timer resets, an independent sensor for the same event as steps_ground. Read it before any per-player footstep figure.',
+    step_timer_fires INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'engine step-timer resets. NOT a control for steps_ground: it co-moves with duck actuation, so a ratio against it measures its own denominator rather than the steps',
 
     game_time FLOAT NOT NULL COMMENT 'producer gametime at flush, seconds since map start',
     event_epoch BIGINT UNSIGNED DEFAULT NULL COMMENT 'producer wall-clock',
@@ -220,6 +229,8 @@ CREATE TABLE IF NOT EXISTS ktp_move_census (
 --   GROUP BY c.player_id, n.i, c.bucket_width
 --   ORDER BY c.player_id, n.i;
 --
+-- CORRECTED 2026-09-30: step_timer_fires does not separate the cases below. See
+-- the correction above the footstep-columns paragraph.
 -- ⚠️ Any query that reports a footstep rate must carry the tap census and
 -- step_timer_fires alongside it. A step count on its own is not interpretable:
 -- a player who crouch-walks deliberately emits few footsteps, which is ordinary

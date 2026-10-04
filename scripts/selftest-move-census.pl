@@ -247,4 +247,28 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
     is($zero{stam_tap_min}, "0", 'a stamina of 0 at a tap is a value, not an absence');
 }
 
+# --- 6. a fresh install creates the corrected step_timer_fires COMMENT -------
+#
+# The live column COMMENT was corrected on 2026-09-30, but a fresh install builds
+# the table from migration 038, so 038 has to carry the same text or the false
+# "control" claim comes back on every new database.
+
+my $MIG = dirname($0) . '/../sql/migrate_038_move_census.sql';
+open(my $mfh, '<', $MIG) or die "cannot read $MIG: $!";
+my $migration = do { local $/; <$mfh> };
+close($mfh);
+$migration =~ s/\r//g;
+
+my ($timer_comment) = ($migration =~ /^\s*step_timer_fires\s+INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '([^']*)',\s*$/m);
+ok(defined($timer_comment), '038 defines step_timer_fires as INT UNSIGNED NOT NULL DEFAULT 0 with a COMMENT');
+is($timer_comment,
+    'engine step-timer resets. NOT a control for steps_ground: it co-moves with duck actuation, so a ratio against it measures its own denominator rather than the steps',
+    '038 creates the same step_timer_fires COMMENT the live correction set');
+unlike($timer_comment // '', qr/CONTROL:|independent sensor/,
+    '038 no longer calls step_timer_fires a control');
+unlike($timer_comment // '', qr/;/,
+    'the COMMENT carries no semicolon, which a statement splitter would cut on');
+like($migration, qr/CREATE TABLE IF NOT EXISTS ktp_move_census\b/,
+    '038 stays IF NOT EXISTS, so the COMMENT edit is a no-op on a database that has the table');
+
 done_testing();
