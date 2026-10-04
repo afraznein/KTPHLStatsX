@@ -278,6 +278,23 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 *Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
 assistant's recall. Each was measured; the date it was measured is stated inline.*
 
+## `ktp_flag_captures` holds TWO populations — and no reader filters on `provenance`
+*(2026-10-04, after `scripts/backfill-flag-captures-inferred.py` wrote 225,019 rows.)*
+`provenance = 'recorded'` rows are the daemon's (from 2026-08-15 16:25:31). `'inferred'` rows were
+rebuilt from `hlstats_Events_PlayerActions` for 2026-01-16 → 2026-08-15: **half and team are derived
+after the fact, `flag_name` is always NULL, and `event_time` is the log clock** (recorded rows use the
+daemon's `NOW()`). A sweep of every reader on `main` (KTPInfrastructure analytics SQL, report and
+export scripts, MMR, keep-the-prac) found **none that filters `provenance`**:
+- the analytics coverage check (`player_*_fact.sql` `producer_coverage`) now sees captures for S9
+  matches, so an S9 report built later shows capture credits **from inferred rows as if measured**;
+- anything that groups or values captures by `flag_name` (`capture_event_fact.sql`,
+  `objective_timeline_fact.sql`, the `points_for_cap` join in `ktp-stats-export.py` /
+  `scoreboard_reconcile.py`, which falls back to 1 point) gets **nothing usable** from an inferred row.
+
+➡️ Before building S9 reports, or any reader that treats half/team/flag as measured, filter
+`provenance = 'recorded'` or handle `flag_name IS NULL` explicitly. Rollback of the backfill alone is
+`DELETE FROM ktp_flag_captures WHERE provenance = 'inferred'` — no recorded row carries that value.
+
 ## The daemon's journal is mostly its OWN stdout — grep it for systemd transitions with `-t systemd`
 
 `journalctl -u hlstatsx | grep -c 'Started|Stopping'` once returned 2,936 hits and read as "lots of restarts". Nearly all
