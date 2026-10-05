@@ -118,7 +118,7 @@ jobs:
     # never report again, with no failing check to point at. Pinning the sha
     # freezes which version of the orchestration CODE runs until the pin is
     # moved on purpose (KTPInfrastructure#201).
-    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
+    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@8f9e7e27a7c2466bfafc4dafd776b23b45a882a0
     with:
       lane: corpus
       # infrastructure_ref/amxx_ref are literals: they select which commit gets
