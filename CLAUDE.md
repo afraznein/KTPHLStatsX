@@ -1276,3 +1276,22 @@ reads as *"no truncation found"*. It was caught only because **the positive cont
 ⚠️ **And `match_end` is a `reason`, not an event name.** `grep '"event":"match_end"'` returns 0 of
 every file and reads as *"we never receive it"*. Grep the string you actually want, never the
 remembered spelling.
+
+## Kill, shot, accuracy and grenade-throw counts are not like-for-like across 2026-10-02/03 and 2026-10-05
+
+Three KTPMatchHandler/stats_logging changes altered WHICH events count, not how they register, so a per-match or
+per-player comparison that spans them compares two different quantities.
+
+| Change | Effect on counts | Live from (03:00 ET restart) |
+|---|---|---|
+| `afraznein/KTPMatchHandler`#47 (0.10.176) | go-live moves to the real round start (`RoundState=1`); kills and shots in the post-restart countdown stop counting | NY 27015: 2026-10-02 (canary). Other 23 instances: 2026-10-03 |
+| `afraznein/KTPMatchHandler`#48 (0.10.176) | the freeze-time stats pause works for the first time (`register_message` was inert in extension mode, now `register_event`); freeze-time events stop counting | same as #47 |
+| `afraznein/KTPMatchHandler`#49 (0.10.177) + `afraznein/KTPAMXX`#153 (`stats_logging` 1.26.3) | `.restarthalf` go-live follows the same rule; a respawn's grenade-count reset stops counting as a throw | all 24: 2026-10-05 |
+
+➡️ **Tell a match's regime by its start time against these dates**, per instance: before its 03:00 ET swap it is the old
+regime, after it the new one. NY 27015 is one day ahead of the rest for #47/#48. A match straddling a swap ran one build
+throughout, since plugins only change at the nightly restart.
+
+➡️ **Compare within a regime, or label the boundary.** Expect lower kill and shot totals after the changes, and fewer grenade
+throws after 2026-10-05; that is the rule changing, not play. This is a different boundary from the 2026-09-15 accuracy
+lower bound above, and the two stack for anything older.
