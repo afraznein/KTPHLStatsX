@@ -141,6 +141,39 @@
 -- stam_tap_min is NULLABLE and NULL is the normal state for a window with no
 -- taps. Never a sentinel: 0 is a real, reachable stamina reading, so there is
 -- no in-range value that can mean "absent".
+--
+-- ============================================================================
+-- 🔻 THE NO-MATCH-CONTEXT STATE BELOW HAS NEVER OCCURRED, AND NOTHING SAYS SO
+-- ============================================================================
+-- match_id is nullable and half's COMMENT offers `0=no match context`. The
+-- daemon is fully prepared to store both: doEvent_KTPMove starts at
+-- `$match_id_sql = "NULL"` with `$half = 0` and only replaces them when a
+-- producer context resolves. THE PRODUCER NEVER SENDS IT. ksc_move_flush_task
+-- tests `if (!tracked)` FIRST and resets the player's counters without emitting
+-- anything, so a row with match_id NULL or half 0 cannot be produced.
+--
+-- It is a ONE-SIDED gate: schema and daemon describe a state only the producer
+-- refuses to reach. Nothing in either place is wrong -- what is wrong is that
+-- the column COMMENT reads as a description of data, so the next reader queries
+-- `WHERE match_id IS NULL`, gets 0 rows, and concludes the untracked play is
+-- quiet rather than absent. It is absent.
+--
+-- The gate has a real reason, which is why this is a note and not a patch: a
+-- window spanning the start of a match must not carry warmup movement into it.
+-- The producer has the other option already -- ksc_optional_event_context,
+-- used by five other streams -- so making the state reachable is a scoping
+-- decision about the boundary, plus a producer version bump and a wave.
+--
+-- ⛔ UNTIL THAT HAPPENS, READ THIS COMMENT AS A CONTRACT, NOT AS A POPULATION.
+-- ➡️ And do not reverse it quietly: if the producer is ever changed to emit
+-- untracked windows, delete this block in the same change. A stale "never
+-- occurs" is worse than none, because it argues against believing real rows.
+-- Nothing enforces that pairing, which is the honest state of it.
+--
+-- The other choice, for a stream whose producer gates the same way, is NOT NULL
+-- on both columns: it advertises only what the producer contract can reach, and
+-- a row that cannot exist then fails at the database instead of reading as an
+-- empty population.
 
 CREATE TABLE IF NOT EXISTS ktp_move_census (
     id BIGINT UNSIGNED AUTO_INCREMENT,
