@@ -25,42 +25,10 @@ Modified HLStatsX:CE Perl daemon with KTP Match Handler integration. Separates w
 repo default, `origin/HEAD` resolves to it, and every one of the twelve most recently
 merged PRs was based on it.
 
-⛔ **This section used to say the opposite** — that `preprod` was the integration branch,
-that `main` *"trails preprod by whatever has not been promoted"*, and that a new PR's base
-should be reset to `preprod`. Following that today builds from a branch nobody has pushed
-to in weeks, which is the dangerous direction for a stale instruction to point.
-
-**`preprod` is retired in practice.** Measured 2026-09-24 against the refs: it is a strict
-ancestor of `main`, **0 ahead and 33 behind**, so it carries nothing `main` does not. PR #118
-(`ci/retire-infra-preprod`) is where the train moved. ➡️ **Re-derive rather than trusting
-those numbers:** `git rev-list --left-right --count origin/preprod...origin/main`.
-
-⚠️ **The branch is retired in practice, still named in CI config, and — until this
-edit — promoted in these docs. Three states at once. The REFS are authoritative**, because
-they are where the code and the merges actually are; the other two are residue that nobody
-has cleaned up, and neither of them moves a commit.
-
-🔴 **Do not open a PR against `preprod` "just to be safe" — it can never merge.**
-`preprod`'s branch protection still requires `corpus-regression / Lane B (corpus, preprod,
-run 1)`, but that context interpolates the INFRASTRUCTURE ref and `infrastructure_ref` is now
-`main`, so the lane emits `… (corpus, main, run 1)` and the required context never reports at
-all. **A required check that never reports blocks the branch instead of failing it** — there
-is no red X to point at. `main`'s protection already requires the context the lane really
-emits, which is why `main` PRs are unaffected.
-
-⛔ **`preprod` in `corpus-regression.yml` is mostly NOT this repo's branch — never sweep
-the word.** Of its ten occurrences, exactly one is this repo's: the `branches: [preprod, main]`
-trigger on line 5. One more is `amxx_ref: preprod`, which is **KTPAMXX's `preprod` — live,
-divergent, and 3 commits ahead of its own `main`** — and `scripts/check-lane-refs.py` ENFORCES
-that value, so deleting it fails the `ref-pairing` gate. The rest are comments about
-KTPInfrastructure's `preprod` (retired 2026-09-19) and the reusable-workflow sha cut from it.
-
-📌 **Scoped, deliberately not done here: dropping `preprod` from the line-5 trigger.**
-It is a CI change, and on its own it makes things worse rather than better — it stops the lane
-running for a `preprod` PR without removing the protection rule that is waiting on it. The real
-retire is a repo-admin act: drop or re-point `preprod`'s required status check, then delete the
-branch. Until someone does that, the line-5 trigger is inert (no PR targets `preprod`) and
-costs nothing.
+⛔ **`preprod` is RETIRED** (branch deleted 2026-10-05; tip preserved as the tag
+`archive/preprod-20261005` at `5851f65`). Older instructions to branch from or open PRs
+against it are void — it can no longer be a base. Its CI references were removed in the
+same change, and the Lane B component refs that used to ride KTPAMXX's `preprod` now ride `main`.
 
 ## Deployment
 Deployed to `/opt/hlstatsx/` on the data server (<DATA_SERVER_IP>).

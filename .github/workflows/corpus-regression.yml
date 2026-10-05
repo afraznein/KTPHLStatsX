@@ -2,7 +2,7 @@ name: Corpus Regression
 
 on:
   pull_request:
-    branches: [preprod, main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -68,8 +68,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/KTPInfrastructure
-          # KTPInfrastructure retired `preprod` (2026-09-19); this checkout
-          # has failed on every PR since. `main` is that repo's only branch now.
           ref: main
           path: KTPInfrastructure
       - name: Log in to GHCR
@@ -110,34 +108,23 @@ jobs:
         run: python3 scripts/check-lane-refs.py
 
   corpus-regression:
-    # Pinned to a commit sha, not `@preprod` -- a literal branch name still moves
-    # every time someone pushes to it. The reusable workflow's inner job is named
-    # `Lane B (${{ inputs.lane }}, ${{ matrix.target_ref }}, run ${{
-    # matrix.run_index }})`, which composes the required status check
-    # `corpus-regression / Lane B (corpus, preprod, run 1)` on this repo's `main`
-    # and `preprod`. A rename of that job on preprod -- even one unrelated to
-    # this repo -- would mean the required context can never report again, with
-    # no failing check to point at: every PR would block forever. Pinning the sha
-    # freezes which version of the reusable workflow's orchestration CODE runs,
-    # so a later rename on preprod cannot reach us until the pin is moved on
-    # purpose. Pinned to preprod's tip as of 2026-08-30 (KTPInfrastructure#201).
+    # Pinned to a commit sha, not a branch name -- a literal branch name still
+    # moves. The reusable workflow's inner job is named `Lane B (${{ inputs.lane
+    # }}, ${{ matrix.target_ref }}, run ${{ matrix.run_index }})`, which composes
+    # the required status check `corpus-regression / Lane B (corpus, main, run
+    # 1)`. A rename of that job upstream would mean the required context can
+    # never report again, with no failing check to point at. Pinning the sha
+    # freezes which version of the orchestration CODE runs until the pin is
+    # moved on purpose (KTPInfrastructure#201).
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
     with:
       lane: corpus
-      # infrastructure_ref/amxx_ref are literals: they select which commit of
-      # KTPInfrastructure/KTPAMXX gets CHECKED OUT once the pinned workflow code
-      # above is running, deliberately left live so the harness content (fixtures,
-      # schema, bot driver) keeps tracking its branch. Only the orchestration YAML
-      # is frozen.
-      #
-      # They no longer name the same branch: KTPInfrastructure retired `preprod`
-      # (ruled 2026-09-19), so the harness rides `main` and KTPAMXX still rides
-      # `preprod`. scripts/check-lane-refs.py declares that split per ref rather
-      # than relaxing its equality test.
+      # infrastructure_ref/amxx_ref are literals: they select which commit gets
+      # CHECKED OUT once the pinned workflow code above is running, left live so
+      # the harness content keeps tracking its branch.
       infrastructure_ref: main
-      # Literal, not the PR's base ref. KTPAMXX is not the artifact under test
-      # here — it is part of the stack the harness assembles, so it has to come
-      # from the COMPONENT lineage. See scripts/check-lane-refs.py.
-      amxx_ref: preprod
+      # Literal, not the PR's base ref: KTPAMXX is part of the stack the harness
+      # assembles, not the artifact under test. See scripts/check-lane-refs.py.
+      amxx_ref: main
       daemon_ref: ${{ github.event.pull_request.head.sha || github.sha }}
     secrets: inherit

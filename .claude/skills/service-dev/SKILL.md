@@ -121,10 +121,8 @@ This daemon parses log lines it doesn't control the format of:
   both sides, don't just patch around it unilaterally in Perl.
 
 ## Deploy workflow
-Branch from and merge to `preprod` — `main` is the release branch, advanced by a
-promotion PR, and GitHub defaults new PRs to the wrong base. A fix merged only to
-`preprod` is invisible from `main`, so deploying from `main` silently reverts
-whatever has not been promoted.
+Branch from and merge to `main`. `preprod` was retired 2026-10-05; its tip is the tag
+`archive/preprod-20261005`.
 
 There's no compile step — this is interpreted Perl. Path is:
 1. Bump `VERSION`, add a `CHANGELOG.md` section, update the version line in
