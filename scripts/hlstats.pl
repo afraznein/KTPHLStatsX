@@ -3664,11 +3664,11 @@ while ($loop = &getLine()) {
 					);
 				}
 			} elsif ($ev_verb eq "triggered") {
-				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census)$/) {
+				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census|aim_vis)$/) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
 						break_context => "break", position_sample => "position",
 						team_membership => "team_membership", shot => "shot",
-						move_census => "move");
+						move_census => "move", aim_vis => "aim_vis");
 					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties);
 				}
 
@@ -3676,7 +3676,7 @@ while ($loop = &getLine()) {
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
 				my $ktp_buffered_identity;
-			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census)$/) {
+			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census|aim_vis)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
@@ -3958,6 +3958,30 @@ while ($loop = &getLine()) {
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPMove($ktp_buffered_player_id, \%ev_properties);
 							ktpRejectCaptureMarker("move", \%ev_properties, 0)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+						}
+					} elsif ($ev_obj_a eq "aim_vis") {
+						# KTP: aim-vs-transmission census (tier 2.7). One row per
+						# player per producer interval, same manifest gate and buffered
+						# identity as move_census, and not batched for the same reason.
+						#
+						# No schema ordinal of its own: the capability bit is the gate,
+						# so a producer without it is refused here rather than having
+						# its whole manifest rejected upstream.
+						#
+						# MEASURE-ONLY, and asymmetric. "Not packed inside the window"
+						# says the client was sent nothing to draw. "Packed" says
+						# nothing at all -- PVS is leaf-based and entities stay packed
+						# behind walls. Nothing here or downstream thresholds any of
+						# it, and the consumer that would hold a cut point is private.
+						$ev_type = 621;  # KTP aim-vis marker
+
+						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "aim_vis")) {
+							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0);
+							$ev_status = "Aim vis dropped: manifest does not carry the aim_vis capability";
+						} elsif ($ktp_buffered_player_id) {
+							$ev_status = &doEvent_KTPAimVis($ktp_buffered_player_id, \%ev_properties);
+							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
@@ -5693,6 +5717,7 @@ sub ktpAuthorizeCaptureManifest
 		position => $capabilities{position_state} && $capabilities{map_revision} ? 1 : 0,
 		shot => $capabilities{shot} ? 1 : 0,
 		move => $capabilities{move} ? 1 : 0,
+		aim_vis => $capabilities{aim_vis} ? 1 : 0,
 		map_revision_algorithm => $p->{map_revision_algorithm},
 		map_revision => $p->{map_revision},
 	};
@@ -5703,7 +5728,7 @@ sub ktpCaptureManifestAuthorizes
 {
 	my ($p, $event_type) = @_;
 	return 0 if (!defined($event_type) ||
-		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot|move)$/);
+		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot|move|aim_vis)$/);
 	my $key = ktpCaptureContextKey($p);
 	return 0 if (!defined($key) ||
 		!defined($g_ktpAcceptedCaptureManifests{$key}));
@@ -5914,7 +5939,7 @@ sub ktpResentLineIsRedundant
 			position_sample => "position", frag_context => "frag", assist => "assist",
 			cap_break => "break", break_context => "break",
 			team_membership => "team_membership", shot => "shot",
-			move_census => "move");
+			move_census => "move", aim_vis => "aim_vis");
 		$marker = $by_trigger{$1};
 	}
 	return 1 if (!defined($marker));
@@ -6453,7 +6478,7 @@ sub ktpValidateCaptureHealthPayload
 	# whitelists and missed here, which would have left the highest-volume new
 	# stream with no drop detection at all -- and the wave-0 canary reads this
 	# table, per stream, to decide whether the rollout is safe.
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw move);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw move aim_vis);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -6506,7 +6531,14 @@ sub ktpCaptureHealthSilentStreamWarning
 	# "authorised and silent". And it is NOT a legitimately sparse stream: the producer
 	# charges standing-still ground time, so every alive player in a tracked half emits
 	# a row every window. Zero attempts on a busy half is a wiring loss, not a quiet one.
-	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot move);
+	#
+	# `aim_vis` joins it for the same reason and one of its own: a half busy
+	# enough to clear the floor above cannot honestly contain zero attempts,
+	# because a sample is taken whenever the game's own aim trace lands on a live
+	# enemy. Zero there is a wiring loss, not quiet play. It is NOT in
+	# always_active because the stream is capability-gated, so the manifest bit
+	# is what separates "not authorised" from "authorised and silent".
+	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot move aim_vis);
 	if ($manifest_gated{$type}) {
 		return "" if (!$manifest->{$type});
 	} elsif (!$always_active{$type}) {
@@ -7337,6 +7369,169 @@ sub doEvent_KTPMove
 		" steps=".$counter->($p->{steps_ground})." timer=".$counter->($p->{step_timer_fires});
 }
 # END KTP MOVE CENSUS STREAM
+
+# BEGIN KTP AIM-VIS STREAM
+# Tier 2.7: was the enemy a player aimed at ever transmitted to that player.
+#
+# Reads the dodx natives dodx_get_aim_vis_stats / dodx_reset_aim_vis_stats
+# (KTPAMXX modules/dod/dodx/NBase.cpp). The module half has been live on the
+# whole fleet for weeks with no reader; this is the destination, and it lands
+# before any producer on purpose -- schema and daemon ahead of code is the safe
+# direction, and the opposite order has already been paid for on this stream's
+# siblings.
+#
+# THREE RULES THIS HANDLER EXISTS TO ENFORCE, all of them silent when broken:
+#
+#   1. ONLY THE ABSENCE IS SOUND. samples_unpacked says the server sent that
+#      client nothing to draw. The complement says nothing at all -- PVS is
+#      leaf-based and generous, and entities stay packed behind walls. So no
+#      packed count is stored and none is derived.
+#   2. THE DENOMINATOR IS LOAD-BEARING. samples_unpacked alone is not
+#      interpretable, so it travels in the same row as samples_known, and a
+#      malformed counter is DROPPED rather than defaulted to 0. Every other
+#      ktp_* stream defaults its counters, which is right there and wrong here:
+#      a 0 denominator reads as "this player took no samples" instead of as a
+#      malformed marker.
+#   3. UNKNOWN IS NEITHER SIDE. samples_unknown is not in samples_known and is
+#      not evidence. Folding it into either one fabricates a rate.
+#
+# MEASURE-ONLY. No threshold, no ratio, no conclusion, here or in the schema.
+sub doEvent_KTPAimVis
+{
+	my ($player_id, $p) = @_;
+	return 0 if (!defined($player_id));
+
+	my $manifest_key = ktpCaptureContextKey({
+		matchid => $p->{matchid}, half => $p->{half},
+	});
+	my $manifest = defined($manifest_key)
+		? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
+	# Gated on the capability bit, not on a schema ordinal. 23 is the floor the
+	# authorizer itself uses; the bit is what says this producer ships the stream.
+	return "Aim vis dropped: no accepted manifest carrying the aim_vis capability"
+		if (!defined($manifest) || $manifest->{schema} < 23 || !$manifest->{aim_vis});
+
+	# Tracked halves only, and the column is NOT NULL to match. The manifest gate
+	# above already implies it -- an accepted manifest is keyed on matchid+half --
+	# but saying so here keeps the refusal attributable instead of surfacing as a
+	# NOT NULL violation from MySQL.
+	return "Aim vis dropped: no explicit producer context"
+		if (!ktpHasExplicitProducerContext($p->{matchid}));
+
+	my ($validated_half, $validated_map, $clock_error, $clock_source) =
+		ktpResolveValidatedProducerEventContext(
+			$p->{matchid}, $p->{half}, $p->{game_time} // 0, $p->{event_epoch});
+	if ($clock_error ne "") {
+		ktpWarnProducerClock("aim_vis", $clock_error);
+		return "Aim vis dropped: $clock_error";
+	}
+	my $match_id_sql = "'".quoteSQL($p->{matchid})."'";
+	my $half = $validated_half;
+
+	# Rule 2. Each of the three sample counters is required and must be a plain
+	# non-negative integer. Nothing defaults to 0 here: see rule 2 in the header.
+	my %n;
+	for my $field (qw(samples_known samples_unpacked samples_unknown)) {
+		my $raw = $p->{$field};
+		return "Aim vis dropped: invalid $field"
+			if (!defined($raw) || $raw !~ /^\d+$/ || $raw > 4294967295);
+		$n{$field} = int($raw);
+	}
+	# Rule 1 as an arithmetic invariant: unpacked is a SUBSET of the answered
+	# samples. Enforced here rather than as a CHECK constraint so a violation is
+	# attributed to the producer that sent it, in a log line, instead of failing
+	# an insert on a live stream against an unpinned MySQL version.
+	return "Aim vis dropped: samples_unpacked exceeds samples_known"
+		if ($n{samples_unpacked} > $n{samples_known});
+
+	# The flush interval. Distinct from the per-sample lookback below, and the
+	# names are the only thing keeping them apart: ktp_move_census has a column
+	# literally called window_ms that IS its flush interval, so the collision is
+	# live across tables. 0 is legitimate -- it means the producer could not
+	# establish the interval boundary, not that the interval was empty.
+	my $interval_ms = $p->{interval_ms};
+	return "Aim vis dropped: invalid interval_ms"
+		if (!defined($interval_ms) || $interval_ms !~ /^\d+$/ ||
+			$interval_ms > 4294967295);
+	$interval_ms = int($interval_ms);
+
+	# The per-sample lookback the module actually used: interpolation depth plus
+	# that player measured ping, summed over answered samples and the widest one.
+	my $window_sum = $p->{window_ms_sum};
+	my $window_max = $p->{window_ms_max};
+	# Bounded as a digit STRING, not numerically: BIGINT UNSIGNED max does not
+	# survive a float comparison, so a numeric guard lets the first overflowing
+	# value through and MySQL decides what happens to it.
+	return "Aim vis dropped: invalid window_ms_sum"
+		if (!defined($window_sum) || $window_sum !~ /^\d+$/ ||
+			length($window_sum) > 20 ||
+			(length($window_sum) == 20 && $window_sum gt "18446744073709551615"));
+	return "Aim vis dropped: invalid window_ms_max"
+		if (!defined($window_max) || $window_max !~ /^\d+$/ ||
+			$window_max > 4294967295);
+
+	# Two invariants of the module, checked rather than trusted, because a
+	# plausible-but-wrong window total silently rescales every mean computed from
+	# this column later. Neither is a tuning knob: both are derived from the row.
+	return "Aim vis dropped: window reported with no answered samples"
+		if ($n{samples_known} == 0 && ($window_sum + 0 > 0 || $window_max + 0 > 0));
+	return "Aim vis dropped: window exceeds the interval that produced it"
+		if ($interval_ms > 0 && $window_max + 0 > $interval_ms);
+
+	# 1 while the pack recorder hook was registered. 0 is a real and important
+	# reading -- the instrument was off, every sample landed in unknown, and the
+	# row says nothing about the player -- so it is stored, never inferred.
+	my $recorder_live = $p->{recorder_live};
+	return "Aim vis dropped: invalid recorder_live"
+		if (!defined($recorder_live) || $recorder_live !~ /^[01]$/);
+
+	# Same rule as doEvent_KTPShot and doEvent_KTPMove: a missing or non-numeric
+	# sequence must become SQL NULL, not 0. The UNIQUE key includes
+	# producer_sequence, and NULL never collides with NULL, so the rows that have
+	# no real sequence lose only their dedup guard instead of collapsing onto one.
+	my $wire_sequence = (defined($p->{sequence}) && $p->{sequence} =~ /^\d+$/ && $p->{sequence} >= 1)
+		? int($p->{sequence}) : "NULL";
+
+	# Guarded like every other numeric field rather than left to Perl
+	# numification. Numification is injection-safe, but "inf"/"nan" numify to
+	# Inf/NaN and then stringify into the SQL literal -- which fails as a syntax
+	# error attributed to the database instead of as a malformed marker
+	# attributed to the producer.
+	return "Aim vis dropped: invalid game_time"
+		if (defined($p->{game_time}) && $p->{game_time} !~ /^-?\d+(?:\.\d+)?$/);
+	my $game_time = defined($p->{game_time}) ? ($p->{game_time} + 0) : 0;
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+
+	# ONE row. Numerator, denominator and the unknown count go in together, so no
+	# retention or query choice can keep one without the others.
+	my $rv = &execNonQuery("
+		INSERT IGNORE INTO ktp_aim_vis
+			(server_id, match_id, half, player_id, map_name,
+			 interval_ms,
+			 samples_known, samples_unpacked, samples_unknown,
+			 window_ms_sum, window_ms_max, recorder_live,
+			 game_time, event_epoch, producer_sequence, event_time)
+		VALUES
+			(".int($server_id).", $match_id_sql, ".int($half).", ".int($player_id).
+			", '".quoteSQL($p->{map} // "")."'".
+			", ".$interval_ms.
+			", ".$n{samples_known}.", ".$n{samples_unpacked}.", ".$n{samples_unknown}.
+			", ".$window_sum.", ".$window_max.", ".int($recorder_live).
+			", ".$game_time.
+			", ".int($p->{event_epoch} // 0).", $wire_sequence".
+			", FROM_UNIXTIME(".int($p->{event_epoch} // 0)."))
+	");
+	return "Aim vis SQL failed" if (!defined($rv));
+
+	# Reported as the three raw counts. Deliberately not a percentage: a fraction
+	# in the log is the first place a reader would take one as a finding, and the
+	# only sound direction here needs its denominator in view.
+	return "Aim vis logged: player=$player_id known=".$n{samples_known}.
+		" unpacked=".$n{samples_unpacked}." unknown=".$n{samples_unknown}.
+		" recorder_live=".int($recorder_live);
+}
+# END KTP AIM-VIS STREAM
 
 # BEGIN KTP POSITION BATCH FLUSH
 sub flushPositionEvents
