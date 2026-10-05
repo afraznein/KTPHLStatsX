@@ -576,8 +576,8 @@ Related: `Filtering ktp_matches.match_type`, and see `ktp-matches-match-type-is-
 *(Moved 2026-08-30 from the KTP board's `TODO.md`.)* Verified against `information_schema` 2026-08-30:
 `hlstats_Events_PlayerPlayerActions` (assists) and `hlstats_Events_PlayerActions` (cap-breaks,
 objectives — see the entry above on its missing `half`) both carry `match_id` but no `half` column.
-`ktp_assist_events` has the `half` column a per-half split would actually need, and **zero rows** —
-schema-ahead, no writer yet.
+`ktp_assist_events` has the `half` column a per-half split would actually need, and holds rows only
+from 2026-08-31 (the plugin writes it now).
 
 **So a match-sum ÷ number-of-halves RATE is safe to compute from these tables; a per-half SPLIT is not
 achievable from them at all.** A consumer that accepts a `by="half"` parameter against spine data must
@@ -587,6 +587,20 @@ exactly like a real per-half number and is not one.
 **How to apply:** before building a per-half breakdown on top of `PlayerPlayerActions` or
 `PlayerActions`, check whether the split is actually stored anywhere (`ktp_assist_events`,
 `PlayerActions.producer_half`) rather than assuming `WHERE half = N` will work.
+
+## Assists: S9 cannot be reconstructed, and post-08-21 data has a validation recipe, not a rebuild
+
+*(Operator ruling 2026-10-05: the assists cross-check card is closed as won't-build.)*
+
+- **S9 assists are not recoverable.** `ktp_damage_events` has no rows before the 2026-08-21 cutover, and
+  Statsme damage is a per-(player, weapon) total with no victim and no timestamp, so there is nothing to
+  attribute an assist from. HLTV demos carry no damage messages either. Native plugin `assist` events start
+  2026-08-21; `ktp_assist_events` rows start 2026-08-31.
+- **If a real doubt about post-08-21 assists ever arises**, credit every teammate of the killer (not the killer)
+  with `SUM(damage_capped) >= 40` on the victim within `(t-5s, t]` of the kill and inside that victim's life
+  (`ktp_damage_events`: `attacker_id, victim_id, damage_capped, event_epoch, half`), then compare with the
+  plugin's assist rows. This is a heuristic, not ground truth: a disagreement is a lead, not proof the plugin
+  is wrong. Use it to validate, never to rebuild.
 
 ## `ktpDamageExpr`'s `COALESCE(dmg.damage, 0)` is the fix, not the bug
 
