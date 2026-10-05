@@ -21,7 +21,7 @@ The rule this enforces:
   - the `uses:` pin itself is NOT `preprod` (or any other moving branch name)
     -- it is a sha or tag, so a rename of the reusable workflow's job upstream
     cannot silently stop the required status check
-    `corpus-regression / Lane B (corpus, preprod, run 1)` from ever reporting
+    `corpus-regression / Lane B (corpus, main, run 1)` from ever reporting
     again
   - the `lane:` input still composes that exact required context string, so an
     in-repo edit to this file cannot silently rename the context either (it
@@ -63,28 +63,19 @@ UNDER_TEST = "daemon_ref"
 
 # The release train every non-UNDER_TEST ref must name. Independent of the `uses:`
 # pin on purpose -- see the module docstring.
-LINEAGE = "preprod"
-
-# KTPInfrastructure retired its `preprod` branch (ruled 2026-09-19), so the
-# HARNESS rides a different train from the components. Keeping one LINEAGE and
-# widening the equality test would defeat the file -- an accidental straddle is
-# exactly what it exists to catch -- so the exception is declared per ref.
-HARNESS_LINEAGE = "main"
-REF_LINEAGE = {"infrastructure_ref": HARNESS_LINEAGE}
+LINEAGE = "main"
 
 # Branch names the `uses:` pin must never be. A literal branch keeps moving after
 # it is written, which is the exact defect this file exists to catch.
 MOVING_REFS = {"preprod", "main"}
 
 # The local job id this call lives under, and the reusable workflow's own job name
-# template with this call's `lane` substituted in. Both are read off `main`/
-# `preprod` branch protection as one required status check; composing it here and
+# template with this call's `lane` substituted in. Both are read off
+# `main` branch protection as one required status check; composing it here and
 # comparing is the only part of that check this file can still perform once the
 # `uses:` pin freezes which copy of the upstream template applies.
 JOB_ID = "corpus-regression"
-# The upstream job name interpolates the INFRASTRUCTURE ref, so the context
-# follows the harness train, not the component one.
-REQUIRED_CONTEXT = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, "corpus", HARNESS_LINEAGE)
+REQUIRED_CONTEXT = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, "corpus", LINEAGE)
 
 EXPRESSION = re.compile(r"\$\{\{")
 
@@ -184,13 +175,13 @@ def check_text(text):
                 "{} is a GitHub expression ({}). Every ref but {} must be a "
                 "literal equal to {!r}, or the harness and the repositories it "
                 "assembles can come from different lineages.".format(
-                    name, value, UNDER_TEST, REF_LINEAGE.get(name, LINEAGE)))
-        elif value != REF_LINEAGE.get(name, LINEAGE):
+                    name, value, UNDER_TEST, LINEAGE))
+        elif value != LINEAGE:
             errors.append(
                 "{} is {!r} but the harness lineage is {!r}. Straddling two "
                 "lineages fails during artifact assembly for reasons unrelated "
                 "to the pull request.".format(
-                    name, value, REF_LINEAGE.get(name, LINEAGE)))
+                    name, value, LINEAGE))
 
     # The required status check's name is composed from this call's `lane` input
     # plus the fixed lineage name -- neither the reusable workflow's template nor
@@ -200,7 +191,7 @@ def check_text(text):
     # `lane` away from `corpus`.
     lane_value = inputs.get("lane", "").strip()
     composed = "{} / Lane B ({}, {}, run 1)".format(
-        JOB_ID, lane_value or "full", HARNESS_LINEAGE)
+        JOB_ID, lane_value or "full", LINEAGE)
     if composed != REQUIRED_CONTEXT:
         errors.append(
             "this call composes the status check {!r}, not the required {!r}. "
@@ -225,12 +216,12 @@ SHA_FIXTURE = "3b6ac496c86d59ef81dd23a9c76193be312449d8"
 
 
 def _fixture(uses_ref=SHA_FIXTURE, daemon="${{ github.event.pull_request.head.sha }}",
-             amxx="preprod", infra="main", lane="corpus", extra=""):
+             amxx="main", infra="main", lane="corpus", extra=""):
     return (
         "name: Corpus Regression\n"
         "on:\n"
         "  pull_request:\n"
-        "    branches: [preprod, main]\n"
+        "    branches: [main]\n"
         "jobs:\n"
         "  corpus-regression:\n"
         "    uses: afraznein/" + LANE_B + "@" + uses_ref + "\n"
@@ -261,20 +252,20 @@ def selftest():
         if not check_text(text):
             failures.append("{}: expected a failure, got a clean result".format(label))
 
-    expect_pass("harness on main, components on preprod", _fixture())
+    expect_pass("every ref on main", _fixture())
 
     expect_fail(
         "amxx_ref follows the PR base ref (the real regression)",
         _fixture(amxx="${{ github.event.pull_request.base.ref || github.ref_name }}"))
     expect_fail(
         "amxx_ref literal from another lineage",
-        _fixture(amxx="main"))
+        _fixture(amxx="preprod"))
     expect_fail(
         "infrastructure_ref on the retired preprod branch",
         _fixture(infra="preprod"))
     expect_fail(
         "daemon_ref pinned, so the lane cannot see the PR",
-        _fixture(daemon="preprod"))
+        _fixture(daemon="main"))
     expect_fail(
         "matchhandler_ref supplied from a context",
         _fixture(extra="      matchhandler_ref: ${{ github.ref_name }}\n"))
@@ -320,7 +311,7 @@ def main():
         return 1
 
     print("OK: every Lane B ref but {} is a literal on its declared train "
-          "(harness {}, components {})".format(UNDER_TEST, HARNESS_LINEAGE, LINEAGE))
+          "({})".format(UNDER_TEST, LINEAGE))
     return 0
 
 
