@@ -1294,3 +1294,7 @@ throughout, since plugins only change at the nightly restart.
 ➡️ **Compare within a regime, or label the boundary.** Expect lower kill and shot totals after the changes, and fewer grenade
 throws after 2026-10-05; that is the rule changing, not play. This is a different boundary from the 2026-09-15 accuracy
 lower bound above, and the two stack for anything older.
+
+## Several `hlstats_PlayerNames` rows for one SteamID is a RENAME history, not evidence of a shared account
+
+⚠️ Weigh the rows by `numuses` and `connection_time` before concluding several people use it: one dominant name plus a few 1–2-session names is one person renaming, while several comparable-weight names is the pattern worth asking about. `hlstats_Players.lastName` is only the most recent name, so it says nothing about who else used the account. Reading a bare name count as "a shared account" nearly drove an admin-flag removal off a single user's own account.
