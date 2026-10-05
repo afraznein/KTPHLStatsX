@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+### Added - a destination for the aim-vs-transmission sensor that has been recording with no reader
+
+KTPAMXX's `dodx_get_aim_vis_stats` / `dodx_reset_aim_vis_stats` are live on the whole fleet and
+nothing has ever called them: the pack recorder registers unconditionally in `OnAmxxAttach`, so the
+production instances sample pack visibility and throw the result away. A sweep of KTPAMXX
+`origin/main` finds the two natives only in the module, the include, the README and the changelog --
+no caller under `plugins/` -- against a control on `dodx_get_move_stats`, which resolves to
+`plugins/dod/ktp_stats_capture.inc`. Until now there was also nowhere for the numbers to go.
+
+This is the destination, and it deliberately lands before any producer: schema and daemon ahead of
+code is the safe direction, and the reverse order is what the move-census rows record being burned
+by. Nothing writes the table yet.
+
+- `sql/migrate_042_aim_vis.sql` creates `ktp_aim_vis`, one row per player per producer interval:
+  `samples_known` (the denominator), `samples_unpacked` (the subset that was in no pack),
+  `samples_unknown` (neither side), the per-sample lookback window actually used, and
+  `recorder_live`. MEASURE-ONLY -- no threshold, no ratio, no verdict, here or downstream.
+- There is **no `samples_packed` column and nothing derives one.** Only the absence is sound: "not
+  packed inside the window" says the server sent that client nothing to draw, while "packed" says
+  nothing at all, because PVS is leaf-based and entities stay packed behind walls. A query that
+  reads the complement as "legitimately seen" measures level geometry, not behaviour.
+- `doEvent_KTPAimVis` **drops a malformed counter instead of defaulting it to 0.** Every other
+  `ktp_*` stream funnels counters through a sub returning 0 for anything unparseable, which is right
+  there and would be destructive here: a 0 denominator reads as "this player took no samples" rather
+  than as a malformed marker, and the denominator is the whole instrument. The subset invariant
+  (`samples_unpacked <= samples_known`) is enforced at the door, where it can be blamed on the
+  producer that sent it, rather than as a `CHECK` against a MySQL version this repo pins nowhere.
+- `match_id` and `half` are NOT NULL, with no no-match-context sentinel. `ktp_move_census` took the
+  other choice and its producer gates on tracked context, so its nullable `match_id` and its
+  `0=no match context` half describe a state that has never occurred -- and the next reader believes
+  that data exists. The schema here advertises only what the producer contract can reach.
+- Registered in all nine hand-maintained places in `hlstats.pl`, including the capture-health
+  allow-list and the silent-stream classification -- the two `shot` was missed on. No new schema
+  ordinal: the capability bit gates the stream, so a producer that does not announce `aim_vis` is
+  refused on the bit rather than having its whole manifest rejected.
+- `selftest-aim-vis.pl` pins the registration points, the denominator rule, the absent
+  `samples_packed`, the measure-only contract and the wire format through the daemon's own
+  `getProperties`. Registered in `corpus-regression.yml`, which is an explicit enumeration -- a
+  committed selftest that is not listed there never runs. 32 of its 77 assertions fail against
+  `origin/main`'s `hlstats.pl`.
+
+Lane B applies every `sql/migrate_*.sql` from an enumerated list in KTPInfrastructure and **fails
+the build on an unlisted one**, so this needs `afraznein/KTPInfrastructure` to register 042 first.
+That PR also adds `aim_vis` to `CAPTURE_EVENT_TYPES_OPTIONAL`, which has to be in place before any
+producer emits an `aim_vis` health row -- the `move` stream failed four Lane B assertions and a
+report authorization for exactly that reason on 2026-09-29.
+
+### Fixed - three move-census assertions that break whenever a different stream is added
+
+`selftest-move-census.pl` pinned three shared whitelists as literal tails of their alternation
+(`position_sample|shot|move_census)$/) {` and two more), so adding `aim_vis` to those lists failed
+all three at once -- reporting the move stream as unregistered because a different stream arrived.
+They now assert MEMBERSHIP in the alternation, across every list of that shape in the file, each with
+a control that a name in no list is not matched. There are two whitelists of each shape, one for the
+unbuffered streams and one for the buffered standalone markers, so taking only the first match reads
+the wrong list and reports the stream as missing.
+
 ### Fixed - a fresh install no longer recreates the false `step_timer_fires` COMMENT
 
 Migration 038's `CREATE TABLE` now gives `ktp_move_census.step_timer_fires` the same COMMENT the

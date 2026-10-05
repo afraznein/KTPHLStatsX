@@ -52,19 +52,51 @@ has($source, 'sub doEvent_KTPShot', 'control: a known-present literal is found')
 hasnt($source, 'sub doEvent_KTPZzzNoSuchHandler', 'control: an absent literal is not found');
 
 # --- 1. the nine registration points ---------------------------------------
+#
+# The three whitelists are asserted as MEMBERSHIP in the alternation, not as a
+# remembered tail of it. They were pinned as literal tails until the aim_vis
+# stream was added, and all three broke at once -- a brittle needle on a shared
+# list reports this stream as unregistered because a different one arrived.
+# Each extraction carries a control so a regex that stopped matching cannot pass
+# as an empty list.
 
-has($source, 'position_sample|shot|move_census)$/) {',
-    'move_census is in the capture-marker observation whitelist');
+#
+# There are TWO whitelists of each shape -- one for the unbuffered streams and
+# one for the buffered standalone markers -- so a member is asserted against ALL
+# of them and has to appear in at least one. Taking only the first match reads
+# the wrong list and reports the stream as unregistered.
+sub registered_in {
+    my ($lists, $member, $name) = @_;
+    cmp_ok(scalar(@$lists), '>', 0, "$name (a list of that shape was found at all)")
+        or return;
+    my %m = map { $_ => 1 } map { split(/\|/, $_) } @$lists;
+    ok($m{$member}, $name) or diag("lists were: " . join(' // ', @$lists));
+    ok(!$m{'zzznope'}, "$name -- control: a name in no list is not matched");
+}
+
+{
+    my @obs = ($source =~
+        /\$ev_obj_a =~ \/\^\(([^)]*)\)\$\/\)\s*\{\s*\n\s*my %sequence_type/g);
+    registered_in(\@obs, 'move_census',
+        'move_census is in the capture-marker observation whitelist');
+}
 has($source, 'move_census => "move"',
     'move_census maps to the "move" sequence type');
-has($source, '(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census)$/',
-    'move_census is in the buffered-identity whitelist');
+{
+    my @buf = ($source =~ /\$ev_obj_a =~ \/\^\(\?:([^)]*)\)\$\//g);
+    registered_in(\@buf, 'move_census',
+        'move_census is in the buffered-identity whitelist');
+}
 like($source, qr/\}\s*elsif\s*\(\$ev_obj_a\s+eq\s+"move_census"\)\s*\{/,
     'move_census has a dispatch branch');
 has($source, 'move => $capabilities{move} ? 1 : 0',
     'the accepted-manifest record carries the move capability bit');
-has($source, '|team_membership|position|shot|move)$/);',
-    'ktpCaptureManifestAuthorizes accepts "move" as an event type');
+{
+    my $auth = body_of('ktpCaptureManifestAuthorizes');
+    my ($types) = (($auth // '') =~ /\$event_type !~ \/\^\(\?:([^)]*)\)\$\//);
+    registered_in([defined($types) ? $types : ()], 'move',
+        'ktpCaptureManifestAuthorizes accepts "move" as an event type');
+}
 # Deliberately NOT an assertion that a new schema ordinal was accepted. This
 # stream takes none: the capability bit is the gate. 25 went to the ruled
 # shooter_punch drop (KTPAMXX #144) and 26 to the ruled shot hitgroup + rewind
