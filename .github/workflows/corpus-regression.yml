@@ -94,6 +94,15 @@ jobs:
             ktp-lane-b:ci \
             python3 /daemon/scripts/selftest-migration22.py \
               --infrastructure-root /infra
+      # Same image, so a second migration rides this job rather than paying for another build.
+      - name: Migration 043 clean/rerun/repair/same-name contract
+        run: |
+          docker run --rm --network none \
+            -v "${PWD}:/daemon:ro" \
+            -v "${PWD}/KTPInfrastructure:/infra:ro" \
+            ktp-lane-b:ci \
+            python3 /daemon/scripts/selftest-migration43.py \
+              --infrastructure-root /infra
 
   # Deliberately NOT a dependency of corpus-regression. Making the lane `needs:`
   # this would leave the required `corpus-regression / Lane B` context skipped

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added - a time-ordered index on ktp_position_samples for the shot-placement join
+
+- `sql/migrate_043_position_samples_time_index.sql` adds `idx_pos_match_half_time (match_id, half,
+  game_time)`, online (`ALGORITHM=INPLACE, LOCK=NONE`). KTPInfrastructure's
+  `shot_placement_fact.sql` joins each shot to the enemy samples within one second of it, and the
+  only index starting `(match_id, half)` ended in the BSP hash, so every shot read its whole half.
+  Idempotent; an index of the same name over other columns stops the run with a named error
+  instead of being accepted. `lock_wait_timeout` is 10 s so a run that collides with a long report
+  read fails instead of queueing the daemon's INSERTs behind its metadata-lock wait.
+- The index alone changes nothing: the existing join still plans a `ref` on
+  `idx_position_map_revision`. KTPInfrastructure ships the join rewrite separately, after this is
+  applied, because that rewrite is slower than today's join on a table without the index.
+- `scripts/selftest-migration43.py` (clean apply, rerun, repair, same-name guard) runs in the
+  production-parity MySQL job alongside migration 022.
+
 ### Added - a destination for the aim-vs-transmission sensor that has been recording with no reader
 
 KTPAMXX's `dodx_get_aim_vis_stats` / `dodx_reset_aim_vis_stats` are live on the whole fleet and
