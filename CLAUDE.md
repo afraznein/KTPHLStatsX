@@ -263,6 +263,58 @@ See `N:\Nein_\KTP Git Projects\KTPAmxxCurl\scripts\check_hlstatsx.py` for workin
 *Relocated from session memory 2026-08-26 so they load with this repo rather than only in one
 assistant's recall. Each was measured; the date it was measured is stated inline.*
 
+## One `hlstatsx` database, TWO clocks — a `DATETIME`-to-`DATETIME` join across writers returns a THIN population, not an error
+
+*(Hit and caught 2026-10-06 while building a cross-stream comparison.)*
+
+🔴 **Writers of this database do not agree on what a `DATETIME` means, and a join that compares two of
+them returns rows.** The Perl daemon stamps `NOW()`, which is the **session zone** — MySQL runs
+`time_zone = SYSTEM` on an `America/New_York` box (see § *Three things that have to hold before a
+restricted weapon's zero means the restriction works*, which carries the same fact for
+`hlstats_Events_*.eventTime`). The KTPAntiCheat API stamps `DateTime.UtcNow`, so **`ktp_ac_sessions`
+and the bundle manifest are UTC** in the same tables' neighbourhood.
+
+⛔ **The dangerous part is the failure mode, not the offset.** A wrong-zone comparison does not error
+and does not return zero — it returns a small, plausible FRACTION of the sessions and rows the right
+one does. **A zero gets investigated; a thin result gets believed and reported.** That is the whole
+reason this is written down.
+
+⚠️ **And the offset is NOT a constant four hours.** It is the box's current UTC offset — four hours on
+EDT, five on EST — so a window that spans a DST boundary is wrong by a different amount at each end,
+and a figure that reproduced in summer can stop reproducing in winter.
+
+➡️ **Compare epoch seconds only, never rendered times.** The daemon-side streams carry an
+`event_epoch` for exactly this (`ktp_shot_events`, `hlstats_Events_Frags`); convert the other side
+explicitly rather than letting two `DATETIME` literals meet. ✅ **The control that discriminates:
+run the comparison both ways and keep the one that returns MORE** — a zone error can only shrink the
+matched population, never grow it.
+
+📌 The KTPAntiCheat repo already carries this on its own side (`sql/analysis/` headers, and
+`KTPAntiCheat.Api/Endpoints/MatchEndpoints.cs` names a *"4h intra-row mismatch"*). It is repeated here
+because someone querying from the stats side never opens that repo.
+
+## `ktp_shot_events.weapon_id` IS A PLUGIN ENUM, NOT A FOREIGN KEY INTO `hlstats_Weapons` — and the join SUCCEEDS
+
+*(Hit and caught 2026-10-06 while answering whether a restricted weapon was being fired.)*
+
+🔴 **`weapon_id` is the producer's `DODW_*` ordinal, taken verbatim from the `dod_client_weapon_fire`
+forward.** Migration 027 says why there is no `FOREIGN KEY` — the HLStatsX base tables are MyISAM —
+so nothing in the schema stops a reader treating it as `hlstats_Weapons.weaponId`.
+
+⛔ **The two id spaces OVERLAP, so that join returns rows and answers about the wrong weapon.** It is a
+reused-identifier false match, not an error. Concretely: the weapon that prompted this is **31** in the
+plugin enum (`DODW_PIAT`, counting from `DODW_AMERKNIFE = 1` in `plugins/include/dodconst.inc` on
+KTPAMXX `main`) and a three-digit id in `hlstats_Weapons` — whose LOW ids belong to a different game
+entirely. **A plausible row set is far more dangerous than a failed join.**
+
+➡️ **Map through the weapon CODE, never the numeric id** — `hlstats_Weapons` is keyed on `(game, code)`
+and `dod` is the only game that matters here. ✅ **The control that proves a mapping:** validate it
+against the OBSERVED distribution rather than against the schema — if the top few weapons read like a
+competitive DoD match, the mapping is right; if a knife or a mortar tops the list, it is not.
+
+⚠️ `hlstats_Weapons.kills` is not a usable cross-check for this (see the restricted-weapon section
+below: the dictionary counter is daemon-maintained and promoted rows were inserted underneath it).
+
 ## `ktp_flag_captures` holds TWO populations — and no reader filters on `provenance`
 *(2026-10-04, after `scripts/backfill-flag-captures-inferred.py` wrote 225,019 rows.)*
 `provenance = 'recorded'` rows are the daemon's (from 2026-08-15 16:25:31). `'inferred'` rows were
