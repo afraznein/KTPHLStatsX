@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed - frag context for a kill outside a match no longer depends on when the daemon read the marker
+
+- `scripts/hlstats.pl`: the `frag_context` join used `event_epoch` only when the marker's `matchid`
+  resolved to a match. Everything else fell back to `eventTime >= now - 10s`, which is the daemon's
+  own processing clock on both sides, so correlation depended on the producer's buffer flush and on
+  how far behind the daemon was. `ksc_emit_frag_context` stamps `event_epoch` before it looks the
+  match up, so an untracked kill carries the kill's own second too; the join now uses it, through the
+  same logged-second index the tracked path uses.
+- Two directions of error, both reproduced as failing tests against the previous code: a marker read
+  more than 10 s after its kill lost its context entirely, and a repeat kill of the same victim with
+  the same weapon inside the window had its context attached to the *earlier* unclaimed kill.
+  Measured since the 2026-10-05 daemon deploy: 16 of 19 `frag_context` misses were on this path.
+- The producer clock columns (`game_time`, `event_epoch`, `producer_match_id`, `producer_half`,
+  `producer_sequence`) are unchanged — still written only for a resolved match context, so an
+  untracked kill is never stamped with a match it did not belong to.
+- Nothing bounds an untracked epoch the way a match's start and end bound a tracked one, so it is
+  used only while it agrees with the daemon clock; past a minute the old receipt window still applies
+  and the journal still names it. `scripts/selftest-frag-context.pl` covers both fallbacks.
+
 ### Added - a time-ordered index on ktp_position_samples for the shot-placement join
 
 - `sql/migrate_043_position_samples_time_index.sql` adds `idx_pos_match_half_time (match_id, half,

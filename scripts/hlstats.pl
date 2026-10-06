@@ -3131,37 +3131,46 @@ while ($loop = &getLine()) {
 										$ev_properties_hash{"event_epoch"});
 							}
 							my $fc_clock_sql = "";
-							my $fc_time_where =
-								"AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")";
-							my $fc_match_description = "legacy receipt window";
-							my $fc_order_by = "id ASC";
-							my ($fc_seen, $fc_seen_offset);
 							if ($fc_context_error eq "") {
-								my $fc_event_epoch = int($ev_properties_hash{"event_epoch"});
 								$fc_clock_sql = ", game_time = ".($ev_properties_hash{"game_time"} + 0).
 									", event_epoch = ".int($ev_properties_hash{"event_epoch"}).
 									", producer_match_id = '".quoteSQL($ev_properties_hash{"matchid"})."'".
 									", producer_half = ".int($fc_half).
 									", producer_sequence = ".int($ev_properties_hash{"sequence"} // 0);
-								# eventTime is daemon receipt time (no --timestamp on the
-								# production cmdline), so UDP transit plus sub-second host
-								# clock offset pushes 15-45% of kills into the neighboring
-								# second and the exact-second join drops them (28.4% of
-								# corpus frags untagged; FRAG_CONTEXT_COVERAGE_TRIAGE
-								# 20260906). Widen to [epoch-2, epoch+2) and pick the row
-								# closest to the producer epoch.
-								#
-								# The first cut of this used [epoch-1, epoch+2): one second of
-								# headroom below the producer epoch, two above. Measured drift on
-								# rows that DID match (in-match, 2026-09-20 on) is almost entirely
-								# negative -- delta -1: 7,107, 0: 30,108, +1: 269 -- so 19% sat
-								# against the tight edge while the wide edge went nearly unused,
-								# and the residual misses pile up just below it. Symmetric at 2s.
-								# BEGIN KTP FRAG TIME CLAUSE
+							} elsif ($fc_has_explicit_context) {
+								ktpWarnProducerClock("frag_context", $fc_context_error);
+							}
+							my ($fc_time_where, $fc_match_description, $fc_order_by,
+								$fc_seen, $fc_seen_offset);
+							# eventTime is daemon receipt time (no --timestamp on the
+							# production cmdline), so UDP transit plus sub-second host
+							# clock offset pushes 15-45% of kills into the neighboring
+							# second and the exact-second join drops them (28.4% of
+							# corpus frags untagged; FRAG_CONTEXT_COVERAGE_TRIAGE
+							# 20260906). Widen to [epoch-2, epoch+2) and pick the row
+							# closest to the producer epoch.
+							#
+							# The first cut of this used [epoch-1, epoch+2): one second of
+							# headroom below the producer epoch, two above. Measured drift on
+							# rows that DID match (in-match, 2026-09-20 on) is almost entirely
+							# negative -- delta -1: 7,107, 0: 30,108, +1: 269 -- so 19% sat
+							# against the tight edge while the wide edge went nearly unused,
+							# and the residual misses pile up just below it. Symmetric at 2s.
+							# BEGIN KTP FRAG TIME CLAUSE
+							# ksc_emit_frag_context stamps event_epoch before it looks up the
+							# match, so an untracked kill carries the kill's own second too --
+							# correlating on it keeps the clock columns above match-gated while
+							# the join stops depending on when we happened to read the marker.
+							my $fc_event_epoch = ($fc_context_error eq "")
+								? int($ev_properties_hash{"event_epoch"})
+								: ktpUntrackedProducerSecond(
+									$ev_properties_hash{"event_epoch"}, $ev_unixtime);
+							if (defined($fc_event_epoch)) {
 								$fc_time_where =
 									"AND eventTime >= FROM_UNIXTIME(".($fc_event_epoch - 2).") ".
 									"AND eventTime < FROM_UNIXTIME(".($fc_event_epoch + 2).")";
-								$fc_match_description = "producer second (+/-2s)";
+								$fc_match_description = ($fc_context_error eq "")
+									? "producer second (+/-2s)" : "untracked producer second (+/-2s)";
 								$fc_order_by =
 									"ABS(UNIX_TIMESTAMP(eventTime) - ".$fc_event_epoch.") ASC, id ASC";
 								# A backlogged daemon stamps the row seconds after the kill was
@@ -3197,10 +3206,13 @@ while ($loop = &getLine()) {
 											: "AND 1 = 0";
 									}
 								}
-								# END KTP FRAG TIME CLAUSE
-							} elsif ($fc_has_explicit_context) {
-								ktpWarnProducerClock("frag_context", $fc_context_error);
+							} else {
+								$fc_time_where =
+									"AND eventTime >= FROM_UNIXTIME(".($ev_unixtime - 10).")";
+								$fc_match_description = "legacy receipt window";
+								$fc_order_by = "id ASC";
 							}
+							# END KTP FRAG TIME CLAUSE
 
 							# k_position/v_position are "x y z" (ksc_origin_str's format,
 							# same as assist/break positions) -- present only when the
@@ -5582,6 +5594,17 @@ sub ktpFindRecordedFrag
 		$offset++ if ($frag->{row_at} == $best->{row_at});
 	}
 	return ($best, $offset);
+}
+
+# An untracked kill's event_epoch has no match to bound it, so trust it only
+# while it agrees with our own clock; past that the receipt window is no worse
+# and the index has swept the kill anyway.
+sub ktpUntrackedProducerSecond
+{
+	my ($epoch, $now) = @_;
+	return undef if (!defined($epoch) || $epoch !~ /^[1-9]\d{0,18}$/);
+	return undef if (abs($epoch - $now) > 60);
+	return int($epoch);
 }
 # END KTP RECENT FRAGS
 
