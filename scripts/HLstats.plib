@@ -146,6 +146,26 @@ sub quoteSQL
 }
 
 #
+# string ktpValidMapName (string name)
+#
+# Kills keyed to an unusable map name are not lost, they are attributed to
+# nothing: every per-map total silently excludes them while the grand total
+# still counts them. Returns "" for a name no map can have.
+#
+
+sub ktpValidMapName
+{
+	my ($name) = @_;
+
+	return "" if (!defined($name));
+	$name =~ s/^\s+//;
+	$name =~ s/\s+$//;
+
+	return "" if (length($name) > 32 || $name !~ /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/);
+	return $name;
+}
+
+#
 # void doConnect
 #
 # Connects to the HLstatsX database

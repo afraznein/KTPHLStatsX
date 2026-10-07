@@ -612,7 +612,12 @@ sub get_map
 			{
 				($temp_map, $temp_maxplayers, $servhostname, $difficulty) = $self->rcon_getStatus();
 				
+				my $raw_rcon_map = defined($temp_map) ? $temp_map : "";
+				$temp_map = &::ktpValidMapName($temp_map);
+				
 				if ($temp_map eq "") {
+					&::printEvent("SERVER", "Refused rcon status map name for ".$self->{address}.":".$self->{port}.": \"$raw_rcon_map\"", 1)
+						if ($raw_rcon_map ne "");
 					goto STATUSFAIL;
 				}
 				
@@ -639,6 +644,10 @@ sub get_map
 			{  # no rcon or status command failed
 			STATUSFAIL:
 				my ($querymap, $queryhost, $querymax) = &::queryServer($self->{address}, $self->{port}, 'mapname', 'hostname', 'maxplayers');
+				my $raw_query_map = defined($querymap) ? $querymap : "";
+				$querymap = &::ktpValidMapName($querymap);
+				&::printEvent("SERVER", "Refused A2S query map name for ".$self->{address}.":".$self->{port}.": \"$raw_query_map\"", 1)
+					if ($raw_query_map ne "" && $querymap eq "");
 				if ($querymap ne "") {
 					$self->{map} = $querymap;
 					$update++;
