@@ -185,8 +185,14 @@ like($frag_branch,
 like($frag_branch,
     qr/ABS\(UNIX_TIMESTAMP\(eventTime\) - "\.\$fc_event_epoch\."\) ASC, id ASC/,
     'the nearest receipt second to the producer epoch wins, id breaks ties');
-like($frag_branch, qr/my \$fc_order_by = "id ASC"/,
+like($frag_branch,
+    qr/\$fc_match_description = "legacy receipt window";\s*\r?\n\s*\$fc_order_by = "id ASC";/,
     'the legacy receipt-window path stays FIFO');
+# The join no longer depends on the match context. The producer clock columns
+# must still, or an untracked kill is stamped with a match it never had.
+like($frag_branch,
+    qr/if \(\$fc_context_error eq ""\) \{\s*\r?\n\s*\$fc_clock_sql = /,
+    'producer clock columns are written only for a resolved match context');
 
 my $trailing_newline = resolve(%COMPLETE, k_ammo => "1" . chr(10));
 is($trailing_newline->{certified}, 0,
@@ -209,7 +215,7 @@ my $time_block = between_markers($source,
 eval "no strict 'vars';\n$recent_block\n1;" or die "cannot load recent-frags block: $@";
 
 our (%g_ktpRecentFrags, %g_ktpRecentFragsSwept, %g_servers, $s_addr);
-our ($fc_event_epoch, $fc_seen, $fc_seen_offset);
+our ($fc_seen, $fc_seen_offset, $fc_context_error, $ev_unixtime);
 our ($fc_time_where, $fc_match_description, $fc_order_by);
 $s_addr = '10.0.0.1:27015';
 %g_servers = ($s_addr => { id => 7 });
@@ -286,8 +292,12 @@ sub doQuery {
 # UPDATE's own WHERE shape. Returns the claimed row id, or undef.
 sub marker {
     my (%m) = @_;
-    ($fc_weapon, $fc_event_epoch) = ($m{weapon}, $m{epoch});
+    $fc_weapon = $m{weapon};
     ($ktp_actor_player_id, $ktp_victim_player_id) = ($m{killer}, $m{victim});
+    %ev_properties_hash = defined($m{epoch}) ? (event_epoch => $m{epoch}) : ();
+    # "" is a match context the daemon resolved; anything else is untracked.
+    $fc_context_error = exists($m{context_error}) ? $m{context_error} : "";
+    $ev_unixtime = defined($m{read_at}) ? $m{read_at} : $m{epoch};
     ($fc_seen, $fc_seen_offset) = (undef, undef);
     my $where = eval "no strict 'vars';\n$weapon_block\n$time_block\n"
         . '"serverId = 7 AND killerId = $ktp_actor_player_id AND victimId = '
@@ -362,6 +372,60 @@ push(@table, { id => 50, serverId => 7, killerId => 1, victimId => 2, weapon => 
     eventTime => $E + 1, claimed => 0 });
 is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), 50,
     'an unindexed on-time row falls back to the producer window');
+
+# --- a kill outside a match carries the same clock and used to lose it -------
+# ksc_emit_frag_context stamps event_epoch before it looks the match up, so an
+# untracked kill has the producer second too. Joining on when the marker was
+# read instead makes correlation depend on the producer's buffer flush.
+reset_world();
+my $untracked = stock_kill(killer => 1, victim => 2, weapon => 'kar',
+    logged_at => $E, read_at => $E + 4);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E,
+        read_at => $E + 20, context_error => 'legacy producer context absent'),
+    $untracked,
+    'an untracked kill correlates on the producer second -- the receipt window has moved past it');
+
+# Same pair and weapon twice inside the receipt window with the first marker
+# lost: FIFO over that window hands the second marker the first kill's row,
+# which is a wrong attachment rather than a miss.
+reset_world();
+my $early = stock_kill(killer => 1, victim => 2, weapon => 'kar',
+    logged_at => $E, read_at => $E + 1);
+my $later = stock_kill(killer => 1, victim => 2, weapon => 'kar',
+    logged_at => $E + 5, read_at => $E + 6);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E + 5,
+        read_at => $E + 8, context_error => 'legacy producer context absent'),
+    $later,
+    'an untracked repeat kill claims its own row, not the earlier unclaimed one');
+ok(!(grep { $_->{id} == $early && $_->{claimed} } @table),
+    'and the earlier kill keeps its context slot');
+
+# Nothing bounds an untracked epoch, so a producer clock that disagrees with
+# ours keeps today's window rather than joining on a nonsense second.
+reset_world();
+my $skewed = stock_kill(killer => 1, victim => 2, weapon => 'kar',
+    logged_at => $E + 4995, read_at => $E + 4995);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E,
+        read_at => $E + 5000, context_error => 'legacy producer context absent'),
+    $skewed,
+    'a skewed producer epoch falls back to the receipt window');
+is($fc_match_description, 'legacy receipt window', 'and the window is named');
+
+reset_world();
+my $no_epoch = stock_kill(killer => 1, victim => 2, weapon => 'kar',
+    logged_at => $E, read_at => $E + 2);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => undef,
+        read_at => $E + 3, context_error => 'legacy producer context absent'),
+    $no_epoch,
+    'an emitter that sends no epoch at all still uses the receipt window');
+
+reset_world();
+my $tracked = stock_kill(killer => 1, victim => 2, weapon => 'kar',
+    logged_at => $E, read_at => $E + 1);
+is(marker(killer => 1, victim => 2, weapon => 'kar', epoch => $E), $tracked,
+    'a tracked kill still matches');
+is($fc_match_description, 'logged-second',
+    'and is still reported against the logged second');
 
 reset_world();
 main::ktpNoteRecordedFrag(7, 1, 2, 'kar', $E, $E);
