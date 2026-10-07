@@ -2847,6 +2847,13 @@ sub doEvent_ChangeMap
 {
 	my ($type, $newmap) = @_;
 	
+	# An unusable name is cleared, not stored: "" re-arms the periodic map
+	# refresh, where junk would look settled and keep accruing kills.
+	my $clean_map = &ktpValidMapName($newmap);
+	&printEvent("SERVER", "Refused map-change name on $s_addr: \"" . (defined($newmap) ? $newmap : "") . "\"", 1)
+		if ($clean_map eq "" && defined($newmap) && $newmap ne "");
+	$newmap = $clean_map;
+	
 	$g_servers{$s_addr}->set("map", $newmap);
 	$g_servers{$s_addr}->clear_winner();
 

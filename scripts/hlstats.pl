@@ -896,6 +896,7 @@ sub queryServer
 	vec($rin, fileno($message), 1) = 1;
 
 	my %hash = ();
+	my $challenged = 0;
 
 	while (1) {
 		my $timeleft = $end - time;
@@ -903,10 +904,55 @@ sub queryServer
 		my ($nfound, $t) = select(my $rout = $rin, undef, undef, $timeleft);
 		last if ($nfound == 0); # either timeout or end of file
 		$message->recv($datagram,1024,$flags);
-		@hash{qw/key type netver hostname mapname gamedir gamename id numplayers maxplayers numbots dedicated os passreq secure gamever edf port/} = unpack("LCCZ*Z*Z*Z*vCCCCCCCZ*Cv",$datagram);
+
+		# 'A': the server answers with a challenge it wants echoed back. Echo it
+		# once; unpacked as an info reply it yields a plausible-looking map name.
+		if (defined($datagram) && length($datagram) >= 9 && $challenged == 0) {
+			my ($chal_header, $chal_type) = unpack("LC", $datagram);
+			if ($chal_header == 0xFFFFFFFF && $chal_type == 0x41) {
+				$challenged = 1;
+				$message->send("\xFF\xFF\xFF\xFFTSource Engine Query\x00" . substr($datagram, 5, 4));
+				next;
+			}
+		}
+
+		my $info = &ktpParseServerInfo($datagram);
+		next if (!defined($info));
+		%hash = %{$info};
+		last;
 	}
 
 	return @hash{@query};
+}
+
+
+#
+# hashref ktpParseServerInfo (string datagram)
+#
+# An A2S_INFO reply's fields, or undef for anything else on the wire. Unpacking
+# every datagram the socket produced turned challenge and stray packets into
+# non-empty garbage that the caller could not tell from a map name.
+#
+
+sub ktpParseServerInfo
+{
+	my ($datagram) = @_;
+
+	return undef if (!defined($datagram) || length($datagram) < 6);
+
+	my ($header, $type) = unpack("LC", $datagram);
+	return undef if ($header != 0xFFFFFFFF);
+
+	my %info = ();
+	if ($type == 0x49) {        # 'I' -- Source query format, what ReHLDS answers
+		@info{qw/key type netver hostname mapname gamedir gamename id numplayers maxplayers numbots dedicated os passreq secure gamever edf port/} = unpack("LCCZ*Z*Z*Z*vCCCCCCCZ*Cv",$datagram);
+	} elsif ($type == 0x6D) {   # 'm' -- legacy GoldSrc format, address first
+		@info{qw/key type address hostname mapname gamedir gamename numplayers maxplayers netver dedicated os passreq ismod/} = unpack("LCZ*Z*Z*Z*Z*CCCCCCC",$datagram);
+	} else {
+		return undef;
+	}
+
+	return \%info;
 }
 
 
@@ -1567,9 +1613,18 @@ sub flushAccumulators
 	%g_weapons_accum = ();
 
 	# Flush Maps_Counts accumulator: kills and headshots per game:map
+	# ON DUPLICATE KEY UPDATE makes one bad name permanent, so withholding beats
+	# writing it -- but say so, or the gap looks like a quiet evening.
+	my $maps_withheld_kills = 0;
+	my $maps_withheld_key = "";
 	while (my ($key, $counts) = each(%g_maps_accum)) {
 		my ($game, $map) = split(/:/, $key, 2);
-		next if (!defined($game) || !defined($map));
+		$map = &ktpValidMapName($map);
+		if (!defined($game) || $game eq "" || $map eq "") {
+			$maps_withheld_kills += int($counts->{kills} || 0);
+			$maps_withheld_key = $key if ($maps_withheld_key eq "");
+			next;
+		}
 		my $kills = int($counts->{kills} || 0);
 		my $headshots = int($counts->{headshots} || 0);
 		&execNonQuery("
@@ -1579,6 +1634,10 @@ sub flushAccumulators
 		");
 	}
 	%g_maps_accum = ();
+	if ($maps_withheld_kills > 0) {
+		&printEvent("MAPSTATS", "Withheld $maps_withheld_kills kills from hlstats_Maps_Counts: "
+			. "no usable map name (first accumulator key \"$maps_withheld_key\")", 1);
+	}
 }
 
 
@@ -7925,9 +7984,10 @@ sub doEvent_KTPMatchStart
 	# This ensures the map is correct even after a daemon restart where the
 	# "Started map" log event was missed. All frag events use get_map() which
 	# reads $g_servers{$s_addr}->{map}, so we must keep it in sync.
-	if (defined($map) && $map ne "" && defined($g_servers{$s_addr})) {
-		$g_servers{$s_addr}->{map} = $map;
-		&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: Restored server map to '$map'", 1);
+	my $restore_map = &ktpValidMapName($map);
+	if ($restore_map ne "" && defined($g_servers{$s_addr})) {
+		$g_servers{$s_addr}->{map} = $restore_map;
+		&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: Restored server map to '$restore_map'", 1);
 	}
 
 	# Get server ID

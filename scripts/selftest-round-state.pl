@@ -96,6 +96,16 @@ sub printEvent { push(@logged, join(' ', map { $_ // '' } @_[0, 1])); return 1; 
 sub ktpObserveCaptureMarker { return; }
 sub flushEventTable { return; }
 
+# A collaborator here, not the subject -- but lifted rather than stubbed, so a
+# map name this test feeds in is judged exactly as the daemon judges it.
+{
+    my $plib = slurp("$DIR/HLstats.plib");
+    my ($body) = ($plib =~ /\nsub ktpValidMapName\s*\{(.*?)\n\}/s);
+    die "could not extract sub ktpValidMapName from HLstats.plib" if (!defined($body));
+    eval "sub ktpValidMapName {$body\n}\n1;"
+        or die "cannot load shipped ktpValidMapName: $@";
+}
+
 # ktp_matches in memory: the shipped MATCH_START INSERT and HALF_END UPDATE are
 # what open and close each interval.
 sub execNonQuery {

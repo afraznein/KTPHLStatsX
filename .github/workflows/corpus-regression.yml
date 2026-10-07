@@ -57,6 +57,8 @@ jobs:
         run: perl scripts/selftest-shot-hitgroup-rewind.pl
       - name: Aim-vis is named in every whitelist that gates it, and keeps its denominator
         run: perl scripts/selftest-aim-vis.pl
+      - name: A map name is refused where it is derived, and no row holds an unusable one
+        run: perl scripts/selftest-map-name-attribution.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL
