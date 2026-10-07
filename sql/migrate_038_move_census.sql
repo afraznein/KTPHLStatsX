@@ -2,10 +2,31 @@
 -- KTP HLStatsX Migration 038: crouch-input and footstep-emission census.
 --
 -- STATUS: APPLIED to production 2026-09-26 on operator authorisation, straight
---   from this file rather than through the root migration queue. Nothing after
---   it in the deploy order has run: the daemon and producer that write this
---   table are NOT deployed. That is the safe direction -- schema ahead of code
---   is harmless, code ahead of schema is data loss.
+--   from this file rather than through the root migration queue.
+--
+--   🔻 CORRECTED 2026-10-06. This block read "Nothing after it in the deploy order
+--   has run: the daemon and producer that write this table are NOT deployed." THAT
+--   WAS TRUE WHEN WRITTEN AND FALSE FOR EIGHT DAYS AFTERWARDS, and two agents
+--   nearly implemented against it. The whole chain is deployed: the daemon shipped
+--   with KTPHLStatsX #131 (live 2026-09-26 13:06 UTC) and the producer with
+--   stats_logging 1.25.0, which activated at the 03:00 ET swap on 2026-09-28.
+--   Measured 2026-09-30: 15,207 rows over 09-28..09-29 across 8 of 24 server ids;
+--   measured again 2026-10-06: ~104,819 rows across 112 matches. THE TABLE HAS BEEN
+--   FILLING SINCE 2026-09-28.
+--
+--   🔑 Why a stale claim is worse in a migration file than on a board: this file
+--   is read as a RECORD of what happened, so its prose is trusted more than a note
+--   would be. A deploy-status line belongs to a moment; it is kept here only with
+--   the date it stopped being true.
+--
+--   ⛔ STILL OWED AT THE READING END: until the GRANT at the foot of this file is
+--   applied to production, no analytics or API account can SELECT this table --
+--   and because information_schema hides what the asking account cannot see, a
+--   probe reports the table ABSENT rather than denied, i.e. "the migration never
+--   ran". The grant is staged for the operator as
+--   migrations-to-apply/3_MYSQL_hlstatsx_move_census_aim_vis_select_grants.sql;
+--   the copy below exists so a FRESH install is not born with the same gap.
+--
 --   The bytes that ran are md5 8561151cdc07d0b555c0eeb265332ab4 (this file at
 --   144c3e8, before this header edit); the copy kept as the queue's record is
 --   migrations-to-apply/applied/MYSQL_hlstatsx_038_move_census_APPLIED_20260926.sql.
@@ -143,32 +164,53 @@
 -- no in-range value that can mean "absent".
 --
 -- ============================================================================
--- 🔻 THE NO-MATCH-CONTEXT STATE BELOW HAS NEVER OCCURRED, AND NOTHING SAYS SO
+-- 🔻 THE NO-MATCH-CONTEXT STATE IS UNREACHABLE, AND TWO PLACES REFUSE IT
 -- ============================================================================
--- match_id is nullable and half's COMMENT offers `0=no match context`. The
--- daemon is fully prepared to store both: doEvent_KTPMove starts at
--- `$match_id_sql = "NULL"` with `$half = 0` and only replaces them when a
--- producer context resolves. THE PRODUCER NEVER SENDS IT. ksc_move_flush_task
--- tests `if (!tracked)` FIRST and resets the player's counters without emitting
--- anything, so a row with match_id NULL or half 0 cannot be produced.
+-- match_id is nullable and half's COMMENT offers `0=no match context`. No row has
+-- ever carried either, and no row can.
 --
--- It is a ONE-SIDED gate: schema and daemon describe a state only the producer
--- refuses to reach. Nothing in either place is wrong -- what is wrong is that
--- the column COMMENT reads as a description of data, so the next reader queries
--- `WHERE match_id IS NULL`, gets 0 rows, and concludes the untracked play is
--- quiet rather than absent. It is absent.
+-- 🔻 CORRECTED 2026-10-06. This block read "The daemon is fully prepared to store
+-- both: doEvent_KTPMove starts at `$match_id_sql = "NULL"` with `$half = 0`", and
+-- named the PRODUCER as the only refusal. THAT IS FALSE AND IT IS THE DANGEROUS
+-- DIRECTION. The handler's defaults are real, but the handler never runs without a
+-- context: dispatch authorises first. In hlstats.pl,
+--   ktpCaptureManifestAuthorizes() -> ktpCaptureContextKey(), which returns undef
+--   unless matchid matches ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ AND half is an
+--   integer in 1..255.
+-- An absent matchid or half 0 therefore has no context key, no accepted manifest,
+-- and the marker is rejected by ktpRejectCaptureMarker("move", ...) BEFORE
+-- doEvent_KTPMove is called. Those defaults are unreachable code.
+--
+-- ⛔ WHY THAT MATTERS MORE THAN A WORDING FIX: acting on the old text -- flipping
+-- the producer alone to emit untracked windows -- would have emitted a wide row per
+-- player per window, through warm-up, on all 24 production instances, into a path
+-- that drops 100% of it, AND REPORTED SUCCESS. No symptom, no error, and a task that
+-- reads as done. The dispatch gate is where the decision lives, so making this state
+-- reachable is an authorisation change in THIS repo, not producer scoping.
+--
+-- The producer refuses it too, which is belt and braces rather than the reason:
+-- ksc_move_flush_task tests `if (!tracked)` FIRST and resets the player's counters
+-- without emitting.
+--
+-- What is wrong is that the column COMMENT reads as a description of data, so the
+-- next reader queries `WHERE match_id IS NULL`, gets 0 rows, and concludes the
+-- untracked play is quiet rather than absent. It is absent.
 --
 -- The gate has a real reason, which is why this is a note and not a patch: a
 -- window spanning the start of a match must not carry warmup movement into it.
 -- The producer has the other option already -- ksc_optional_event_context,
 -- used by five other streams -- so making the state reachable is a scoping
--- decision about the boundary, plus a producer version bump and a wave.
+-- decision about the boundary, plus a producer version bump and a wave -- AND an
+-- authorisation change here, without which the wave is a silent no-op.
 --
 -- ⛔ UNTIL THAT HAPPENS, READ THIS COMMENT AS A CONTRACT, NOT AS A POPULATION.
--- ➡️ And do not reverse it quietly: if the producer is ever changed to emit
--- untracked windows, delete this block in the same change. A stale "never
--- occurs" is worse than none, because it argues against believing real rows.
--- Nothing enforces that pairing, which is the honest state of it.
+-- ➡️ And do not reverse it quietly: if the dispatch gate is ever changed to admit
+-- an untracked window, delete this block in the same change. A stale "never occurs"
+-- is worse than none, because it argues against believing real rows.
+-- ✅ That pairing is now ENFORCED, where before it was only asked for:
+-- scripts/selftest-move-census.pl asserts that ktpCaptureContextKey still rejects
+-- half < 1 and that this file still names it as the refusal point, so widening the
+-- gate fails CI until this block is rewritten with it.
 --
 -- The other choice, for a stream whose producer gates the same way, is NOT NULL
 -- on both columns: it advertises only what the producer contract can reach, and
@@ -223,6 +265,36 @@ CREATE TABLE IF NOT EXISTS ktp_move_census (
     -- tables are MyISAM, same reason as every other ktp_* table here.
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Crouch-input and footstep-emission census, one row per player per producer window. MEASURE-ONLY: no threshold, no verdict, and steps are not readable without the tap census in the same row.';
+
+-- ---------------------------------------------------------------------------
+-- THE READING END. This table was unreadable for eight days after it started
+-- filling, and the symptom was not "denied" anywhere: information_schema hides a
+-- table the asking account cannot see, so a probe reports it ABSENT and the reader
+-- concludes the migration never ran. Three tables have now been lost this way
+-- (ktp_hitreg_quality 09-22, ktp_move_census and ktp_aim_vis 10-05).
+--
+-- ⛔ DELIBERATELY NOT EXECUTED HERE, and that is the decision, not an omission.
+-- These accounts are environment-specific, and MySQL refuses a GRANT to an account
+-- that does not exist (ERROR 1410) -- so an executable grant would make this schema
+-- file fail to apply on any database that lacks them, including a parity container.
+-- A schema file that cannot run on a fresh database is worse than a documented step.
+--
+-- ➡️ AFTER THE TABLE EXISTS, GRANT SELECT ON THIS TABLE to each read account that is
+--    expected to query it -- per-table and SELECT only, never `ON hlstatsx.*`. A
+--    wildcard would also hand those accounts every FUTURE table in this schema,
+--    including the ones deliberately withheld, which is the opposite of what a grant
+--    should mean. SELECT is enough: this stream is measure-only and its readers are
+--    read-only. ⛔ The account names are deliberately NOT written here -- this repo is
+--    public and they are not in it. They live with the staged statement below.
+--
+--    No FLUSH PRIVILEGES: GRANT updates the in-memory grant structures directly.
+--    Verify BY USE, connecting AS the account -- not with `sudo -u`, which
+--    authenticates as root via getlogin() and passes on a grant that is not there.
+--
+-- 📌 For PRODUCTION this file is not the vehicle: 038 is already applied there and
+--    nobody re-runs an applied file. The statement, with its grantees and the before/
+--    after checks, is staged for the operator in the root migration queue as
+--    3_MYSQL_hlstatsx_move_census_aim_vis_select_grants.sql.
 
 -- Expected volume: at most one row per connected player per producer window,
 -- and only for a player who moved at all. The window is long relative to
