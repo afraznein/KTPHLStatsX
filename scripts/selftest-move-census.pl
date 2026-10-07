@@ -303,4 +303,40 @@ unlike($timer_comment // '', qr/;/,
 like($migration, qr/CREATE TABLE IF NOT EXISTS ktp_move_census\b/,
     '038 stays IF NOT EXISTS, so the COMMENT edit is a no-op on a database that has the table');
 
+# --- 7. the no-match-context state stays unreachable, and 038 keeps saying where --
+#
+# 038 used to name the PRODUCER as the only thing refusing a no-match-context row, and
+# describe the daemon as prepared to store one. Two agents read that and nearly flipped
+# the producer alone -- which would have emitted a wide row per player per window,
+# through warm-up, on all 24 instances, into a path that drops every one of them, and
+# reported success. No symptom and no error is the worst shape a change can have.
+#
+# The refusal is HERE, at dispatch, before the handler exists as far as the marker is
+# concerned. These two assertions are the pairing 038 used to ask for in prose and
+# nothing enforced: widen the gate and the first fails; rewrite 038's block away from
+# the real mechanism and the second does.
+
+{
+    my $key_body = body_of('ktpCaptureContextKey');
+    has($key_body, '$p->{matchid}',
+        'control: ktpCaptureContextKey was extracted and reads matchid');
+    has($key_body, '$p->{half} < 1',
+        'ktpCaptureContextKey refuses half 0, so a no-match-context marker has no context key');
+    like($key_body, qr/return\s+undef\s+if/,
+        'that refusal returns undef rather than a key the manifest lookup could accept');
+
+    my $auth_body = body_of('ktpCaptureManifestAuthorizes');
+    has($auth_body, 'ktpCaptureContextKey($p)',
+        'manifest authorisation goes through the context key, so the refusal is upstream of every handler');
+    like($source, qr/ktpCaptureManifestAuthorizes\(\\%ev_properties,\s*"move"\)/,
+        'the move dispatch is gated on that authorisation before doEvent_KTPMove is reached');
+
+    # \b, not a bare substring: without it this passes against ktpCaptureContextKeyXX,
+    # which is a different function. Measured -- the first cut of this assertion did.
+    like($migration, qr/ktpCaptureContextKey\b/,
+        '038 names the dispatch gate as the refusal point, not the producer alone');
+    like($migration, qr/unreachable code/,
+        '038 states the handler defaults are unreachable rather than "prepared"');
+}
+
 done_testing();

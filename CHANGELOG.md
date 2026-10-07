@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Fixed - migration 038 carried two false claims, and the no-match-context gate is now enforced
+
+`sql/migrate_038_move_census.sql` said the daemon and producer that write `ktp_move_census` are
+not deployed, and that the daemon is prepared to store a no-match-context row. Both were read as
+current by two agents on 2026-10-06, each of whom nearly implemented against them.
+
+- **The deploy status was eight days stale.** The daemon shipped with #131 (live 2026-09-26) and
+  the producer with `stats_logging` 1.25.0, which activated at the 03:00 ET swap on 2026-09-28.
+  The table held 15,207 rows by 09-30 and ~104,819 across 112 matches by 10-06. A deploy-status
+  line in a migration is trusted more than a board note, because the file reads as a record of
+  what happened — so it now carries the date it stopped being true.
+- **The producer is not the only refusal, and naming it as such was the dangerous direction.**
+  Dispatch authorises before the handler runs: `ktpCaptureManifestAuthorizes` goes through
+  `ktpCaptureContextKey`, which returns undef unless `matchid` matches its pattern and `half` is
+  1..255. The handler's `$match_id_sql = "NULL"` / `$half = 0` defaults are unreachable code.
+  Flipping the producer alone — what the old text invited — would have emitted a wide row per
+  player per window, through warm-up, on all 24 instances, into a path that drops every one of
+  them, and reported success.
+- **That pairing is enforced now rather than requested.** `scripts/selftest-move-census.pl` gains
+  six assertions: the context key still refuses `half < 1`, authorisation still routes through it,
+  the move dispatch is still gated on it, and 038 still names it. Each was proved to fail against
+  a deliberately widened gate and against a 038 rewritten away from the mechanism — including one
+  first cut that passed against a renamed function until a `\b` was added.
+- **The reading end is documented where it was missing.** The table was unreadable server-side for
+  eight days: `information_schema` hides a table the asking account cannot see, so a probe reports
+  it ABSENT, not denied, and the reader concludes the migration never ran. The required per-table
+  `GRANT SELECT` is spelled out in 038 but deliberately not executed there — MySQL refuses a grant
+  to an account that does not exist, so an executable grant would make the schema file fail to
+  apply on a fresh database. The production copy is staged for the operator in the root migration
+  queue as `3_MYSQL_hlstatsx_move_census_aim_vis_select_grants.sql`.
+
 ### Fixed - frag context for a kill outside a match no longer depends on when the daemon read the marker
 
 - `scripts/hlstats.pl`: the `frag_context` join used `event_epoch` only when the marker's `matchid`
