@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+### Fixed - the flag-state writer warned about an unprovable producer context and stored the row anyway
+
+`doEvent_KTPFlagState` was the only one of the five handlers that derive a stored `DATETIME` from
+`event_epoch` whose clock-error path did not return. It called `ktpWarnProducerClock` and then fell
+through to the receipt-time `$g_ktpMatchContext` branch, so the row was written from daemon memory —
+stamped `FROM_UNIXTIME(0)` when the producer reported no clock, and tagged with whatever match the
+daemon happened to be holding when the producer's own matchid could not be proved against
+`ktp_matches`. The status it returned read `Flag state logged`, so dispatch classified it a success
+while the journal carried a warning about that same row.
+
+- **It now takes the same hard return as position, shot, move and aim_vis**, through the
+  `ktpResolveValidatedProducerEventContext` call it already made — one gate, not a second copy of
+  the judgement.
+- **A refused row is not dropped silently.** The status matches dispatch's reject classifier at the
+  `KTP_FLAG_STATE` branch, so it increments `rejected{flag_state}` in capture health, and
+  `ktpWarnProducerClock` emits `KTP_FLAG_STATE_CLOCK_DROP`. Where the matchid is one no manifest was
+  ever observed for, `ktpRejectCaptureMarker` has no context to key on and the journal line is the
+  only record — asserted as such rather than left to be rediscovered.
+- **The existing tests could not have caught it.** Every clock-failure case ran during
+  `KTP_ROUND_FREEZE`, where the receipt-time gate is closed and the handler refuses for its own
+  reason, so the fall-through was reachable only inside a live round.
+  `scripts/selftest-round-state.pl` now seeds both sides of the floor in one live round — a sound
+  producer clock that must still be written, and an unusable one that must not — with the straddle
+  asserted from the fixture, so a one-sided or softened fixture fails by name instead of passing
+  while testing nothing.
+- **The `// 0` default stays in the INSERT, deliberately.** It is now unreachable for a producer
+  that claims a match, which is what the other four already had. A producer sending no matchid at
+  all still reaches the receipt-time branch, which is the legacy path that branch exists to serve.
+- **The refused set is wider than "no interval", and that is worth knowing before a deploy.**
+  `ktpResolveValidatedProducerEventContext` validates the envelope before it proves the interval, so
+  a producer that sends a matchid together with an invalid `half`, an unparseable `game_time` or a
+  matchid failing the charset rule is also refused now — where before it downgraded to receipt-time
+  tagging and wrote a row. The direction is the same one the other four already take, but on a host
+  where such a producer exists this stops writing rows rather than re-attributing them. It is a
+  journal question, not a code one: count `KTP_FLAG_STATE_CLOCK_DROP` lines whose reason is
+  `invalid producer half`, `invalid game_time` or `invalid matchid` over a match day, and a zero
+  means that population is empty.
+- **What this does not do:** `flag_state` is still absent from `ktpCaptureManifestAuthorizes`'
+  permitted event types, so the stream has no dispatch-time manifest gate even though `flag_state`
+  is a *required* manifest capability on every supported schema. Adding one would refuse rows from
+  any producer whose manifest was never accepted, including the legacy producers the receipt-time
+  branch serves, so it is a separate decision and not a side effect of this fix.
+
 ### Fixed - migration 038 carried two false claims, and the no-match-context gate is now enforced
 
 `sql/migrate_038_move_census.sql` said the daemon and producer that write `ktp_move_census` are

@@ -7753,11 +7753,13 @@ sub doEvent_KTPFlagState
 				$explicit_matchid, $explicit_half, $game_time, $event_epoch);
 		$context_error = "producer map disagrees with interval"
 			if ($context_error eq "" && $validated_map ne $map);
-		if ($context_error eq "") {
-			($match_id, $half) = ($explicit_matchid, int($validated_half));
-		} else {
+		# Refuse, never borrow. Falling through stores the row at FROM_UNIXTIME(0)
+		# under whatever match the daemon holds, behind a warning that reads as handled.
+		if ($context_error ne "") {
 			ktpWarnProducerClock("flag_state", $context_error);
+			return "Flag state dropped: $context_error";
 		}
+		($match_id, $half) = ($explicit_matchid, int($validated_half));
 	}
 	if (!defined($match_id)) {
 		return "Flag state dropped: outside live match context"

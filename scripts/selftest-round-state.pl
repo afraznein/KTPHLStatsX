@@ -292,6 +292,73 @@ $status = flag_state(matchid => undef, half => undef, sequence => undef);
 $row = flag_row();
 is($row && $row->{match_id}, $MID, "live again: a legacy flag state is tagged by receipt context") or diag($status);
 
+# --- live round, a producer context that cannot be proved ---------------------------
+# Every clock-failure case above runs during the FREEZE, where the receipt-time gate
+# is closed and the handler refuses for its own reason -- so none of them can see
+# whether the handler itself refuses. Inside a LIVE round the gate is open and the
+# fall-through is reachable: an unprovable producer context used to be warned about
+# and then written anyway, from daemon memory, stamped FROM_UNIXTIME(0).
+#
+# Both sides of the floor are seeded here on purpose. Without the sound row the
+# refusals would pass over a dead harness; without the live-gate assertions they
+# would pass for the freeze's reason rather than the handler's.
+my $CKEY = join("\x1e", $s_addr, $MID, 1);
+is($g_ktpMatchContext{$s_addr}{round_live}, 1,
+    "non-vacuity: the round is live, so the legacy fall-through is OPEN here");
+is($g_ktpMatchContext{$s_addr}{match_id}, $MID,
+    "non-vacuity: daemon memory holds a match the fall-through could have borrowed");
+
+$status = flag_state(owner => 2, sequence => 50, event_epoch => $now - 5);
+$row = flag_row();
+is($row && $row->{match_id}, $MID,
+    "non-vacuity: a SOUND producer clock in the same live round still writes its row") or diag($status);
+ok((grep { /FROM_UNIXTIME\(\d*[1-9]\d*\)/ } @sql),
+    "non-vacuity: the sound row's event_time is a real clock, not the epoch");
+
+# event_epoch 0 is the defect's own input: the producer reported no clock at all.
+is(ktpValidateProducerEventClock($MID, 1, '402.00', 0), 'invalid event_epoch',
+    "non-vacuity: the shipped validator really does refuse this clock");
+my $rejected_before = $g_ktpCaptureSequences{$CKEY}{rejected}{flag_state} || 0;
+ok($rejected_before > 0, "non-vacuity: the reject counter is live and already counting");
+# The shipped warner aggregates after the first occurrence per (server, marker, error),
+# so clear its state rather than asserting on a line it may legitimately suppress.
+%g_ktpCaptureClockWarnings = ();
+@logged = ();
+$status = flag_state(owner => 1, sequence => 51, event_epoch => 0, game_time => '402.00');
+ok(!flag_row(), "live round: a flag state whose producer clock is unusable is not written")
+    or diag($status);
+unlike(join('', @sql), qr/FROM_UNIXTIME\(0\)/,
+    "live round: no flag-state row is stamped FROM_UNIXTIME(0)");
+like($status, qr/dropped/i, "live round: that refusal reports as dropped");
+ok((grep { /FLAG_STATE_CLOCK_DROP/ } @logged), "live round: the clock refusal reaches the journal");
+is($g_ktpCaptureSequences{$CKEY}{rejected}{flag_state}, $rejected_before + 1,
+    "live round: the refused row is counted in capture health, not lost silently");
+
+# A matchid the interval table cannot prove must not be re-attributed to whatever
+# match the daemon happens to be holding.
+my $UNPROVEN = 'KTP-7-1790009999';
+ok(!exists($ktp_matches{$UNPROVEN}),
+    "non-vacuity: the unproven matchid really has no interval row");
+ok(!exists($g_ktpCaptureSequences{join("\x1e", $s_addr, $UNPROVEN, 1)}),
+    "non-vacuity: this harness seeded no capture context for the unproven matchid");
+# The id must be well FORMED, or this measures the charset reject instead of the
+# missing interval -- the same drift the clock case is pinned against above.
+is(ktpValidateProducerEventClock($UNPROVEN, 1, '403.00', $now - 4), '',
+    "non-vacuity: the unproven matchid passes envelope validation, so it reaches the DB proof");
+%g_ktpCaptureClockWarnings = ();
+@logged = ();
+$status = flag_state(owner => 0, sequence => 52, matchid => $UNPROVEN, event_epoch => $now - 4);
+$row = flag_row();
+ok(!$row, "live round: a producer matchid with no interval is not written") or diag($status);
+like($status, qr/event-time match intervals/,
+    "live round: refused for the MISSING INTERVAL, not a malformed id");
+isnt($row && $row->{match_id}, $MID,
+    "live round: an unprovable producer matchid is not re-attributed to daemon memory");
+# ktpRejectCaptureMarker keys on an OBSERVED context, so an unobservable matchid
+# cannot increment it -- for that refusal the journal line is the only record.
+ok((grep { /FLAG_STATE_CLOCK_DROP/ } @logged),
+    "live round: a refusal with no observed context is still visible in the journal");
+
 # --- freeze then MATCH_START --------------------------------------------------------
 marker_line("KTP_ROUND_FREEZE (matchid \"$MID\")");
 marker_line("KTP_MATCH_START (matchid \"$MID\") (map \"dod_anzio\") (half \"1st\") (type \"0\")");

@@ -90,6 +90,41 @@ the single parser for the half string, called from both
 into each, with nothing keeping the copies in step. Change the numbering in
 one place or not at all.
 
+**A producer context error must be a hard `return`, never a warn-and-continue.**
+These handlers derive a stored `DATETIME` from `event_epoch` and each keeps a
+`// 0` default in the INSERT: `doEvent_KTPPosition`, `doEvent_KTPShot`,
+`doEvent_KTPMove`, `doEvent_KTPAimVis`, `doEvent_KTPFlagState`. Each resolves
+through `ktpResolveValidatedProducerEventContext` and each must `return` on a
+non-empty error. `doEvent_KTPFlagState` once warned and fell through to the
+receipt-time `$g_ktpMatchContext` branch instead, storing the row at
+`FROM_UNIXTIME(0)` under whatever match the daemon held and returning a status
+reading `Flag state logged` — so dispatch scored it a success while the journal
+carried a warning about that same row. Don't reintroduce a fall-through there.
+
+`ktpWarnProducerClock` is named for the clock but fires on *every* context
+error, a missing `ktp_matches` interval included, so read
+`KTP_<MARKER>_CLOCK_DROP` as "context unprovable", not "bad clock".
+
+Two things are worth knowing before you test one of these. None of the others
+can reach a receipt-time fallback: position, shot and move have one that the
+dispatch gate makes unreachable — `ktpCaptureManifestAuthorizes` routes through
+`ktpCaptureContextKey`, so the handler cannot be entered without a valid matchid
+and half — and aim_vis has no such branch at all, it hard-returns. So a context
+test against any of them proves nothing about a fall-through. `flag_state` has
+no dispatch gate: its event type is absent from that sub's permitted pattern,
+and from the per-event capability bits, even though `flag_state` is a *required*
+manifest capability on every supported schema. And a context failure during
+`KTP_ROUND_FREEZE` is refused by the receipt-time gate for its own unrelated
+reason, which is why the freeze-time cases in `scripts/selftest-round-state.pl`
+stayed green over the defect — test these inside a live round.
+
+Counting the `// 0` sites needs an alternation. The expression has three
+spellings and a grep for the plain one finds neither of the others:
+
+```
+grep -cE '(\$event_epoch|->\{event_epoch\}|event_epoch"\})\s*//\s*0' scripts/hlstats.pl
+```
+
 **An unresolved action is discarded, and upstream discards it silently.** The
 generic trigger dispatcher probes both action shapes, so a definition that is
 deliberately PlayerAction-disabled (`assist`) must still be allowed to reject
