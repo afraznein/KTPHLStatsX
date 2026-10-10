@@ -5599,7 +5599,8 @@ sub ktpWarnProducerClock
 	my $key = join("\x1e", $s_addr, $marker, $error);
 	my $count = ++$g_ktpCaptureClockWarnings{$key};
 	# First occurrence is immediately visible; thereafter aggregate one journal
-	# line per 1000 failures instead of one per damage hit.
+	# line per 1000 failures instead of one per damage hit. So a line count is a
+	# floor, never a refused-row count, and a restart resets $count.
 	return if ($count != 1 && ($count % 1000) != 0);
 	&printEvent("KTP_".uc($marker)."_CLOCK_DROP",
 		"$marker authoritative clocks suppressed ($count occurrences): $error; preserving legacy facts",

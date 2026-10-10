@@ -79,6 +79,13 @@ only identity.
   window has lines.
 - `hlstats_Servers.players` is not a live player count.
 
+⚠️ **Asking whether one HANDLER is in the deployed build by hashing the sub: an ABSENT sub hashes as
+the digest of EMPTY INPUT, not as an error.** Extracting a named sub out of `git show <ref>:scripts/hlstats.pl`
+and piping it to `md5sum` yields `d41d8cd98f00b204e9800998ecf8427e` when the sub is not there, which is a
+perfectly good-looking hash and reads as *"present and different"*. ➡️ **Carry a positive control in the same
+probe — a sibling handler you know exists at that commit — and recognise the empty digest.** That is how
+`doEvent_KTPAimVis` was correctly read as absent from the deployed commit rather than as changed.
+
 **Proving a new handler works:** compare first appearances, not counts.
 `GROUP BY <key> HAVING MIN(event_time) >= <swap time>` finds values that never existed before the
 deploy. Comparing a post-deploy window against a cumulative pre-deploy total fails on success, because
@@ -1350,3 +1357,70 @@ lower bound above, and the two stack for anything older.
 ## Several `hlstats_PlayerNames` rows for one SteamID is a RENAME history, not evidence of a shared account
 
 ⚠️ Weigh the rows by `numuses` and `connection_time` before concluding several people use it: one dominant name plus a few 1–2-session names is one person renaming, while several comparable-weight names is the pattern worth asking about. `hlstats_Players.lastName` is only the most recent name, so it says nothing about who else used the account. Reading a bare name count as "a shared account" nearly drove an admin-flag removal off a single user's own account.
+
+## `KTP_*_CLOCK_DROP` journal lines are RATE-LIMITED and the token is INTERPOLATED — the count is not a refused-row count, and the source grep is a false zero
+
+*(Both halves measured 2026-10-09 while sizing the flag-state clock refusals.)*
+
+🔴 **`ktpWarnProducerClock` prints the first occurrence and then one line per thousand** —
+`return if ($count != 1 && ($count % 1000) != 0)`, keyed on server plus marker plus reason. ✅ **So the
+ZERO direction of a journal count is sound** (the first occurrence always prints), ⛔ **but a non-zero
+count understates the population by up to a thousandfold and must never be read as a size.** The
+counter lives in process memory and every daemon restart resets it, so the same thousand refusals
+split across a restart print twice and still are not a count.
+
+⚠️ **And the event token never appears in the source.** It is built as `"KTP_".uc($marker)."_CLOCK_DROP"`,
+so grepping `scripts/hlstats.pl` for `KTP_FLAG_STATE_CLOCK_DROP` returns **zero** while the journal
+carries it at run time — the literal only exists in `CHANGELOG.md`. ➡️ **Grep the format string, not
+the rendered token**, or an emitter you are reading reads as absent.
+
+🔑 **The capture-health counter is not a fallback for the missing size, either.**
+`ktpRejectCaptureMarker` returns early unless `$g_ktpCaptureSequences` already holds the
+`(server, matchid, half)` key, so for a matchid whose manifest was never observed the
+`rejected{<marker>}` counter cannot increment and the rate-limited journal line is the only record
+that anything was refused.
+
+## `ktp_objective_attempt_events` is the table (not `ktp_objective_attempts`), and `progress IS NULL` is not uniquely the no-capture-area guard
+
+*(Pinned 2026-10-10 from the CP-index-abort work; migration 022 created the table, migration 032 added `progress`.)*
+
+⛔ **There is no `ktp_objective_attempts` table.** A query against that name fails with MySQL 1054 on
+**stderr** and returns an empty set, which reads exactly like *"no attempts were recorded"* — the same
+shape as the `hlstats_Events_PlayerActions.half` trap above. **Never suppress stderr on that call.**
+
+⚠️ **`progress` is a nullable `TINYINT UNSIGNED` and NULL has at least two causes.** The producer's
+`-1` sentinel is stored as NULL by `ktpNonNegOrNull`, and the producer emits `-1` both from its
+no-capture-area guard **and** from the ordinary `timetocap <= 0.0` branch, while migration 032's own
+column comment adds a third cause: a producer predating wave 1. ➡️ **So the EXISTENCE of the row is
+the discriminator and a NULL `progress` is corroboration, never the other way round** — a
+`stop_reason = 'context_reset'` row that exists at all is what proves a boundary abort was converted
+into a stored row rather than erasing it.
+
+🔑 **The sentinel is NOT uniform across the capture streams, so do not carry `-1` between them.**
+`break_context`'s `time_remaining` is validated as `^\d+(?:\.\d+)?$`, so a negative there is refused:
+it stores NULL **and** emits `KTP_BAD_PROPERTY`, which is a different observable from a NULL that
+arrived quietly through `ktpNonNegOrNull`.
+
+## A `frag_context` no-row can be a WEAPON DISAGREEMENT rather than a dropped line — and the alias map cannot fix it
+
+*(Measured 2026-10-07 across three Lane B runs, pairing every non-sentinel marker to the engine kill line for the same killer and victim.)*
+
+🔑 **The DODX Damage hook reads the attacker's CURRENTLY HELD weapon, so the marker can name a
+different weapon from the one the stock kill line records** — observed producer `mp44` and `mp40`
+against engine `kar`, and producer `bar` against `garandbutt`. The weapon clause in the frag-context
+`UPDATE` filters on the producer's name, so the join finds nothing and the row is reported as having no
+match.
+
+⛔ **This is not two names for one weapon, so `%fc_stock_weapon_alias` is the wrong direction.** That
+map carries documented one-way aliases (`garandbutt` → `garand` and so on) and there is no alias
+relation between `mp44` and `kar`; the broad weapon fallback that would reach it is refused in that
+map's own comment because it can steal an unrelated frag after a loss. ⚠️ **The unresolved-slot case
+has an escape and this one does not** — the handler already drops the weapon clause for the `mortar`
+value the hook yields when it has no weapon, while a resolved-but-WRONG weapon looks valid.
+
+➡️ **Tell the two apart rather than assuming transport loss:**
+`KTPInfrastructure`'s `tests/e2e_stats/log_invariants.py` `frag_context_weapon_disagreements()` pairs a
+marker only to a kill within ten seconds BEFORE it (the producer buffers, so the kill always leads) and
+reports more than one candidate as ambiguous instead of guessing. ⚠️ **A naive pairing fails the
+negative control:** a staged diagnostic kill's `amerknife` markers have no engine kill line anywhere
+near them by design.
