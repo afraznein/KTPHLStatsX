@@ -79,6 +79,13 @@ only identity.
   window has lines.
 - `hlstats_Servers.players` is not a live player count.
 
+⚠️ **Asking whether one HANDLER is in the deployed build by hashing the sub: an ABSENT sub hashes as
+the digest of EMPTY INPUT, not as an error.** Extracting a named sub out of `git show <ref>:scripts/hlstats.pl`
+and piping it to `md5sum` yields `d41d8cd98f00b204e9800998ecf8427e` when the sub is not there, which is a
+perfectly good-looking hash and reads as *"present and different"*. ➡️ **Carry a positive control in the same
+probe — a sibling handler you know exists at that commit — and recognise the empty digest.** That is how
+`doEvent_KTPAimVis` was correctly read as absent from the deployed commit rather than as changed.
+
 **Proving a new handler works:** compare first appearances, not counts.
 `GROUP BY <key> HAVING MIN(event_time) >= <swap time>` finds values that never existed before the
 deploy. Comparing a post-deploy window against a cumulative pre-deploy total fails on success, because
