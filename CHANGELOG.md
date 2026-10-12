@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added - a refused capture marker now records WHY, per event type
+
+`correlation_failure_count` was the only reason column `ktp_capture_health` had, so a rejection for
+any other cause arrived with every reason column at zero. Measured on production: 9,831 of 11,700
+rejections carried every reason column at zero, and there is no rejection-reason table to join to —
+`ktp_capture%` is exactly two tables and nothing matches `%reject%`. The capture-loss alert could
+therefore page but not diagnose, and the only working discriminator was the per-event-type partition
+(five core types always accepted, eleven extended types always rejected), which says which stream and
+not which fault.
+
+- **The reason already existed at every rejection site and was discarded.** Dispatch computes a status
+  string (`Move census dropped: manifest does not carry the move capability`), tests it to decide
+  whether the marker was refused, and threw it away. `ktpRejectCaptureMarker` and
+  `ktpRejectUnobservedCaptureMarker` now take it as a fourth argument, and all 37 call sites pass one.
+- **Tallied per (match, half, stream) and written to the new `ktp_capture_health.rejection_reasons`**
+  (migration 044) as `reason=count;reason=count`, most frequent first and name-ordered on a tie so two
+  identical halves produce identical bytes. A site that passes nothing records `unspecified` — visible,
+  rather than silence that reads like the old all-zero row.
+- **Bounded both ways.** Past 12 distinct reasons for one stream the rest fold into `other=N`, and the
+  encoder drops a reason that would overflow the column rather than truncating it mid-token, so a
+  malformed stream cannot grow this column with the flood it exists to describe.
+- **Nothing per-player reaches the column.** Two status strings interpolate an internal player id and a
+  raw position; `ktpNormalizeRejectReason` strips `for player=<id>`, quoted payload literals and
+  SteamID-shaped tokens before storing, and the selftest asserts that directly.
+- **The two tunables are declared above the main loop.** A file-scope assignment below it never runs in
+  daemon mode, which is what `scripts/selftest-no-code-after-main-loop.pl` exists to catch — and did,
+  on the first draft of this change.
+- **`scripts/selftest-capture-reject-reason.pl`** covers the normaliser, the tally and its ceiling, the
+  encoding, a known-bad marker recording the expected reason, and a structural check that every
+  rejection site passes one, with the three-argument control that proves that check can fire.
+- **DEPLOY ORDER: migration 044 first, then the daemon.** The INSERT names the new column, so a daemon
+  swapped ahead of the migration fails every health write. The column is nullable, so an applied
+  migration with today's daemon is a no-op.
+
 ### Fixed - the flag-state writer warned about an unprovable producer context and stored the row anyway
 
 `doEvent_KTPFlagState` was the only one of the five handlers that derive a stored `DATETIME` from

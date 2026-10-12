@@ -1720,6 +1720,8 @@ our $KTP_RESEND_MAX_PER_GAP = 256;     # a late-accepted manifest opens a hole t
 our $KTP_RESEND_MAX_MISSING = 256;     # per stream slot
 our $KTP_RESEND_MAX_PER_CMD = 32;      # sequences per rcon command
 our $KTP_RESEND_MIN_INTERVAL = 2;      # seconds between rcon calls per server
+our $KTP_REJECT_REASON_MAX_DISTINCT = 12;  # per (match, half, stream); the rest fold into "other"
+our $KTP_REJECT_REASON_MAX_LEN = 120;      # one normalised reason, before the column's own budget
 $g_dns_resolveip = 1;
 $g_dns_timeout = 5;
 $g_skill_maxchange = 100;
@@ -3019,7 +3021,8 @@ while ($loop = &getLine()) {
 						ktpQueuePendingDamage($ktp_actor_identity, $ktp_victim_identity,
 							$ev_obj_c || "", \%ev_properties_hash);
 					} else {
-						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties_hash, 0);
+						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties_hash, 0,
+							"identity unresolved: actor or victim");
 					}
 				}
 
@@ -3039,7 +3042,8 @@ while ($loop = &getLine()) {
 							$ev_properties_hash{"assister_position"},
 							$ev_properties_hash{"victim_position"},
 							$ev_properties_hash{"sequence"});
-						ktpRejectCaptureMarker("assist", \%ev_properties_hash, 0)
+						ktpRejectCaptureMarker("assist", \%ev_properties_hash, 0,
+							$ktp_assist_status)
 							if ($ktp_assist_status =~ /(?:dropped|failed)/i);
 					}
 				}
@@ -3323,10 +3327,12 @@ while ($loop = &getLine()) {
 								LIMIT 1
 							");
 							if (defined($fc_rv) && $fc_rv == 0) {
-								ktpRejectCaptureMarker("frag", \%ev_properties_hash, 1);
+								ktpRejectCaptureMarker("frag", \%ev_properties_hash, 1,
+									"frag_context: no matching frag row in the window");
 								&printEvent("KTP_NO_ROW_MATCHED", "frag_context: no $fc_match_description frag for killer=".$ktp_actor_player_id." victim=".$ktp_victim_player_id." weapon=$fc_weapon -- the frag line never arrived, or it landed outside the window (both happen, roughly half each)", 1, 1);
 							}
-							ktpRejectCaptureMarker("frag", \%ev_properties_hash, 0)
+							ktpRejectCaptureMarker("frag", \%ev_properties_hash, 0,
+								"frag_context: SQL write returned no row")
 								if (!defined($fc_rv));
 							$fc_seen->{claimed} = 1
 								if (defined($fc_rv) && $fc_rv > 0 && ref($fc_seen));
@@ -3364,7 +3370,7 @@ while ($loop = &getLine()) {
 								$ev_properties_hash{"health_after"},
 								$ev_properties_hash{"damage_applied"}
 							);
-							ktpRejectCaptureMarker("damage", \%ev_properties_hash, 0)
+							ktpRejectCaptureMarker("damage", \%ev_properties_hash, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 					}
 				} else {
@@ -3777,7 +3783,8 @@ while ($loop = &getLine()) {
 					if ($ev_obj_a eq "life_boundary" && $ktp_buffered_identity) {
 						ktpQueuePendingLife($ktp_buffered_identity, \%ev_properties);
 					} else {
-						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties, 0);
+						ktpRejectCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties, 0,
+							"identity unresolved: no buffered player");
 					}
 				}
 				if ($playerinfo) {
@@ -3808,7 +3815,7 @@ while ($loop = &getLine()) {
 								$ev_properties{"shots_hitscan"},
 								$ev_properties{"first_shot_delay"}
 							);
-							ktpRejectCaptureMarker("life", \%ev_properties, 0)
+							ktpRejectCaptureMarker("life", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						} else {
 							$ev_status = "Life boundary queued: unresolved player " .
@@ -3819,8 +3826,9 @@ while ($loop = &getLine()) {
 						# mutable roster snapshot. Persist it only under the advertised
 						# manifest and an event-time-proven match interval.
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "team_membership")) {
-							ktpRejectUnobservedCaptureMarker("team_membership", \%ev_properties, 0);
 							$ev_status = "Team membership dropped: no accepted manifest";
+							ktpRejectUnobservedCaptureMarker("team_membership", \%ev_properties, 0,
+								$ev_status);
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPTeamMembership(
 								$ktp_buffered_player_id, $playerinfo->{"userid"},
@@ -3828,7 +3836,7 @@ while ($loop = &getLine()) {
 								$ev_properties{"team"}, $ev_properties{"old_team"},
 								$ev_properties{"game_time"}, $ev_properties{"event_epoch"},
 								$ev_properties{"sequence"});
-							ktpRejectCaptureMarker("team_membership", \%ev_properties, 0)
+							ktpRejectCaptureMarker("team_membership", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed|rejected)/i);
 						}
 					} elsif ($ev_obj_a eq "break_context") {
@@ -3909,15 +3917,17 @@ while ($loop = &getLine()) {
 								LIMIT 1
 							");
 							if (defined($bc_rv) && $bc_rv == 0) {
-								ktpRejectCaptureMarker("break", \%ev_properties, 1);
+								ktpRejectCaptureMarker("break", \%ev_properties, 1,
+									"break_context: no unclaimed cap_break within 60s");
 								&printEvent("KTP_NO_ROW_MATCHED", "break_context: no unclaimed cap_break within 60s for player=".$ktp_buffered_player_id." -- likely a dropped UDP cap_break line", 1, 1);
 							}
-							ktpRejectCaptureMarker("break", \%ev_properties, 0)
+							ktpRejectCaptureMarker("break", \%ev_properties, 0,
+								"break_context: SQL write returned no row")
 								if (!defined($bc_rv));
 							$ev_status = "Break context marked for ".$playerinfo->{"uniqueid"}.": contesters=$bc_contesters remaining=$bc_remaining capout=$bc_capout";
 						} elsif ($ktp_buffered_player_id) {
-							ktpRejectCaptureMarker("break", \%ev_properties, 1);
 							$ev_status = "Break context dropped: cap_break action is unavailable";
+							ktpRejectCaptureMarker("break", \%ev_properties, 1, $ev_status);
 						}
 					} elsif ($ev_obj_a eq "position_sample") {
 						# KTP: periodic roster-position sample from
@@ -3933,8 +3943,8 @@ while ($loop = &getLine()) {
 						$ev_type = 608;  # KTP position-sample marker
 
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "position")) {
-							ktpRejectCaptureMarker("position", \%ev_properties, 0);
 							$ev_status = "Position sample dropped: no accepted schema-23 manifest";
+							ktpRejectCaptureMarker("position", \%ev_properties, 0, $ev_status);
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPPosition(
 								$ktp_buffered_player_id,
@@ -3949,7 +3959,7 @@ while ($loop = &getLine()) {
 								$ev_properties{"half"},
 								$ev_properties{"sequence"}
 							);
-							ktpRejectCaptureMarker("position", \%ev_properties, 0)
+							ktpRejectCaptureMarker("position", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "shot") {
@@ -3962,8 +3972,8 @@ while ($loop = &getLine()) {
 						$ev_type = 615;  # KTP shot-context marker
 
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "shot")) {
-							ktpRejectCaptureMarker("shot", \%ev_properties, 0);
 							$ev_status = "Shot dropped: no accepted schema-24+ manifest";
+							ktpRejectCaptureMarker("shot", \%ev_properties, 0, $ev_status);
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPShot(
 								$ktp_buffered_player_id,
@@ -4004,7 +4014,7 @@ while ($loop = &getLine()) {
 								$ev_properties{"rw_depth"},
 								$ev_properties{"rw_want"}
 							);
-							ktpRejectCaptureMarker("shot", \%ev_properties, 0)
+							ktpRejectCaptureMarker("shot", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "move_census") {
@@ -4024,11 +4034,11 @@ while ($loop = &getLine()) {
 						$ev_type = 620;  # KTP move-census marker
 
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "move")) {
-							ktpRejectCaptureMarker("move", \%ev_properties, 0);
 							$ev_status = "Move census dropped: manifest does not carry the move capability";
+							ktpRejectCaptureMarker("move", \%ev_properties, 0, $ev_status);
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPMove($ktp_buffered_player_id, \%ev_properties);
-							ktpRejectCaptureMarker("move", \%ev_properties, 0)
+							ktpRejectCaptureMarker("move", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "aim_vis") {
@@ -4048,11 +4058,11 @@ while ($loop = &getLine()) {
 						$ev_type = 621;  # KTP aim-vis marker
 
 						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "aim_vis")) {
-							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0);
 							$ev_status = "Aim vis dropped: manifest does not carry the aim_vis capability";
+							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0, $ev_status);
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPAimVis($ktp_buffered_player_id, \%ev_properties);
-							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0)
+							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
@@ -4592,11 +4602,11 @@ while ($loop = &getLine()) {
 				%ev_properties = %{$objective};
 				my $payload_error = ktpValidateObjectiveAttemptPayload(\%ev_properties);
 				if ($payload_error ne "") {
+					$ev_status = "Objective attempt dropped: $payload_error";
 					ktpRejectUnobservedCaptureMarker(
-						"objective_attempt", \%ev_properties, 0)
+						"objective_attempt", \%ev_properties, 0, $ev_status)
 						if (ktpCaptureManifestAuthorizes(
 							\%ev_properties, "objective_attempt"));
-					$ev_status = "Objective attempt dropped: $payload_error";
 				} elsif (!ktpCaptureManifestAuthorizes(
 						\%ev_properties, "objective_attempt")) {
 					$ev_status = "Objective attempt dropped: no accepted schema-22+ manifest";
@@ -4605,7 +4615,8 @@ while ($loop = &getLine()) {
 					$ev_status = &doEvent_KTPObjectiveAttempt(\%ev_properties);
 					ktpRejectCaptureMarker(
 						"objective_attempt", \%ev_properties,
-						$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+						$ev_properties{"_ktp_correlation_failure"} ? 1 : 0,
+						$ev_status)
 						if (!defined($ev_status) ||
 							$ev_status =~ /(?:dropped|failed|rejected)/i);
 				}
@@ -4623,11 +4634,11 @@ while ($loop = &getLine()) {
 				%ev_properties = %{$grenade};
 				my $payload_error = ktpValidateGrenadeEntityPayload(\%ev_properties);
 				if ($payload_error ne "") {
+					$ev_status = "Grenade entity dropped: $payload_error";
 					ktpRejectUnobservedCaptureMarker(
-						"grenade_entity", \%ev_properties, 0)
+						"grenade_entity", \%ev_properties, 0, $ev_status)
 						if (ktpCaptureManifestAuthorizes(
 							\%ev_properties, "grenade_entity"));
-					$ev_status = "Grenade entity dropped: $payload_error";
 				} elsif (!ktpCaptureManifestAuthorizes(
 						\%ev_properties, "grenade_entity")) {
 					$ev_status = "Grenade entity dropped: no accepted schema-22+ manifest";
@@ -4643,14 +4654,15 @@ while ($loop = &getLine()) {
 					if (!$owner_identity || !$owner_player_id) {
 						$ev_status = "Grenade entity dropped: owner identity unresolved";
 						&printEvent("KTP_GRENADE_ENTITY_DROP", $ev_status, 1, 1);
-						ktpRejectCaptureMarker("grenade_entity", \%ev_properties, 1);
+						ktpRejectCaptureMarker("grenade_entity", \%ev_properties, 1, $ev_status);
 					} else {
 						$ev_status = &doEvent_KTPGrenadeEntity(
 							\%ev_properties, $owner_player_id,
 							$owner_identity->{"userid"});
 						ktpRejectCaptureMarker(
 							"grenade_entity", \%ev_properties,
-							$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+							$ev_properties{"_ktp_correlation_failure"} ? 1 : 0,
+							$ev_status)
 							if (!defined($ev_status) ||
 								$ev_status =~ /(?:dropped|failed|rejected)/i);
 					}
@@ -4682,7 +4694,7 @@ while ($loop = &getLine()) {
 				$ev_properties{"timetocap"},
 				$ev_properties{"identity_resolved"}
 			);
-			ktpRejectCaptureMarker("flag_position", \%ev_properties, 0)
+			ktpRejectCaptureMarker("flag_position", \%ev_properties, 0, $ev_status)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_FLAG_STATE\s+(.*)$/) {
 			# KTP: compact objective-ownership timeline. The plugin emits one
@@ -4706,7 +4718,7 @@ while ($loop = &getLine()) {
 				$ev_properties{"event_epoch"},
 				$ev_properties{"round_time_left"}
 			);
-			ktpRejectCaptureMarker("flag_state", \%ev_properties, 0)
+			ktpRejectCaptureMarker("flag_state", \%ev_properties, 0, $ev_status)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_SCORE_EVENT\s+(.*)$/) {
 			# KTP wave 2 (§3.2): the engine's own score attribution per player,
@@ -4718,7 +4730,7 @@ while ($loop = &getLine()) {
 			ktpObserveCaptureMarker("score", \%ev_properties);
 			$ev_status = &doEvent_KTPScoreEvent(\%ev_properties);
 			ktpRejectCaptureMarker("score", \%ev_properties,
-				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0, $ev_status)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_PLAYER_STATE\s+(.*)$/) {
 			# KTP wave 2 (§3.7): prone/unprone from the module forward and
@@ -4729,7 +4741,7 @@ while ($loop = &getLine()) {
 			ktpObserveCaptureMarker("player_state", \%ev_properties);
 			$ev_status = &doEvent_KTPPlayerState(\%ev_properties);
 			ktpRejectCaptureMarker("player_state", \%ev_properties,
-				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0, $ev_status)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_GRENADE_THROW\s+(.*)$/) {
 			# KTP: the throw. The lifecycle tracker's "tracked" row is already the
@@ -4740,7 +4752,7 @@ while ($loop = &getLine()) {
 			ktpObserveCaptureMarker("grenade_throw", \%ev_properties);
 			$ev_status = &doEvent_KTPGrenadeThrow(\%ev_properties);
 			ktpRejectCaptureMarker("grenade_throw", \%ev_properties,
-				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0, $ev_status)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^KTP_DUEL\s+(.*)$/) {
 			# KTP wave 2 (§3.5): per-(attacker, victim) dodx vstats delta for one
@@ -4751,7 +4763,7 @@ while ($loop = &getLine()) {
 			ktpObserveCaptureMarker("duel", \%ev_properties);
 			$ev_status = &doEvent_KTPDuel(\%ev_properties);
 			ktpRejectCaptureMarker("duel", \%ev_properties,
-				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0)
+				$ev_properties{"_ktp_correlation_failure"} ? 1 : 0, $ev_status)
 				if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 		} elsif ($s_output =~ /^\[MANI_ADMIN_PLUGIN\]\s*(.+)$/) {
 			# Prototype: [MANI_ADMIN_PLUGIN] obj_a
@@ -5310,7 +5322,8 @@ sub ktpQueuePendingLife
 	my $total = 0;
 	$total += scalar(@{$g_ktpPendingLife{$_}}) for keys %g_ktpPendingLife;
 	if ($total >= 1024) {
-		ktpRejectCaptureMarker("life", $properties, 0);
+		ktpRejectCaptureMarker("life", $properties, 0,
+			"life retry queue full");
 		&printEvent("KTP_LIFE_DROP", "Life retry queue full; match=$matchid half=$half", 1, 1);
 		return 0;
 	}
@@ -5338,12 +5351,13 @@ sub ktpDrainPendingLife
 				$p->{round_live}, $p->{game_time}, $p->{event_epoch}, $p->{sequence},
 				$p->{shots}, $p->{shots_hitscan}, $p->{first_shot_delay});
 			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
-				ktpRejectCaptureMarker("life", $p, 0);
+				ktpRejectCaptureMarker("life", $p, 0, $status);
 			} else {
 				$accepted++;
 			}
 		} elsif ($final) {
-			ktpRejectCaptureMarker("life", $p, 0);
+			ktpRejectCaptureMarker("life", $p, 0,
+				"life boundary unresolved at health finalization");
 			&printEvent("KTP_LIFE_DROP",
 				"Life boundary unresolved at health finalization: ".$identity->{uniqueid},
 				1, 1);
@@ -5373,7 +5387,8 @@ sub ktpQueuePendingDamage
 	my $total = 0;
 	$total += scalar(@{$g_ktpPendingDamage{$_}}) for keys %g_ktpPendingDamage;
 	if ($total >= 4096) {
-		ktpRejectCaptureMarker("damage", $properties, 0);
+		ktpRejectCaptureMarker("damage", $properties, 0,
+			"damage retry queue full");
 		&printEvent("KTP_DAMAGE_DROP", "Damage retry queue full; match=$matchid half=$half", 1, 1);
 		return 0;
 	}
@@ -5401,12 +5416,13 @@ sub ktpDrainPendingDamage
 				$p->{game_time} // 0, $p->{event_epoch}, $p->{matchid}, $p->{half},
 				$p->{sequence}, $p->{health_before}, $p->{health_after}, $p->{damage_applied});
 			if (!defined($status) || $status =~ /(?:dropped|failed)/i) {
-				ktpRejectCaptureMarker("damage", $p, 0);
+				ktpRejectCaptureMarker("damage", $p, 0, $status);
 			} else {
 				$accepted++;
 			}
 		} else {
-			ktpRejectCaptureMarker("damage", $p, 0);
+			ktpRejectCaptureMarker("damage", $p, 0,
+				"damage identities unresolved at health finalization");
 			&printEvent("KTP_DAMAGE_DROP", "Damage identities unresolved at health finalization", 1, 1);
 		}
 	}
@@ -5857,7 +5873,7 @@ sub ktpObserveCaptureMarker
 	if ($marker eq "manifest" && !defined($g_ktpCaptureSequences{$key})) {
 		$g_ktpCaptureSequences{$key} = {
 			seq => {}, received => 0, types => {}, rejected => {},
-			correlation_failures => {}
+			correlation_failures => {}, reject_reasons => {}
 		};
 	}
 	my $state = $g_ktpCaptureSequences{$key};
@@ -5907,9 +5923,76 @@ sub ktpObserveCaptureMarker
 	}
 }
 
+# The reason a marker was refused already exists at every rejection site as the
+# status string, and it was discarded: correlation_failure_count was the only
+# reason ktp_capture_health carried, so most of a lost half arrived with every
+# reason column at zero and nothing on the box said why.
+#
+# Normalised rather than stored verbatim. Two status strings interpolate an
+# internal player id and a raw position, so a verbatim reason would put
+# per-player values in a health row.
+#
+# $KTP_REJECT_REASON_MAX_DISTINCT and _MAX_LEN are declared above the main loop
+# with the resend tunables -- a file-scope assignment down here never runs
+# (scripts/selftest-no-code-after-main-loop.pl).
+
+sub ktpNormalizeRejectReason
+{
+	my ($reason) = @_;
+	return "unspecified" if (!defined($reason) || $reason eq "");
+	# Identity scrub runs BEFORE truncation: a quoted literal is the payload
+	# value that failed, and `for player=<id>` names a player.
+	$reason =~ s/\bfor player=\d+//g;
+	$reason =~ s/'[^']*'//g;
+	$reason =~ s/\bSTEAM_\S+//g;
+	$reason =~ s/\b7656\d{13}\b//g;
+	$reason =~ s/\s+/ /g;
+	$reason =~ s/\s*:\s*/: /g;
+	$reason =~ s/^\s+//;
+	$reason =~ s/[\s:]+$//;
+	$reason = substr($reason, 0, $KTP_REJECT_REASON_MAX_LEN);
+	return $reason eq "" ? "unspecified" : $reason;
+}
+
+# Bounded on purpose: a malformed stream would otherwise mint one reason per
+# marker and the column grows with the flood it exists to describe.
+sub ktpNoteRejectReason
+{
+	my ($state, $marker, $reason) = @_;
+	my $bucket = ($state->{reject_reasons}{$marker} ||= {});
+	my $key = ktpNormalizeRejectReason($reason);
+	$key = "other"
+		if (!exists($bucket->{$key}) &&
+			scalar(keys %{$bucket}) >= $KTP_REJECT_REASON_MAX_DISTINCT);
+	$bucket->{$key} = ($bucket->{$key} || 0) + 1;
+}
+
+# Compact, deterministic encoding for the health row: reason=count, most
+# frequent first, name-ordered on a tie so two identical halves produce
+# identical bytes. `=` and `;` are stripped from a reason rather than escaped --
+# no status string contains either, and a parser that cannot be confused beats
+# one that has to be correct.
+sub ktpFormatRejectReasons
+{
+	my ($bucket, $budget) = @_;
+	return undef if (!defined($bucket) || !scalar(keys %{$bucket}));
+	$budget = 255 if (!defined($budget));
+	my @ordered = sort { $bucket->{$b} <=> $bucket->{$a} || $a cmp $b }
+		keys %{$bucket};
+	my $out = "";
+	for my $reason (@ordered) {
+		my $clean = $reason;
+		$clean =~ s/[=;]//g;
+		my $part = ($out eq "" ? "" : ";") . $clean . "=" . int($bucket->{$reason});
+		last if (length($out) + length($part) > $budget);
+		$out .= $part;
+	}
+	return $out eq "" ? undef : $out;
+}
+
 sub ktpRejectCaptureMarker
 {
-	my ($marker, $properties, $correlation_failure) = @_;
+	my ($marker, $properties, $correlation_failure, $reason) = @_;
 	return if (!defined($properties) || ref($properties) ne "HASH");
 	my ($matchid, $half) = ($properties->{matchid}, $properties->{half});
 	return if (!defined($matchid) || $matchid eq "" || $matchid eq "-" ||
@@ -5918,6 +6001,7 @@ sub ktpRejectCaptureMarker
 	return if (!defined($g_ktpCaptureSequences{$key}));
 	my $state = $g_ktpCaptureSequences{$key};
 	$state->{rejected}{$marker} = ($state->{rejected}{$marker} || 0) + 1;
+	ktpNoteRejectReason($state, $marker, $reason);
 	if ($correlation_failure) {
 		$state->{correlation_failures}{$marker} =
 			($state->{correlation_failures}{$marker} || 0) + 1;
@@ -5929,13 +6013,14 @@ sub ktpRejectCaptureMarker
 # observation-only and cannot allocate an unmanifested context.
 sub ktpRejectUnobservedCaptureMarker
 {
-	my ($marker, $properties, $correlation_failure) = @_;
+	my ($marker, $properties, $correlation_failure, $reason) = @_;
 	my $key = ktpCaptureContextKey($properties);
 	return if (!defined($key) || !defined($g_ktpCaptureSequences{$key}));
 	my $state = $g_ktpCaptureSequences{$key};
 	$state->{received}++;
 	$state->{types}{$marker} = ($state->{types}{$marker} || 0) + 1;
 	$state->{rejected}{$marker} = ($state->{rejected}{$marker} || 0) + 1;
+	ktpNoteRejectReason($state, $marker, $reason);
 	if ($correlation_failure) {
 		$state->{correlation_failures}{$marker} =
 			($state->{correlation_failures}{$marker} || 0) + 1;
@@ -6658,6 +6743,10 @@ sub doEvent_KTPCaptureHealth
 	$daemon_accepted = 0 if ($daemon_accepted < 0);
 	my $correlation_failures =
 		(($state->{correlation_failures} || {})->{$p->{event_type}} || 0);
+	my $reject_reasons = ktpFormatRejectReasons(
+		($state->{reject_reasons} || {})->{$p->{event_type}});
+	my $reasons_sql = defined($reject_reasons)
+		? "'".quoteSQL($reject_reasons)."'" : "NULL";
 	# Per event type, not per (server,match,half) -- see ktpObserveCaptureMarker.
 	my $seq_slot = (($state->{seq} || {})->{$p->{event_type}} || {});
 	my $first_sql = defined($seq_slot->{first}) ? int($seq_slot->{first}) : "NULL";
@@ -6673,7 +6762,8 @@ sub doEvent_KTPCaptureHealth
 			 emitted, daemon_received, daemon_accepted, daemon_rejected,
 			 correlation_failure_count, sequence_first, sequence_last,
 			 daemon_sequence_first, daemon_sequence_last, sequence_gap_count,
-			 duplicate_or_reordered_count, repaired_count, producer_sequence, event_epoch, event_time)
+			 duplicate_or_reordered_count, repaired_count, rejection_reasons,
+			 producer_sequence, event_epoch, event_time)
 		VALUES (".int($server_id).", '".quoteSQL($p->{matchid})."', ".int($p->{half}).",
 			'".quoteSQL($p->{event_type})."', ".int($p->{attempted}).",
 			".int($p->{enqueued}).", ".int($p->{dropped}).", ".int($p->{emitted}).",
@@ -6681,7 +6771,8 @@ sub doEvent_KTPCaptureHealth
 			".int($daemon_rejected).", ".int($correlation_failures).",
 			".int($p->{sequence_first}).",
 			".int($p->{sequence_last}).", $first_sql, $last_sql, ".int($gaps).",
-			".int($duplicates).", ".int($repaired).", ".int($p->{sequence}).", ".int($p->{event_epoch}).",
+			".int($duplicates).", ".int($repaired).", $reasons_sql,
+			".int($p->{sequence}).", ".int($p->{event_epoch}).",
 			FROM_UNIXTIME(".int($p->{event_epoch})."))
 		ON DUPLICATE KEY UPDATE attempted=VALUES(attempted), enqueued=VALUES(enqueued),
 			dropped=VALUES(dropped), emitted=VALUES(emitted),
@@ -6694,6 +6785,7 @@ sub doEvent_KTPCaptureHealth
 			sequence_gap_count=VALUES(sequence_gap_count),
 			duplicate_or_reordered_count=VALUES(duplicate_or_reordered_count),
 			repaired_count=VALUES(repaired_count),
+			rejection_reasons=VALUES(rejection_reasons),
 			producer_sequence=VALUES(producer_sequence), event_epoch=VALUES(event_epoch),
 			event_time=VALUES(event_time)
 	");

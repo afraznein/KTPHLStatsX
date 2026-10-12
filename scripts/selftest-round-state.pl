@@ -152,7 +152,8 @@ sub doQuery {
         ktpIntOrNull ktpNumOrNull
         ktpValidateProducerEventClock ktpResolveProducerEventContext
         ktpResolveValidatedProducerEventContext ktpHasExplicitProducerContext
-        ktpWarnProducerClock ktpRejectCaptureMarker));
+        ktpWarnProducerClock ktpRejectCaptureMarker
+        ktpNoteRejectReason ktpNormalizeRejectReason));
     eval "$code\n1;" or die "cannot load shipped handlers: $@";
 }
 
