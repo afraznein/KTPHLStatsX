@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added - migration 045: the 27 DoD voice-menu commands as generic actions
+
+`sql/migrate_045_voice_command_actions.sql` seeds `voice_negative`, `voice_grenade` and the other 25
+`voice_*` strings `dod.so` handles by name into `hlstats_Actions` (reward 0, PlayerActions only,
+`INSERT IGNORE`). No daemon code: the stock PlayerAction path already records any
+`"<player>" triggered "<code>"` line whose code resolves, and `recordEvent()` injects `match_id` gated
+on `KTP_ROUND_LIVE`. Pairs with KTPAMXX `stats_logging` 1.28.0, which emits one such line per voice
+command through its untracked ring. Apply, then **restart the daemon** -- `HLstats_Game.pm` caches the
+table at startup, so until then the codes are reported as unresolved and dropped.
+
 ### Added - a refused capture marker now records WHY, per event type
 
 `correlation_failure_count` was the only reason column `ktp_capture_health` had, so a rejection for
