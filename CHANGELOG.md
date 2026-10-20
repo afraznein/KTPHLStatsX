@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added - migration 046: two more move-census histograms, optional on the wire
+
+`sql/migrate_046_move_census_step_stance.sql` adds `steps_ducked` and `ground_ms_ducked_silent`
+to `ktp_move_census`, both `varchar(160) NOT NULL DEFAULT ''`. `doEvent_KTPMove` validates
+them exactly like the five required histograms (bucket count, digits, column width) but
+only when present; a producer that omits them (stats_logging 1.25.0-1.28.0) stores `''`,
+never a row of zeros. Pairs with KTPAMXX stats_logging 1.29.0, which appends the two
+fields after `step_timer_fires`. `selftest-move-census.pl` carries them in its worst-case
+line and mirrors `KSC_MOVE_MAX_BUCKETS` at its new value of 6 (999 of 1,023 characters;
+8 buckets no longer fit).
+
 ### Added - migration 045: the 27 DoD voice-menu commands as generic actions
 
 `sql/migrate_045_voice_command_actions.sql` seeds `voice_negative`, `voice_grenade` and the other 25

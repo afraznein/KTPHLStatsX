@@ -226,7 +226,7 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
     # buckets would pass while the producer reserves room for more than the line can
     # hold -- which is exactly the state this started in. Mirrors
     # KSC_MOVE_MAX_BUCKETS in KTPAMXX plugins/dod/ktp_stats_capture.inc.
-    my $BUCKETS = 8;
+    my $BUCKETS = 6;
     my $big     = "999999";     # the producer's six-digit wire clamp
     # A width placeholder, not a SteamID. Only its LENGTH matters here, and a
     # real-looking one in a committed fixture is identity-shaped material in a
@@ -242,11 +242,13 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
       . ' (taps "%s") (taps_ground "%s") (taps_air "%s") (ground_ms_standing "%s")'
       . ' (ground_ms_ducked "%s") (air_ms_ducked "%s") (stam_tap_sum "%s") (stam_tap_min "%d")'
       . ' (steps_ground "%s") (steps_ladder "%s") (sounds_water "%s") (pmove_sounds "%s")'
-      . ' (step_timer_fires "%s") (map "%s") (matchid "%s") (half "%d") (game_time "%.2f")'
+      . ' (step_timer_fires "%s") (steps_ducked "%s") (ground_ms_ducked_silent "%s")'
+      . ' (map "%s") (matchid "%s") (half "%d") (game_time "%.2f")'
       . ' (event_epoch "%d") (sequence "%d")',
         $pstr, $big, $BUCKETS, 50, $big,
         $hist, $hist, $hist, $hist, $hist,
         $big, 0, $big, $big, $big, $big, $big,
+        $hist, $hist,
         $map, $matchid, 2, 99999.99, 2147483647, 9223372036854775807);
 
     diag("worst-case move_census line: " . length($worst) . " chars, budget " . ($KSC_BUF_LINE_LEN - 1));
@@ -261,7 +263,8 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
     for my $f (qw(window_ms buckets bucket_width taps taps_ground taps_air
                   ground_ms_standing ground_ms_ducked air_ms_ducked
                   stam_tap_sum stam_tap_min steps_ground steps_ladder
-                  sounds_water pmove_sounds step_timer_fires map matchid
+                  sounds_water pmove_sounds step_timer_fires
+                  steps_ducked ground_ms_ducked_silent map matchid
                   half game_time event_epoch sequence)) {
         ok(defined($prop{$f}), "the handler's field '$f' survives getProperties");
     }

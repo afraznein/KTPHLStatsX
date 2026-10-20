@@ -7451,6 +7451,25 @@ sub doEvent_KTPMove
 			" chars, wider than the column"
 			if (length($hist{$field}) > 160);
 	}
+	# Two histograms a 1.29.0+ producer appends (migration 046). OPTIONAL on the wire so
+	# a 1.25-1.28 producer's row is still stored; absent is stored as '' and never as a
+	# row of zeros, because a zero here is exactly the reading this stream is asked for.
+	# Present, they are held to the same shape as the required five.
+	for my $field (qw(steps_ducked ground_ms_ducked_silent)) {
+		my $raw = $p->{$field};
+		if (!defined($raw)) { $hist{$field} = ""; next; }
+		my @v = split(/\s+/, $raw);
+		return "Move census dropped: $field has " . scalar(@v) . " buckets, expected $buckets"
+			if (scalar(@v) != $buckets);
+		for my $cell (@v) {
+			return "Move census dropped: non-numeric $field"
+				if ($cell !~ /^\d+$/);
+		}
+		$hist{$field} = join(" ", @v);
+		return "Move census dropped: $field is ".length($hist{$field}).
+			" chars, wider than the column"
+			if (length($hist{$field}) > 160);
+	}
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
 	my $match_id_sql = "NULL";
@@ -7517,6 +7536,7 @@ sub doEvent_KTPMove
 			 stam_tap_sum, stam_tap_min,
 			 steps_ground, steps_ladder, sounds_water, pmove_sounds,
 			 step_timer_fires,
+			 steps_ducked, ground_ms_ducked_silent,
 			 game_time, event_epoch, producer_sequence, event_time)
 		VALUES
 			(".int($server_id).", $match_id_sql, ".int($half).", ".int($player_id).
@@ -7534,6 +7554,8 @@ sub doEvent_KTPMove
 			", ".$counter->($p->{sounds_water}).
 			", ".$counter->($p->{pmove_sounds}).
 			", ".$counter->($p->{step_timer_fires}).
+			", '".quoteSQL($hist{steps_ducked})."'".
+			", '".quoteSQL($hist{ground_ms_ducked_silent})."'".
 			", ".$game_time.
 			", ".int($p->{event_epoch} // 0).", $wire_sequence".
 			", FROM_UNIXTIME(".int($p->{event_epoch} // 0)."))
