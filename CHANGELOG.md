@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added - migration 047: `air_ms_standing` on the move census, optional on the wire
+
+`sql/migrate_047_move_census_air_standing.sql` adds `air_ms_standing` (`varchar(160) NOT NULL
+DEFAULT ''`) to `ktp_move_census`; `doEvent_KTPMove` validates it like the other optional
+histograms and stores `''` when a pre-1.31.0 producer omits it. Pairs with KTPAMXX
+stats_logging 1.31.0, from which `steps_ducked` also excludes landing steps -- rows from the
+two producers are told apart by whether `air_ms_standing` is empty.
+
+`selftest-move-census.pl` now pins the worst-case line against the ceiling that actually
+binds: ReHLDS's `Log_Printf` buffer, 1,024 bytes less its 25-byte timestamp, newline and
+terminator (997), not the plugin's 1,023. The previous pin let a 999-character worst case
+through. Its worst-case player string is the engine's name limit plus the uid/steamid/team
+suffix, not the plugin's 96-byte buffer, and counters are five digits (KTPMove::WIRE_MAX).
+
 ### Added - migration 046: two more move-census histograms, optional on the wire
 
 `sql/migrate_046_move_census_step_stance.sql` adds `steps_ducked` and `ground_ms_ducked_silent`

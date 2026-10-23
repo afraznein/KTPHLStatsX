@@ -221,18 +221,32 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
     # Cross-repo, so it cannot be derived here -- if that constant shrinks, this
     # number has to follow it or the check stops meaning anything.
     my $KSC_BUF_LINE_LEN = 1024;
+    # The ceiling that actually binds. The producer sends this line through
+    # log_message(), and ReHLDS's Log_Printf formats into a 1,024-byte buffer that
+    # already holds its "L mm/dd/yyyy - hh:mm:ss: " prefix (25 bytes), the trailing
+    # newline and the terminator: 997 characters of line arrive whole, the rest are
+    # cut. Pin against THIS, not the plugin buffer -- the 2026-10-20 derivation pinned
+    # against 1,023 and shipped a worst case of 999.
+    my $LOG_PRINTF_BUDGET = 1024 - 25 - 2;
 
     # The RESERVED ceiling, not the geometry shipping today. Testing today's six
     # buckets would pass while the producer reserves room for more than the line can
     # hold -- which is exactly the state this started in. Mirrors
     # KSC_MOVE_MAX_BUCKETS in KTPAMXX plugins/dod/ktp_stats_capture.inc.
     my $BUCKETS = 6;
-    my $big     = "999999";     # the producer's six-digit wire clamp
+    # KTPMove::WIRE_MAX, five digits since stats_logging 1.31.0 (was six). A 30 s
+    # window cannot put more than 30,000 ms in a bucket and no count comes near it,
+    # so the clamp still bounds every real value -- and each digit here is paid for
+    # in every histogram against the Log_Printf ceiling below.
+    my $big     = "99999";
     # A width placeholder, not a SteamID. Only its LENGTH matters here, and a
     # real-looking one in a committed fixture is identity-shaped material in a
-    # public repo for no test value at all. 95 chars is ksc_player_str's own cap
-    # (raw[96]), not a typical name -- the worst case is the point.
-    my $pstr    = ("x" x 59) . "<65535><STEAM_X:X:XXXXXXXXX><Allies>";
+    # public repo for no test value at all. The width is the ENGINE's worst case,
+    # not the plugin's 96-byte buffer (which it cannot fill): MAX_NAME_LENGTH is 32,
+    # so 31 name characters; the userid is an int the engine increments per connect
+    # (seven digits is weeks of uptime); a SteamID is at most STEAM_0:1:4294967295,
+    # 20 characters; the longest DoD team string is "Unassigned". 74 characters.
+    my $pstr    = ("x" x 31) . "<9999999><STEAM_0:1:4294967295><Unassigned>";
     my $matchid = "m" x 63;
     my $map     = "dod_" . ("m" x 27);
     my $hist    = join(" ", ($big) x $BUCKETS);
@@ -243,17 +257,22 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
       . ' (ground_ms_ducked "%s") (air_ms_ducked "%s") (stam_tap_sum "%s") (stam_tap_min "%d")'
       . ' (steps_ground "%s") (steps_ladder "%s") (sounds_water "%s") (pmove_sounds "%s")'
       . ' (step_timer_fires "%s") (steps_ducked "%s") (ground_ms_ducked_silent "%s")'
+      . ' (air_ms_standing "%s")'
       . ' (map "%s") (matchid "%s") (half "%d") (game_time "%.2f")'
       . ' (event_epoch "%d") (sequence "%d")',
         $pstr, $big, $BUCKETS, 50, $big,
         $hist, $hist, $hist, $hist, $hist,
         $big, 0, $big, $big, $big, $big, $big,
-        $hist, $hist,
-        $map, $matchid, 2, 99999.99, 2147483647, 9223372036854775807);
+        $hist, $hist, $hist,
+        # sequence is a Pawn cell (ksc_next_type_sequence returns an int), so ten digits
+        # is its ceiling; the nineteen used before were a bigint's, not the producer's.
+        $map, $matchid, 2, 99999.99, 2147483647, 2147483647);
 
     diag("worst-case move_census line: " . length($worst) . " chars, budget " . ($KSC_BUF_LINE_LEN - 1));
     cmp_ok(length($worst), '<', $KSC_BUF_LINE_LEN - 1,
         'the worst-case line fits the producer buffer, terminator included');
+    cmp_ok(length($worst), '<=', $LOG_PRINTF_BUDGET,
+        'the worst-case line survives Log_Printf whole: 1,024 bytes less the 25-byte timestamp, newline and terminator');
 
     my @m = ($worst =~ $LINE_RE);
     ok(scalar(@m), 'the worst-case line matches the daemon dispatch regex');
@@ -264,7 +283,7 @@ for my $col (qw(taps taps_ground steps_ground step_timer_fires)) {
                   ground_ms_standing ground_ms_ducked air_ms_ducked
                   stam_tap_sum stam_tap_min steps_ground steps_ladder
                   sounds_water pmove_sounds step_timer_fires
-                  steps_ducked ground_ms_ducked_silent map matchid
+                  steps_ducked ground_ms_ducked_silent air_ms_standing map matchid
                   half game_time event_epoch sequence)) {
         ok(defined($prop{$f}), "the handler's field '$f' survives getProperties");
     }
