@@ -7455,7 +7455,8 @@ sub doEvent_KTPMove
 	# a 1.25-1.28 producer's row is still stored; absent is stored as '' and never as a
 	# row of zeros, because a zero here is exactly the reading this stream is asked for.
 	# Present, they are held to the same shape as the required five.
-	for my $field (qw(steps_ducked ground_ms_ducked_silent)) {
+	# air_ms_standing joins them from 1.31.0 (migration 047), same rule.
+	for my $field (qw(steps_ducked ground_ms_ducked_silent air_ms_standing)) {
 		my $raw = $p->{$field};
 		if (!defined($raw)) { $hist{$field} = ""; next; }
 		my @v = split(/\s+/, $raw);
@@ -7536,7 +7537,7 @@ sub doEvent_KTPMove
 			 stam_tap_sum, stam_tap_min,
 			 steps_ground, steps_ladder, sounds_water, pmove_sounds,
 			 step_timer_fires,
-			 steps_ducked, ground_ms_ducked_silent,
+			 steps_ducked, ground_ms_ducked_silent, air_ms_standing,
 			 game_time, event_epoch, producer_sequence, event_time)
 		VALUES
 			(".int($server_id).", $match_id_sql, ".int($half).", ".int($player_id).
@@ -7556,6 +7557,7 @@ sub doEvent_KTPMove
 			", ".$counter->($p->{step_timer_fires}).
 			", '".quoteSQL($hist{steps_ducked})."'".
 			", '".quoteSQL($hist{ground_ms_ducked_silent})."'".
+			", '".quoteSQL($hist{air_ms_standing})."'".
 			", ".$game_time.
 			", ".int($p->{event_epoch} // 0).", $wire_sequence".
 			", FROM_UNIXTIME(".int($p->{event_epoch} // 0)."))
