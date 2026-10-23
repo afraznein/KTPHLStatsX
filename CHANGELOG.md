@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added - migration 048: the 16 DoD hand signals as generic actions
+
+`sql/migrate_048_hand_signal_actions.sql` seeds `signal_yes`, `signal_grenade` and the other 14
+`signal_*` strings `dod.so` handles by name -- the voice-command family's twin (045). Reward 0,
+PlayerActions only, `INSERT IGNORE`. No daemon code. Apply, then reload the action cache
+(`systemctl kill -s HUP hlstatsx.service`; `readDatabaseConfig()` rebuilds it), then KTPAMXX
+`stats_logging` 1.32.0 emits the lines.
+
 ### Added - migration 047: `air_ms_standing` on the move census, optional on the wire
 
 `sql/migrate_047_move_census_air_standing.sql` adds `air_ms_standing` (`varchar(160) NOT NULL
