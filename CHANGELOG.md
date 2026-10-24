@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed - an empty optional move-census histogram no longer drops the whole row
+
+`doEvent_KTPMove` treated `(air_ms_standing "")` -- what a stats_logging newer than its dodx
+module emits, because the native has no such histogram and returns 0 cells -- as a present
+field with 0 buckets, and rejected the row. A plugin-only wave of 1.31.0+ onto a pre-1.31.0
+dodx would have dropped every `ktp_move_census` row on the fleet. Present-but-empty is now
+stored as `''`, the column's existing "not reported", for all three optional histograms.
+
 ### Added - migration 048: the 16 DoD hand signals as generic actions
 
 `sql/migrate_048_hand_signal_actions.sql` seeds `signal_yes`, `signal_grenade` and the other 14

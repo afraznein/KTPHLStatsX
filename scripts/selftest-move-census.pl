@@ -153,6 +153,8 @@ my $body = body_of('doEvent_KTPMove');
 has($body, '$manifest->{schema} < 23 || !$manifest->{move}',
     'the handler refuses a manifest that does not authorise this stream');
 
+has($body, '$raw !~ /\\S/',
+    'an optional histogram present but EMPTY (plugin newer than its dodx) is stored as absent, not dropped');
 has($body, 'scalar(@v) != $buckets',
     'a histogram with the wrong number of buckets is rejected, not padded');
 hasnt($body, 'push(@v, 0)',

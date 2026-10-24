@@ -7458,7 +7458,12 @@ sub doEvent_KTPMove
 	# air_ms_standing joins them from 1.31.0 (migration 047), same rule.
 	for my $field (qw(steps_ducked ground_ms_ducked_silent air_ms_standing)) {
 		my $raw = $p->{$field};
-		if (!defined($raw)) { $hist{$field} = ""; next; }
+		# Present but EMPTY is absent too. A plugin newer than its dodx module asks for a
+		# histogram the module does not have; the native returns 0 cells and the producer
+		# renders (field ""). Validating that as a 0-bucket histogram dropped the whole
+		# row -- every census row on the fleet for a plugin-only wave. Store '' instead:
+		# the same "not reported" the column already means, and the other fields survive.
+		if (!defined($raw) || $raw !~ /\S/) { $hist{$field} = ""; next; }
 		my @v = split(/\s+/, $raw);
 		return "Move census dropped: $field has " . scalar(@v) . " buckets, expected $buckets"
 			if (scalar(@v) != $buckets);
