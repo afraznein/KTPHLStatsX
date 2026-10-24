@@ -1424,3 +1424,30 @@ marker only to a kill within ten seconds BEFORE it (the producer buffers, so the
 reports more than one candidate as ambiguous instead of guessing. ⚠️ **A naive pairing fails the
 negative control:** a staged diagnostic kill's `amerknife` markers have no engine kill line anywhere
 near them by design.
+
+🔻 **UPDATED 2026-10-23 — a producer fix shipped and this trap SURVIVED it, which is
+the half a reader is most likely to get wrong.** `KTPAMXX`#176 changed the death branch in
+`modules/dod/dodx/usermsg.cpp` to take the weapon the ENGINE resolved from its own logname instead
+of the attacker's currently held one, and it is fielded (dodx 2.7.33.6004, swapped 2026-10-22).
+⛔ **It does not remove this case.** The fix only reaches a death the Damage hook reports
+SECOND; when that hook reports FIRST it suppresses `DeathMsg`, there is no record for it to
+consume, and the held weapon still goes out. ⚠️ **So keep reading a `frag_context` no-row
+as a possible weapon disagreement even on a post-#176 build** — the opposite conclusion sends
+you back to hunting transport loss, which is what this section exists to prevent.
+
+📏 **Measured on two scheduled `Lane B Stats E2E` runs on `main` that built the SAME
+`KTPAMXX` commit** — `dd102750f66fbdcc5b73cca980aa516013bbab08`, which is #176's own merge,
+read from each run's `bundle-provenance.md` rather than inferred from a date. Run `39767223136`
+(10-22) was green with no disagreement row and 3 of 3 expected no-row diagnostics; run
+`39942244416` (10-23) was red with one row — producer `scopedkar` against engine `k43`,
+`candidate_kills` 1 — and 4 observed against 3 expected, cascading into `frag_context_claimed`,
+`frag_producer_clocks`, `capture_health` and `v5_match_report`.
+
+➡️ **Judge the weapon half by the counter, never by a green run.** Assert
+`frag_context_weapon_disagreements` is empty over a run with a non-zero paired-kill denominator.
+Of the twelve scheduled runs from 10-12 to 10-23, five were red (10-14, 10-15, 10-17, 10-20,
+10-23) and only 10-20 and 10-23 have been read for a disagreement row — so one green run is a
+coin the un-fixed build also wins, and the other three reds are unattributed rather than known to
+be this. ⚠️ **And read the weapon pair off that field, not by grepping the capture log
+for weapon names:** `thompson` and `garand` occur 122 times in the red run's log as ordinary
+frags, so a scan finds a plausible pair that is not the disagreement.
