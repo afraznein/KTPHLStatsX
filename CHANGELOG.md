@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added - migration 049: the 27 DoD voice-menu picks as their own actions
+
+`voicemenu_negative` and 26 more: what KTPAMXX `stats_logging` 1.33.0 logs when a player picks a voice from
+DoD's server-drawn voice menu rather than a bound key. A separate family from 045's `voice_*` so the database
+keeps bound-vs-menu. Reward 0, PlayerActions only, idempotent. No daemon code; apply, SIGHUP, then 1.33.0.
+
 ### Fixed - an empty optional move-census histogram no longer drops the whole row
 
 `doEvent_KTPMove` treated `(air_ms_standing "")` -- what a stats_logging newer than its dodx
