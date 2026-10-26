@@ -1538,6 +1538,10 @@ sub reloadConfiguration
 {
 	&flushAll;
 	&readDatabaseConfig;
+	# The action cache was just rebuilt, so every verdict in here was reached
+	# against the old one: a code seeded since the last reload resolves now.
+	# Left stale, a SIGHUP cannot clear what the ingest monitor reads hourly.
+	%g_ktpUnresolvedActions = ();
 }
 
 
