@@ -17,8 +17,9 @@ four codes were ones that must never be in `hlstats_Actions` -- `voice_menu1`/`2
 menu-opens 045 deliberately excludes and which KTPAMXX `stats_logging` 1.32.1 stopped emitting
 when it went live fleet-wide, plus `voice_bazooka`, a player's own bind that is absent from
 `dod.so` (33 distinct `voice_*` tokens in the binary; the only `voice_bazooka*` string there is
-`voice_bazookaspotted`). No code was seen unresolved after 2026-10-25 16:00, so the hourly
-alert was reporting a frozen set, and its "Seed the table" remedy was wrong for all four.
+`voice_bazookaspotted`). The daemon logs each code's FIRST sighting only, and no fifth code has
+appeared since 2026-10-25 16:00, so the set the count reports has been frozen for over a day
+-- and its "Seed the table" remedy was wrong for every member of it.
 
 ### Added - migration 049: the 27 DoD voice-menu picks as their own actions
 
