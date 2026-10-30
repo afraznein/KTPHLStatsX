@@ -2,13 +2,11 @@
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added - migration 051: `own_weapon_kill`, a player-vs-player action
 
 What KTPAMXX `stats_logging` 1.35.0 logs when a player is killed with their own gun -- one they spawned
 with, dropped, and someone else picked up. Same row shape as 003's `assist` (PlayerPlayerActions only,
 reward 0), idempotent. No daemon code; apply, SIGHUP, then 1.35.0.
-=======
 ### Added - shot rows store `tgt_shift`, how far the rewind moved the victim (migration 050)
 
 stats_logging 1.34.0 appends `tgt_shift` to the shot line. It is how far the shooter's
@@ -21,7 +19,6 @@ bump: the property is read by name.
 
 **Deploy order: migration 050, then this daemon.** The batched shot INSERT names `tgt_shift`, so
 a daemon ahead of the column loses every shot row. The producer can go in any order.
->>>>>>> origin/main
 
 ### Fixed - a config reload now clears the unresolved-action tally it just invalidated
 

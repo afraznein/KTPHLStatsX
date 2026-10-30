@@ -16,7 +16,7 @@
 -- stamp on every carried primary (DODX dod_client_weaponpickup + a ground-gun ledger) and, on a kill
 -- whose gun's first owner is the victim, logs
 --   "<killer>" triggered "own_weapon_kill" against "<victim>" with "<weapon>" (attacker_position ..)
---   (victim_position ..) (owner_drop "death"|"drop") (held_s "<s>")
+--   (victim_position ..) (owner_drop "death"|"drop") (since_drop_s "<s>")
 -- doEvent_PlayerPlayerAction stores killer, victim, positions and time in
 -- hlstats_Events_PlayerPlayerActions; the weapon and match come from the frag row at the same
 -- eventTime with the same killer/victim. No daemon code.
