@@ -153,7 +153,7 @@ my @SHOT_ARGS = qw(weapon_id position yaw pitch prone map game_time event_epoch
     shot_ping shot_loss cmd_traces trace_frac trace_flags trace_start_off
     cmd_all_traces net_lerp net_dropped net_backup net_cmds shooter_flags
     shooter_punch_pitch shooter_punch_yaw shooter_speed shooter_stamina
-    hitgroup rw_flags rw_depth rw_want);
+    hitgroup rw_flags rw_depth rw_want tgt_shift);
 my %HIT = (weapon_id => 10, position => '1 2 3', yaw => '45.20', pitch => '-3.10', prone => 0,
     map => 'dod_anzio', game_time => '245.32', event_epoch => 1790000001, matchid => 'KTP-1',
     half => 1, sequence => 7, tgt_userid => 12, tgt_health => 100, tgt_dead => 0, tgt_team => 2,
@@ -220,6 +220,25 @@ is($row->{hitgroup}, 0, 'hitgroup 0 (generic) is real, kept');
 is($row->{hitgroup}, 'NULL', 'hitgroup outside 0-99 -> NULL');
 ($row) = shot_row(%MISS, hitgroup => 2);
 is($row->{hitgroup}, 'NULL', 'hitgroup without target state -> NULL');
+
+# --- stats_logging 1.34.0: tgt_shift rides the target group ------------------
+($row) = shot_row(%HIT, tgt_shift => 37);
+is($row->{tgt_shift}, 37, 'a hit stores the rewind shift as sent');
+($row) = shot_row(%HIT);
+is($row->{tgt_shift}, 'NULL', 'a pre-1.34.0 shot (no tgt_shift) stores NULL');
+($row) = shot_row(%HIT, tgt_shift => -1);
+is($row->{tgt_shift}, 'NULL', 'producer -1 (engine without the API) -> NULL');
+($row) = shot_row(%HIT, tgt_shift => 0);
+is($row->{tgt_shift}, 0, 'shift 0 (the rewind did not move the victim) is real, kept');
+($row) = shot_row(%HIT, tgt_shift => 10000);
+is($row->{tgt_shift}, 'NULL', 'tgt_shift past the 0-9999 clamp -> NULL');
+($row) = shot_row(%MISS, tgt_shift => 12);
+is($row->{tgt_shift}, 'NULL', 'tgt_shift without target state -> NULL');
+
+my $mig50 = slurp("$DIR/../sql/migrate_050_shot_rewind_shift.sql");
+like($mig50, qr/\A-- ENGINE: mysql /, 'migration 050 declares its engine on line 1');
+like($mig50, qr/TABLE_NAME='ktp_shot_events' AND COLUMN_NAME='tgt_shift'\), 'ADD COLUMN tgt_shift SMALLINT UNSIGNED DEFAULT NULL /,
+    '050 adds ktp_shot_events.tgt_shift as SMALLINT UNSIGNED DEFAULT NULL, guarded by information_schema');
 
 # --- the migration creates exactly what the daemon writes ---------------------
 my $mig = slurp("$DIR/../sql/migrate_041_shot_hitgroup_rewind.sql");

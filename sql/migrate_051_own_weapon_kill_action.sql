@@ -8,11 +8,11 @@
 --
 -- DEPLOY ORDER: migration FIRST, then reload the daemon's action cache
 --   (`systemctl kill -s HUP hlstatsx.service`; readDatabaseConfig() rebuilds it -- no restart), then
---   KTPAMXX stats_logging 1.34.0. Until the cache carries this code each line is tallied once as an
+--   KTPAMXX stats_logging 1.35.0. Until the cache carries this code each line is tallied once as an
 --   unresolved action and dropped -- lost rows only, no match impact.
 --
 -- WHAT. A hidden fun stat (drew, 2026-10-30): a player killed with THEIR OWN gun -- one they spawned
--- with, dropped (death or drop key), and someone else picked up. stats_logging 1.34.0 keeps an owner
+-- with, dropped (death or drop key), and someone else picked up. stats_logging 1.35.0 keeps an owner
 -- stamp on every carried primary (DODX dod_client_weaponpickup + a ground-gun ledger) and, on a kill
 -- whose gun's first owner is the victim, logs
 --   "<killer>" triggered "own_weapon_kill" against "<victim>" with "<weapon>" (attacker_position ..)
