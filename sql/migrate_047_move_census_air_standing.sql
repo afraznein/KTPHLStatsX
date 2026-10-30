@@ -1,7 +1,12 @@
 -- ENGINE: mysql (hlstatsx on the data server -- NOT the Supabase editor)
 -- KTP HLStatsX Migration 047: the move census completes its time ledger.
 --
--- STATUS: STAGED, not applied. Pairs with KTPAMXX stats_logging 1.31.0, which
+-- STATUS: APPLIED to production 2026-10-23 08:17 ET on operator authorisation
+--   (ledger row `dpl-5a56`). File md5 `0f8ba98b1f310ba323f7b182f78caa33`, matched against
+--   this repo's `origin/main` blob on both ends before it ran; verified on the schema,
+--   `ktp_move_census` 29 -> 30 columns with `air_ms_standing` at ordinal 25, directly after
+--   `ground_ms_ducked_silent`. This line read "STAGED, not applied" for a week afterwards.
+--   Pairs with KTPAMXX stats_logging 1.31.0, which
 --   appends air_ms_standing to the move_census line and stops counting landing
 --   steps in steps_ducked. The field is OPTIONAL on the wire: the daemon stores ''
 --   when a 1.29.0/1.30.0 producer omits it, so the deploy order is the usual one.

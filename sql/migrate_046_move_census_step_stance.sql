@@ -2,7 +2,13 @@
 -- KTP HLStatsX Migration 046: the move census says WHEN a crouched footstep
 -- sounded, and how much crouched time the engine's timer order made silent.
 --
--- STATUS: STAGED, not applied. Pairs with KTPAMXX stats_logging 1.29.0, which
+-- STATUS: APPLIED to production 2026-10-20 21:39 ET on operator authorisation
+--   (ledger row `dpl-b4dd`). File md5 `4c8dba2799c5bd482367f883dd9887bc`, matched against
+--   this repo's `origin/main` blob on both ends before it ran; verified on the schema,
+--   `ktp_move_census` 27 -> 29 columns with `steps_ducked` at ordinal 23 and
+--   `ground_ms_ducked_silent` at 24, directly after `step_timer_fires`.
+--   This line read "STAGED, not applied" for ten days afterwards.
+--   Pairs with KTPAMXX stats_logging 1.29.0, which
 --   appends two histogram fields to the move_census line. Both are OPTIONAL on
 --   the wire: the daemon stores '' when a 1.25-1.28 producer omits them, so the
 --   deploy order is the usual one and nothing is lost in either direction.

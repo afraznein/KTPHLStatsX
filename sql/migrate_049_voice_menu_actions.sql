@@ -1,7 +1,19 @@
 -- ENGINE: mysql (hlstatsx on the data server -- NOT the Supabase editor)
 -- KTP HLStatsX Migration 049: seed the 27 DoD voice-MENU picks as their own actions.
 --
--- STATUS: proposed, not applied.
+-- STATUS: APPLIED to production 2026-10-25, per this repo's own CHANGELOG entry
+--   "a config reload now clears the unresolved-action tally it just invalidated", which
+--   measures the daemon's behaviour "after 049 was applied and SIGHUP'd on 2026-10-25".
+--   Its producer is live too: stats_logging 1.33.0 is 24/24 on the fleet, verified by md5
+--   2026-10-28 (`7aed80db3390c3d9b736dc22e0fc2161`), swapped at the 03:00 ET restart on
+--   2026-10-27.
+--   This line read "proposed, not applied" for five days after it ran.
+--   WEAKER EVIDENCE THAN ITS SIBLINGS, SAID RATHER THAN FLATTENED: 045-048 each have a
+--   ledger tick carrying a timestamp and a file md5 verified on both ends. This one has
+--   that CHANGELOG sentence and no `dpl-` row of its own, so it rests on a record written
+--   after the fact. Re-derive it if it ever matters:
+--     SELECT COUNT(*) FROM hlstats_Actions WHERE game='dod' AND code LIKE 'voicemenu\_%';
+--   expects 27, with a nonsense-code control at 0.
 --
 -- Apply once as: sudo mysql hlstatsx < migrate_049_voice_menu_actions.sql
 -- Idempotent: INSERT IGNORE against the (code, game, team) unique key; `id` omitted (003/045 say why).
