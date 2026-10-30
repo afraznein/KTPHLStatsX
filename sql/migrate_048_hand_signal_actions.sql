@@ -1,18 +1,32 @@
 -- ENGINE: mysql (hlstatsx on the data server -- NOT the Supabase editor)
 -- KTP HLStatsX Migration 048: seed the DoD hand signals as actions.
 --
--- STATUS: proposed, not applied.
+-- STATUS: APPLIED to production 2026-10-24 15:53 ET on operator authorisation
+--   (ledger row `dpl-be0a`). Verified by effect rather than from the apply's own report: all
+--   16 `signal_` codes are present in `hlstats_Actions` as ids 751-766 (measured 2026-10-28,
+--   nonsense-code control 0), events now record against them, and
+--   `Unresolved action 'signal_` is 0 over 12 h -- against a control of exactly 1
+--   `Unresolved action` line in total, so that zero is a measurement and not a blind grep.
+--   The one remaining unresolved code is `voice_bazooka`, a player's own bind that no
+--   `dod.so` implements; it must NOT be seeded.
+--   This line read "proposed, not applied" for six days after it ran.
 --
 -- Apply once as: sudo mysql hlstatsx < migrate_048_hand_signal_actions.sql
 -- Idempotent: INSERT IGNORE against the (code, game, team) unique key; `id` omitted so
 -- AUTO_INCREMENT assigns it (migrations 003 and 045 explain why).
 --
--- DEPLOY ORDER: migration FIRST, then the plugin (KTPAMXX stats_logging 1.32.0), with a
+-- DEPLOY ORDER (BOTH SIDES ARE NOW DONE -- kept because it says WHY the order matters):
+--   migration FIRST, then the plugin, with a
 --   daemon action-cache reload between them: `readDatabaseConfig()` rebuilds the cache on
 --   SIGHUP or a new-server registration (knowledge/KTPHLStatsX.md, corrected 2026-10-23), so
 --   `systemctl kill -s HUP hlstatsx.service` after the apply is enough; a restart also works.
 --   Until the cache carries these codes the daemon tallies each line once as an unresolved
 --   action and drops it -- lost rows only, no match impact.
+--   PRODUCER VERSION, CORRECTED: the `signal_` hook first exists in stats_logging 1.32.0,
+--   which is a source fact and stays true -- but 1.32.0 WAS NEVER FIELDED. 1.32.1 shipped
+--   2026-10-26 and the fleet now runs 1.33.0, 24/24 by md5 2026-10-28
+--   (`7aed80db3390c3d9b736dc22e0fc2161`), swapped at the 03:00 ET restart on 2026-10-27.
+--   So "then the plugin (1.32.0)" names a build nobody can observe; read it as provenance.
 --
 -- WHY. Same ask as migration 045, one family over: players pointed out that hand signals are
 -- used the same way voice commands are (and taunt the same way). The plugin hook is the same
