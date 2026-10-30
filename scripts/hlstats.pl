@@ -4016,7 +4016,8 @@ while ($loop = &getLine()) {
 								$ev_properties{"hitgroup"},
 								$ev_properties{"rw_flags"},
 								$ev_properties{"rw_depth"},
-								$ev_properties{"rw_want"}
+								$ev_properties{"rw_want"},
+								$ev_properties{"tgt_shift"}
 							);
 							ktpRejectCaptureMarker("shot", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
@@ -7187,7 +7188,7 @@ sub doEvent_KTPShot
 		$net_lerp, $net_dropped, $net_backup, $net_cmds,
 		$shooter_flags, $shooter_punch_pitch, $shooter_punch_yaw,
 		$shooter_speed, $shooter_stamina,
-		$hitgroup, $rw_flags, $rw_depth, $rw_want) = @_;
+		$hitgroup, $rw_flags, $rw_depth, $rw_want, $tgt_shift) = @_;
 
 	return 0 if (!defined($player_id));
 	return "Shot dropped: invalid weapon_id"
@@ -7287,6 +7288,12 @@ sub doEvent_KTPShot
 			!defined($v) || $v !~ /^\d+$/ || int($v) > 9999);
 		return int($v);
 	};
+	# stats_logging 1.34.0: how far the shooter's rewind moved the victim from where
+	# the victim really was, in units. Stamped with the target group, so it has a
+	# value only when tgt_dead does; the producer's -1 (an engine without
+	# ktp_rewind_shift_v1, or a trace outside the rewind window) is NULL, 0 is real.
+	my $wire_tgt_shift = ($has_target && defined($tgt_shift) && $tgt_shift =~ /^\d+$/
+		&& int($tgt_shift) <= 9999) ? int($tgt_shift) : "NULL";
 
 	# The target reaches us as an engine userid and is stored as the durable
 	# player id, so it joins ktp_damage_events.victim_id directly. Resolution
@@ -7334,7 +7341,8 @@ sub doEvent_KTPShot
 		", ".$wire_hitgroup.
 		", ".$wire_rw_flags.
 		", ".$wire_rw->($rw_depth).
-		", ".$wire_rw->($rw_want).")";
+		", ".$wire_rw->($rw_want).
+		", ".$wire_tgt_shift.")";
 	push(@g_ktpShotQueue, $value);
 	flushShotEvents() if (scalar(@g_ktpShotQueue) >= $g_ktp_shot_queue_size);
 
@@ -7367,7 +7375,7 @@ sub flushShotEvents
 			 net_lerp, net_dropped, net_backup, net_cmds,
 			 shooter_flags, shooter_punch_pitch, shooter_punch_yaw,
 			 shooter_speed, shooter_stamina,
-			 hitgroup, rw_flags, rw_depth, rw_want)
+			 hitgroup, rw_flags, rw_depth, rw_want, tgt_shift)
 		VALUES
 			" . join(",\n\t\t\t", @g_ktpShotQueue) . "
 		ON DUPLICATE KEY UPDATE id=id
