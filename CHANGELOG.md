@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed - migrations 045-049 said "not applied" after they had all applied
+
+Every one of them carried an authorship-time `STATUS:` line and none was updated at apply time, so
+the file an operator reads to decide whether to run something said the opposite of the truth: 045
+applied 2026-10-20, 046 2026-10-20, 047 2026-10-23, 048 2026-10-24, 049 2026-10-25. Each STATUS line
+now carries the apply date and the evidence that settles it -- ledger row, file md5 verified on both
+ends, or the schema/row read taken afterwards -- and 049 says plainly that its evidence is weaker than
+its siblings' (a CHANGELOG sentence written after the fact, no `dpl-` row of its own), with the query
+to re-derive it.
+
+048's DEPLOY ORDER also named `stats_logging 1.32.0` as the producer to ship next. The `signal_` hook
+does first exist in 1.32.0, but **1.32.0 was never fielded**: 1.32.1 shipped 2026-10-26 and the fleet
+runs 1.33.0, 24/24 by md5 on 2026-10-28. Read it as provenance, not as a build anyone can observe.
+
+Comment-only -- the executable SQL of all five files is byte-identical to `origin/main` with comment
+lines stripped. Migration 050 is untouched: its "proposed, not applied" is correct.
+
 ### Added - migration 051: `own_weapon_kill`, a player-vs-player action
 
 What KTPAMXX `stats_logging` 1.35.0 logs when a player is killed with their own gun -- one they spawned

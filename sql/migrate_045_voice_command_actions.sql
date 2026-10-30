@@ -1,7 +1,15 @@
 -- ENGINE: mysql (hlstatsx on the data server -- NOT the Supabase editor)
 -- KTP HLStatsX Migration 045: seed the DoD voice-menu commands as actions.
 --
--- STATUS: proposed, not applied.
+-- STATUS: APPLIED to production 2026-10-20 22:55 ET on operator authorisation
+--   (ledger row `dpl-feb6`, andsmit9/ktp-coordination NEIN-DEPLOY.md). This line read
+--   "proposed, not applied" for ten days after it ran. A migration file is what the next
+--   person reads to decide whether to run something, so leaving it stale is the dangerous
+--   direction: it makes a done thing look owed.
+--   Follow-on, recorded because the ORDER went wrong and the symptom is silent: the daemon
+--   restart that loads these rows into the action cache ran 76 minutes BEFORE the apply
+--   (21:39 vs 22:55), so until the next restart every `voice_*` line was tallied as an
+--   unresolved action and dropped -- lost rows only, no match impact.
 --
 -- Apply once as: sudo mysql hlstatsx < migrate_045_voice_command_actions.sql
 -- Idempotent: INSERT IGNORE against the (code, game, team) unique key, so a
