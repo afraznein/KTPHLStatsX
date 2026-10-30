@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added - shot rows store `tgt_shift`, how far the rewind moved the victim (migration 050)
+
+stats_logging 1.34.0 appends `tgt_shift` to the shot line. It is how far the shooter's
+lag-compensation rewind had moved the victim from where the victim really was when the shot was
+judged, in units, read from the engine's `ktp_rewind_shift_v1` at trace time. It is the "died
+behind the wall" a victim feels, measured per hit. The value rides the target group: it is stored
+only when `tgt_dead` is, 0 is real, and the producer's -1 and anything past the 0-9999 clamp
+store NULL. A producer before 1.34.0 sends nothing and the row lands NULL. No schema-contract
+bump: the property is read by name.
+
+**Deploy order: migration 050, then this daemon.** The batched shot INSERT names `tgt_shift`, so
+a daemon ahead of the column loses every shot row. The producer can go in any order.
+
 ### Fixed - a config reload now clears the unresolved-action tally it just invalidated
 
 `%g_ktpUnresolvedActions` was cleared only at process start, so `reloadConfiguration`
