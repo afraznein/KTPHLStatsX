@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added - migration 051: `own_weapon_kill`, a player-vs-player action
+
+What KTPAMXX `stats_logging` 1.34.0 logs when a player is killed with their own gun -- one they spawned
+with, dropped, and someone else picked up. Same row shape as 003's `assist` (PlayerPlayerActions only,
+reward 0), idempotent. No daemon code; apply, SIGHUP, then 1.34.0.
+
 ### Fixed - a config reload now clears the unresolved-action tally it just invalidated
 
 `%g_ktpUnresolvedActions` was cleared only at process start, so `reloadConfiguration`
