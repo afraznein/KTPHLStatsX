@@ -907,6 +907,35 @@ decision; paired with the KTPAMXX plugin change in the same window.
   why the `do` half went unnoticed; the check treats both alike and proves it
   reports a synthetic gap before reporting none on the real tree.
 
+### Documented - why `grep -c '<marker> dropped'` cannot be a verify leg, and what to read instead
+
+A deploy leg written as "`grep -c 'Move census dropped'` stays 0" read **1**, and the 1 was a
+different failure from the one the leg guarded: the right number with the wrong cause. `CLAUDE.md`
+now carries the three reasons and the fix, all derived from `origin/main`, nothing measured on
+production.
+
+The phrase is a catch-all over **13** return sites and **10** distinct message shapes spanning three
+unrelated stages -- manifest capability, clock and match context, and field validation -- so a count
+over it cannot tell a schema regression from a correlation-window miss.
+
+Worse, and this is the half that makes a zero worthless: `$ev_status` reaches the log through
+`printEvent`, which prints only when `$g_debug > 0` in UDP mode, and `$g_debug` is the `DebugLevel`
+config directive. A quietened daemon answers 0 to any such grep forever, with nothing saying the
+question was not asked. This repo already states the general case in `printAlarm`'s own comment --
+"every detector routed through it goes silent the day someone quietens the daemon" -- and
+`KTP_CAPTURE_STREAM_SILENT` uses `printAlarm` for exactly that reason. The `dropped` reasons do not.
+
+The durable, `DebugLevel`-independent home is `ktp_capture_health.rejection_reasons`, which the
+hourly `capture-half-reasonless` leg already reads. A leg should match the reason there and keep the
+phrase count beside it as a denominator, never as a second expectation. The entry also records the
+three bounds that stop a zero in that column from being unconditional -- the unobserved-manifest
+early return in `ktpRejectCaptureMarker`, the `$KTP_REJECT_REASON_MAX_DISTINCT` fold into `other`,
+and `ktpFormatRejectReasons`' byte budget dropping the least frequent reasons first -- and that
+`grep -c` exits 1 on zero, which is what stopped a daemon swap halfway on 2026-10-24, after the file
+was installed and before the restart.
+
+Documentation only; no Perl, no SQL and no schema changes.
+
 ## [0.3.15] - 2026-08-27
 
 ### Added - schema-22 objective and grenade entity facts

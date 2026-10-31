@@ -1380,6 +1380,54 @@ the rendered token**, or an emitter you are reading reads as absent.
 `rejected{<marker>}` counter cannot increment and the rate-limited journal line is the only record
 that anything was refused.
 
+## A verify leg keyed on `grep -c '<marker> dropped'` cannot mean what it says — three reasons, and the fix is `rejection_reasons`
+
+*(Derived from `origin/main` 2026-10-30, after a deploy leg written as “`grep -c 'Move census dropped'`
+stays 0” read **1**, and the 1 turned out to be a different failure from the one the leg was written
+for — the right number with the wrong cause.)*
+
+🔴 **The phrase is a CATCH-ALL.** `Move census dropped` is returned from **13** sites in
+`scripts/hlstats.pl` under **10** distinct message shapes, spanning three unrelated stages: manifest
+capability (`manifest does not carry the move capability`, `no accepted manifest carrying the move
+capability`), clock and match context (`$clock_error`, e.g. the event-time interval count built in
+`ktpResolveValidatedProducerEventContext`), and field validation (`invalid buckets`,
+`invalid bucket_width`, `missing $field`, `$field has N buckets, expected M`, `non-numeric $field`,
+`$field is <len>`, `invalid game_time`). ⛔ **So a count over the phrase cannot distinguish a schema
+regression from a correlation-window miss**, and a leg that reads 1 gets dismissed as the known case
+while the real one goes unread. ➡️ **Key on the REASON** — the bucket-count shape is
+`buckets, expected`. The same holds for every `<marker> dropped:` family here, not just move.
+
+🔴 **AND THE JOURNAL COPY IS GATED ON `DebugLevel`, WHICH IS THE PART THAT MAKES A ZERO WORTHLESS.**
+`$ev_status` reaches the log through `printEvent` (`HLstats.plib`), which prints **only when
+`$g_debug > 0`** in UDP mode — and `$g_debug` is the `DebugLevel` config directive. ⚠️ **So a
+quietened daemon answers 0 to any such grep, forever, with nothing anywhere saying the question was
+not asked.** This file's own `printAlarm` comment states the general case — *“every detector routed
+through it goes silent the day someone quietens the daemon”* — and `KTP_CAPTURE_STREAM_SILENT` uses
+`printAlarm` for exactly that reason. **The `dropped` reasons do not.**
+
+✅ **THE DURABLE HOME IS `ktp_capture_health.rejection_reasons`, and it is `DebugLevel`-independent.**
+`ktpRejectCaptureMarker` → `ktpNoteRejectReason` → `ktpFormatRejectReasons` writes
+`reason=count;reason=count` per `(match, half, event_type)`, which is also what the hourly
+`capture-half-reasonless` alert leg reads. ➡️ **Write the leg against that column** — match the
+reason, not the phrase — and keep the phrase count beside it as a **denominator**, never as a second
+expectation: a non-zero catch-all with a zero bucket count is the honest reading *“something else
+dropped”*, and it is invisible if only one number is reported.
+
+⚠️ **Three bounds on that column, so a zero there is not unconditional either.**
+`ktpRejectCaptureMarker` **returns early unless the `(server, matchid, half)` manifest was already
+observed**, so a rejection on an unmanifested context reaches neither the column nor the counter —
+the same blind spot the `KTP_*_CLOCK_DROP` section above records. Distinct reasons per marker are
+capped by `$KTP_REJECT_REASON_MAX_DISTINCT` and the overflow folds into `other`. And
+`ktpFormatRejectReasons` stops at a byte budget, dropping the least frequent reasons first — so a
+rare reason can be squeezed out by a flood of a common one. ⛔ **None of these is a reason to go back
+to the journal grep**; they are what a leg has to say about itself.
+
+⚠️ **And whichever side you read, `grep -c` RETURNING 0 EXITS 1.** That is not hypothetical here: it
+is what stopped a daemon swap halfway on 2026-10-24, after the file was installed and before the
+restart. ⛔ **Never put one in a `&&` chain or under `set -e`**, and ⛔ never write
+`grep -c X f || echo 0` — that appends a **second** line. `$(grep -c X f || true)` is the form that
+captures the zero.
+
 ## `ktp_objective_attempt_events` is the table (not `ktp_objective_attempts`), and `progress IS NULL` is not uniquely the no-capture-area guard
 
 *(Pinned 2026-10-10 from the CP-index-abort work; migration 022 created the table, migration 032 added `progress`.)*
