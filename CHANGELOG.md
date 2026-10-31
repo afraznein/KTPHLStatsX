@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Fixed - migration 051 said "not applied" within hours of applying, and its SIGHUP is still owed
+
+The same class as 045-049 below, caught one file later and one day after that sweep: 051's
+authorship-time `STATUS:` line still read "proposed, not applied" while `own_weapon_kill` was already
+live in `hlstats_Actions`. Confirmed by effect on 2026-10-30, not inferred -- this file's own verify
+SELECT returns the `own_weapon_kill 1 0` it was written to print, the row is id 794 and
+`MAX(id)` sitting immediately after 049's 27 voicemenu rows, and `own_weapon_kill` appears 0 times in
+`install.sql` and `ktp_schema.sql` against positive controls in the same read (`hlstats_Actions` 4,
+`Target_Bombed` 3) and a `voicemenu` negative at 0, so the row came from a migration rather than the
+install.
+
+This one's provenance is weaker than any of 045-049, stated rather than flattened: **the apply sitting
+was not recorded anywhere** -- no `dpl-c8b6` tick, no CHANGELOG sentence written at the time, and no
+copy of the file on the data server. 049 at least had a sentence after the fact. Who ran it is not
+recoverable; that it ran is.
+
+The STATUS line also now records what the old one implied was fine and is not: **the SIGHUP half of
+this migration's own DEPLOY ORDER had not happened.** `Reading database config` appears 0 times in the
+hlstatsx journal since 2026-10-30 19:00 ET across 39,116 lines, against 1 occurrence in the 2026-10-27
+daemon-start window as the control, with the daemon PID unchanged and `NRestarts` 0. The action cache
+does not carry this code yet, so the reload is owed before `stats_logging` 1.35.0 is fielded. Nothing
+is being lost in the meantime: the fleet runs 1.33.0, 24/24 by md5 (`7aed80db3390c3d9b736dc22e0fc2161`).
+
+Comment-only -- the executable SQL is unchanged. Migration 050 is still untouched and still correct:
+`tgt_shift` is absent from `ktp_shot_events` (43 columns, `rw_want` present as the control), so its
+"proposed, not applied" describes production.
+
 ### Fixed - migrations 045-049 said "not applied" after they had all applied
 
 Every one of them carried an authorship-time `STATUS:` line and none was updated at apply time, so
