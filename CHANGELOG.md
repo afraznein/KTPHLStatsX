@@ -923,7 +923,12 @@ Worse, and this is the half that makes a zero worthless: `$ev_status` reaches th
 config directive. A quietened daemon answers 0 to any such grep forever, with nothing saying the
 question was not asked. This repo already states the general case in `printAlarm`'s own comment --
 "every detector routed through it goes silent the day someone quietens the daemon" -- and
-`KTP_CAPTURE_STREAM_SILENT` uses `printAlarm` for exactly that reason. The `dropped` reasons do not.
+`KTP_CAPTURE_STREAM_SILENT` uses `printAlarm` for exactly that reason. The `dropped` reasons do not,
+and `force_output` cannot rescue them: `scripts/selftest-alarm-audibility.pl`, which
+`corpus-regression` runs as "Alarms stay audible at DebugLevel 0", records that the gate's second
+clause needs `$g_stdin == 1`, that the daemon reads UDP so it is always 0, and that "live config
+happens to carry DebugLevel 1, so the detectors work today by coincidence". A deploy leg resting on
+that coincidence is the defect, not the count it returns.
 
 The durable, `DebugLevel`-independent home is `ktp_capture_health.rejection_reasons`, which the
 hourly `capture-half-reasonless` leg already reads. A leg should match the reason there and keep the

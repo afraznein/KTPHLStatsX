@@ -1404,6 +1404,12 @@ quietened daemon answers 0 to any such grep, forever, with nothing anywhere sayi
 not asked.** This file's own `printAlarm` comment states the general case — *“every detector routed
 through it goes silent the day someone quietens the daemon”* — and `KTP_CAPTURE_STREAM_SILENT` uses
 `printAlarm` for exactly that reason. **The `dropped` reasons do not.**
+⛔ **And `force_output` does not rescue them.** `scripts/selftest-alarm-audibility.pl` — the
+`Alarms stay audible at DebugLevel 0` leg of `corpus-regression` — states the mechanism: the gate's
+second clause needs `$g_stdin == 1`, the daemon reads UDP so `$g_stdin` is always 0, and
+*“live config happens to carry DebugLevel 1, so the detectors work today by coincidence.”*
+🔑 **A journal grep for a `dropped` reason therefore rests on a coincidence, not on a contract**,
+which is reason enough not to build a deploy leg on one.
 
 ✅ **THE DURABLE HOME IS `ktp_capture_health.rejection_reasons`, and it is `DebugLevel`-independent.**
 `ktpRejectCaptureMarker` → `ktpNoteRejectReason` → `ktpFormatRejectReasons` writes
