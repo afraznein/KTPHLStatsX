@@ -593,6 +593,49 @@ FROM ktp_matches GROUP BY match_type ORDER BY match_type;
 ⚠️ `match_type = 0` is *official*, a distinct value from NULL, and `0` is falsy in most host languages —
 do not let an application-side truthiness check collapse the two.
 
+## `steam_id` is stored in TWO textual forms — a join between them silently returns zero
+
+*(2026-11-03.)* `ktp_match_players.steam_id` holds only the `Y:Z` portion of a SteamID2 —
+`0:12345678`, 8-10 characters. `ktp_ac_sessions.steam_id` holds the full textual form —
+`STEAM_0:0:12345678`, 14-19 characters. **Both are right for their own table; neither is malformed.**
+
+⛔ **`ON a.steam_id = b.steam_id` across the two matches NOTHING, and nothing warns.** You get an
+empty set that reads exactly like two populations with no overlap. In the case that prompted this
+note, it read as *"no player in any match ran the anticheat"* — against a true figure near 79%.
+
+⚠️ **The collations differ as well, which hides the first problem behind a second.**
+`ktp_ac_sessions` is `utf8mb4_0900_ai_ci`; `ktp_match_players` and `ktp_matches` are
+`utf8mb4_unicode_ci`, so a bare `=` raises `ERROR 1267` first. **Fix only the collation and you are
+handed the silent zero** — which looks like progress, because the error went away.
+
+**The rule, for anyone joining these tables:**
+
+- Rebuild the full form on the roster side: `CONCAT('STEAM_0:', p.steam_id)`.
+- Fold the universe digit on the AC side, so `STEAM_1:` and `STEAM_5:` meet `STEAM_0:`.
+- Coerce the **roster** side, not the AC side: `(expr COLLATE utf8mb4_0900_ai_ci)`. ⛔ Never
+  `CAST(… AS BINARY)` on `match_id` — that and coercing the AC side both cost the index the lookup
+  needs, turning a fast `EXISTS` into a full scan that reads as a hung query.
+- ⛔ **Assert non-vacuity before trusting any ratio.** Count the agreeing pairs and require > 0, with
+  a nonsense-id control required to return 0. A zero pair count is an *identifier-format* finding,
+  never a measurement.
+
+✅ `match_id` needs none of this beyond the collation: the namespaces agree, and essentially every
+AC session carrying a `match_id` resolves in both `ktp_matches` and `ktp_match_players`. **Re-derive
+that rather than trusting it** — a drop there would be a real finding.
+
+```sql
+-- non-vacuity first; if pairs = 0 the join is wrong, not the population
+SELECT COUNT(*) AS pairs
+FROM ktp_match_players p
+JOIN ktp_ac_sessions s
+  ON s.match_id = (p.match_id COLLATE utf8mb4_0900_ai_ci)
+ AND REPLACE(REPLACE(UPPER(s.steam_id),'STEAM_1:','STEAM_0:'),'STEAM_5:','STEAM_0:')
+     = (CONCAT('STEAM_0:', UPPER(p.steam_id)) COLLATE utf8mb4_0900_ai_ci);
+```
+
+The footgun lives in the *consumer's* query, not in this repo's code, so no change here can prevent
+it — which is why it is written down rather than fixed.
+
 ## "stats for X matches" is ambiguous between CAPTURE and DISPLAY — name which one, every time
 
 Operator ruling, 2026-09-10, stated precisely because the loose wording had already been
