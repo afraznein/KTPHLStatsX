@@ -61,6 +61,8 @@ jobs:
         run: perl scripts/selftest-map-name-attribution.pl
       - name: A refused capture marker records why, and every rejection site passes a reason
         run: perl scripts/selftest-capture-reject-reason.pl
+      - name: Shot-miss is named in every whitelist that gates it, and keeps its two presence keys
+        run: perl scripts/selftest-shot-miss.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL

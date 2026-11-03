@@ -2,6 +2,70 @@
 
 ## [Unreleased]
 
+### Added - the `shot_miss` stream and migration 052: a shot that hit nobody now records something
+
+`dodx_get_shot_miss` and `dodx_get_shot_traces` have been fielded on all 24 instances since the
+dodx `2.7.33.6004` activation on 2026-10-22 and nothing consumed either one. The shot row cannot
+hold what they expose: its whole diagnostic group -- target state, ping/loss, trace mechanics,
+hitgroup -- is stamped from inside the player-hit filter, so a shot that resolved against the world
+carries sentinels across all of it and its ray is lost with them. That is the population the
+zero-spread counterfactual needs most, because a shot that missed is the only one with a
+counterfactual to ask about.
+
+`ktp_shot_miss_events` (migration 052) takes a row per usercmd in which the shooter owned a trace:
+the ray's start, where it was aimed and where it stopped, the fraction, the trace flags, what it
+resolved against, the weapon held at trace time, and how many traces that cmd owned. It joins
+`ktp_shot_events` on `(server_id, match_id, half, shot_sequence)` against that table's
+`producer_sequence`, so the map, position, angles and weapon state are not duplicated.
+
+A separate table because the wire could not carry it: the shot line's worst case sits inside fifty
+bytes of the ceiling where ReHLDS's `Log_Printf` truncates it, and the ray is three coordinate
+triples.
+
+**NULL discipline, which differs per group and is the easiest thing here to get wrong.** `trace_frac`
+is the ray group's presence key, and the native says why in terms: a real fraction is 0-10000 and a
+world coordinate has no out-of-range value to test instead. `cmd_traces_any` has its OWN key -- it is
+a separate stash on the same cmd and survives when the ray does not, so a count with no ray is a
+legitimate row. `trace_ent` and `trace_weapon_id` are SIGNED, because -1 is real data on both once a
+ray exists and is the array's pre-read fill when it does not; the presence key is what tells those
+apart. The coordinates land NULL together or not at all -- an absent ray arrives as an empty field
+and must never become `0 0 0`, which is a legal world coordinate. `trace_flags` 0 is real.
+
+⚠️ `trace_flags` bit3 means the cmd's first trace hit a PLAYER, so that row is not a miss at all.
+Those rows are stored rather than filtered: the native declines to make that call, and filtering
+producer-side would make the table's population a producer guess instead of a stored fact. Filter on
+`trace_flags & 8` at read time.
+
+No schema ordinal: the capability bit is the gate, as for `move` and `aim_vis`, so a producer without
+it loses only this stream rather than having its whole manifest refused.
+
+🔴 **The daemon must land before the producer is FIELDED, which is a stronger constraint than this
+stream's own rows.** `ksc_emit_health` loops the producer's whole event enum, so a plugin that gains a
+stream emits a health row for it whether or not it announces the capability -- and a type missing from
+the capture-health allow-list is rejected for the WHOLE half, taking every other stream's accounting
+with it. `move` did exactly that on 2026-09-29. `KTPInfrastructure`'s
+`CAPTURE_EVENT_TYPES_OPTIONAL` needs the name for the same reason, and first.
+
+`scripts/selftest-shot-miss.pl` pins the stream in all nine hand-maintained whitelists plus the three
+drain points, and runs the shipped handler over the row discipline above. Every one of 27 mutations
+reds at least one of its assertions -- including deleting the stream from each whitelist in turn,
+zeroing an absent ray, gating the trace count on the ray, making `trace_ent` unsigned, dropping the
+dedup key, and executing a `GRANT`. Two of its own assertions were wrong first and mutation caught
+both: one matched the comment that explains a rule rather than the statement that obeys it, and one
+needle appears at two sites, so it passed with the site under test deleted.
+
+It also pins a DELIBERATE exclusion that reads exactly like a missed tenth site: the
+identity-unresolved rejection path keeps its own shorter whitelist, and `shot`, `move_census` and
+`aim_vis` are all already absent from it, so adding `shot_miss` there would change this stream's
+behaviour relative to every sibling it was modelled on.
+
+🔴 **Reading-end obligation.** A new `ktp_*` table is unreadable by the analytics and API accounts
+until a per-table `GRANT SELECT` is applied, and the symptom is not "denied": `information_schema`
+hides a table the asking account cannot see, so a probe reports it ABSENT and the reader concludes
+the migration never ran. Three tables have been lost that way. The grant is staged for the operator
+rather than run in the migration, where `ERROR 1410` on a missing account would break a fresh install
+and the parity container.
+
 ### Fixed - migration 051 said "not applied" within hours of applying, and its SIGHUP is still owed
 
 The same class as 045-049 below, caught one file later and one day after that sweep: 051's

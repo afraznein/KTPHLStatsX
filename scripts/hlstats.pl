@@ -1557,6 +1557,7 @@ sub flushAll
 		# surface later as an unexplained health mismatch rather than as an
 		# error. Drain them first, before anything else can exit.
 		flushShotEvents();
+		flushShotMissEvents();
 		flushPositionEvents();
 		flushAccumulators();
 		while ( my ($table, $colsref) = each(%g_eventTables) )
@@ -1717,6 +1718,10 @@ $g_event_queue_size = 100;
 # value carries no per-row semantics.
 $g_ktp_shot_queue_size = 200;
 @g_ktpShotQueue = ();
+# The shot row's miss sibling, batched for the same reason: at most one per
+# weapon actuation, so it shares the shot stream's rate.
+$g_ktp_shot_miss_queue_size = 200;
+@g_ktpShotMissQueue = ();
 $g_ktp_position_queue_size = 200;
 @g_ktpPositionQueue = ();
 # Must stay above the main loop: it never exits in daemon mode, so file-scope code after it never runs.
@@ -3745,11 +3750,12 @@ while ($loop = &getLine()) {
 					);
 				}
 			} elsif ($ev_verb eq "triggered") {
-				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census|aim_vis)$/) {
+				if ($ev_obj_a =~ /^(life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census|aim_vis|shot_miss)$/) {
 					my %sequence_type = (life_boundary => "life", cap_break => "break",
 						break_context => "break", position_sample => "position",
 						team_membership => "team_membership", shot => "shot",
-						move_census => "move", aim_vis => "aim_vis");
+						move_census => "move", aim_vis => "aim_vis",
+						shot_miss => "shot_miss");
 					ktpObserveCaptureMarker($sequence_type{$ev_obj_a}, \%ev_properties);
 				}
 
@@ -3757,7 +3763,7 @@ while ($loop = &getLine()) {
 			    # and disconnect...the dropp the bomb after they disconnected :/
 				my $ktp_buffered_player_id = 0;
 				my $ktp_buffered_identity;
-			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census|aim_vis)$/) {
+			    if ($ev_obj_a =~ /^(?:life_boundary|team_membership|cap_break|break_context|position_sample|shot|move_census|aim_vis|shot_miss)$/) {
 				  # BEGIN KTP BUFFERED STANDALONE IDENTITY
 				  # Every KSC-buffered standalone marker can arrive after a reconnect.
 				  # Parse once and resolve durably without getPlayerInfo(). cap_break
@@ -4068,6 +4074,39 @@ while ($loop = &getLine()) {
 						} elsif ($ktp_buffered_player_id) {
 							$ev_status = &doEvent_KTPAimVis($ktp_buffered_player_id, \%ev_properties);
 							ktpRejectCaptureMarker("aim_vis", \%ev_properties, 0, $ev_status)
+								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
+						}
+					} elsif ($ev_obj_a eq "shot_miss") {
+						# KTP: the shot row's miss sibling, from the same
+						# dod_client_weapon_fire handler. The shot row's whole
+						# diagnostic group is stamped inside the player-hit filter,
+						# so a shot that hit nobody carries sentinels across all of
+						# it and its ray is lost with them; dodx_get_shot_miss and
+						# dodx_get_shot_traces are the only record such a shot
+						# leaves, and nothing consumed either until this stream.
+						#
+						# A separate marker rather than more fields on the shot row:
+						# that line's worst case sits inside fifty bytes of the
+						# ceiling where ReHLDS truncates it, and the ray is three
+						# coordinate triples. Joined back by shot_sequence.
+						#
+						# No schema ordinal of its own, like move_census and
+						# aim_vis: the capability bit is the gate, so a producer
+						# without it is refused here rather than having its whole
+						# manifest rejected upstream.
+						#
+						# MEASURE-ONLY. A ray says where a bullet went, never
+						# whether the shooter should have hit -- the counterfactual
+						# that would say so is not implemented and this stream
+						# applies no threshold, ratio or conclusion.
+						$ev_type = 622;  # KTP shot-miss marker
+
+						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "shot_miss")) {
+							$ev_status = "Shot miss dropped: manifest does not carry the shot_miss capability";
+							ktpRejectCaptureMarker("shot_miss", \%ev_properties, 0, $ev_status);
+						} elsif ($ktp_buffered_player_id) {
+							$ev_status = &doEvent_KTPShotMiss($ktp_buffered_player_id, \%ev_properties);
+							ktpRejectCaptureMarker("shot_miss", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
 					} elsif ($ev_obj_a eq "player_changeclass" && defined($ev_properties{newclass})) {
@@ -4592,6 +4631,7 @@ while ($loop = &getLine()) {
 			# a convenient, guaranteed-to-occur point to flush any partial
 			# batch rather than let it wait on the size threshold alone.
 			flushShotEvents();
+			flushShotMissEvents();
 			flushPositionEvents();
 		} elsif ($s_output =~ /^KTP_OBJECTIVE_ATTEMPT\s+(.*)$/) {
 			# Bare producer marker, although its delivery may have been delayed by
@@ -5822,6 +5862,7 @@ sub ktpAuthorizeCaptureManifest
 		shot => $capabilities{shot} ? 1 : 0,
 		move => $capabilities{move} ? 1 : 0,
 		aim_vis => $capabilities{aim_vis} ? 1 : 0,
+		shot_miss => $capabilities{shot_miss} ? 1 : 0,
 		map_revision_algorithm => $p->{map_revision_algorithm},
 		map_revision => $p->{map_revision},
 	};
@@ -5832,7 +5873,7 @@ sub ktpCaptureManifestAuthorizes
 {
 	my ($p, $event_type) = @_;
 	return 0 if (!defined($event_type) ||
-		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot|move|aim_vis)$/);
+		$event_type !~ /^(?:objective_attempt|grenade_entity|team_membership|position|shot|move|aim_vis|shot_miss)$/);
 	my $key = ktpCaptureContextKey($p);
 	return 0 if (!defined($key) ||
 		!defined($g_ktpAcceptedCaptureManifests{$key}));
@@ -6112,7 +6153,8 @@ sub ktpResentLineIsRedundant
 			position_sample => "position", frag_context => "frag", assist => "assist",
 			cap_break => "break", break_context => "break",
 			team_membership => "team_membership", shot => "shot",
-			move_census => "move", aim_vis => "aim_vis");
+			move_census => "move", aim_vis => "aim_vis",
+			shot_miss => "shot_miss");
 		$marker = $by_trigger{$1};
 	}
 	return 1 if (!defined($marker));
@@ -6651,7 +6693,7 @@ sub ktpValidateCaptureHealthPayload
 	# whitelists and missed here, which would have left the highest-volume new
 	# stream with no drop detection at all -- and the wave-0 canary reads this
 	# table, per stream, to decide whether the rollout is safe.
-	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw move aim_vis);
+	my %allowed = map { $_ => 1 } qw(life damage position frag assist break flag_state flag_position objective_attempt grenade_entity team_membership shot score duel player_state grenade_throw move aim_vis shot_miss);
 	return "invalid matchid"
 		if (!defined($p->{matchid}) || length($p->{matchid}) > 64 ||
 			$p->{matchid} !~ /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/);
@@ -6711,7 +6753,7 @@ sub ktpCaptureHealthSilentStreamWarning
 	# enemy. Zero there is a wiring loss, not quiet play. It is NOT in
 	# always_active because the stream is capability-gated, so the manifest bit
 	# is what separates "not authorised" from "authorised and silent".
-	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot move aim_vis);
+	my %manifest_gated = map { $_ => 1 } qw(grenade_entity position shot move aim_vis shot_miss);
 	if ($manifest_gated{$type}) {
 		return "" if (!$manifest->{$type});
 	} elsif (!$always_active{$type}) {
@@ -7393,6 +7435,170 @@ sub flushShotEvents
 	return $rv;
 }
 # END KTP SHOT CONTEXT STREAM
+
+# BEGIN KTP SHOT MISS STREAM
+# The shot row's miss sibling. Every diagnostic field on that row is stamped
+# from inside the player-hit filter, so a shot that hit nobody carries sentinels
+# across the whole group and its ray is lost with them. dodx_get_shot_miss and
+# dodx_get_shot_traces are the only record such a shot leaves behind.
+#
+# Batched like shot, for the same reason: at most one of these per weapon
+# actuation, so it inherits that stream's rate rather than move_census's.
+#
+# Context resolution MIRRORS doEvent_KTPShot, including its fallback to the
+# daemon's own match context, and deliberately not doEvent_KTPAimVis's stricter
+# tracked-halves-only rule. The join key back to the shot row is
+# (server_id, match_id, half, shot_sequence), so a miss row resolved under a
+# different context rule than its shot row would not join at all.
+sub doEvent_KTPShotMiss
+{
+	my ($player_id, $p) = @_;
+	return 0 if (!defined($player_id));
+	return "Shot miss dropped: invalid weapon_id"
+		if (!defined($p->{weapon_id}) || $p->{weapon_id} !~ /^\d+$/ || int($p->{weapon_id}) <= 0);
+
+	my $manifest_key = ktpCaptureContextKey({
+		matchid => $p->{matchid}, half => $p->{half},
+	});
+	my $manifest = defined($manifest_key)
+		? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
+	# Gated on the capability bit, not on a schema ordinal -- 23 is the floor the
+	# authorizer itself uses, and the bit is what says this producer ships the
+	# stream. So an older producer loses only this stream, never its manifest.
+	return "Shot miss dropped: no accepted manifest carrying the shot_miss capability"
+		if (!defined($manifest) || $manifest->{schema} < 23 || !$manifest->{shot_miss});
+
+	my $server_id = $g_servers{$s_addr}->{'id'};
+	my $match_id_sql = "NULL";
+	my $half = 0;
+	if (ktpHasExplicitProducerContext($p->{matchid})) {
+		my ($validated_half, $validated_map, $clock_error, $clock_source) =
+			ktpResolveValidatedProducerEventContext(
+				$p->{matchid}, $p->{half}, $p->{game_time} // 0, $p->{event_epoch});
+		if ($clock_error ne "") {
+			ktpWarnProducerClock("shot_miss", $clock_error);
+			return "Shot miss dropped: $clock_error";
+		}
+		$match_id_sql = "'".quoteSQL($p->{matchid})."'";
+		$half = $validated_half;
+	} elsif (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
+			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
+			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;
+		}
+	}
+
+	# Same rule as doEvent_KTPShot: a missing or non-numeric sequence becomes SQL
+	# NULL, never 0. The UNIQUE (server_id, match_id, half, producer_sequence)
+	# plus ON DUPLICATE KEY UPDATE would otherwise collapse every such row in the
+	# half onto one, turning a parse gap into silent mass loss.
+	my $wire_sequence = (defined($p->{sequence}) && $p->{sequence} =~ /^\d+$/ && $p->{sequence} >= 1)
+		? int($p->{sequence}) : "NULL";
+
+	# The join key back to ktp_shot_events.producer_sequence. NULL on the same
+	# terms -- an unjoinable row is still a measurement of a miss, so it is kept
+	# rather than refused, but it must not pretend to point at shot 0.
+	my $wire_shot_sequence = (defined($p->{shot_sequence}) && $p->{shot_sequence} =~ /^\d+$/
+		&& $p->{shot_sequence} >= 1) ? int($p->{shot_sequence}) : "NULL";
+
+	# THE RAY'S PRESENCE KEY IS trace_frac, and the native says why in terms: a
+	# real fraction is 0..10000 and a world coordinate has no out-of-range value,
+	# so [0] at -1 is the only unambiguous "no sample" marker the array has. The
+	# coordinates must be judged by it, never by their own contents.
+	my $has_ray = (defined($p->{trace_frac}) && $p->{trace_frac} =~ /^\d+$/
+		&& int($p->{trace_frac}) <= 10000);
+	my $wire_ray = sub {
+		my ($v) = @_;
+		return "NULL" if (!$has_ray || !defined($v) || $v !~ /^-?\d+$/);
+		return int($v);
+	};
+
+	# trace_flags is a 4-bit field and 0 is REAL -- it means the trace started in
+	# open space, ran short of its full length and hit no player. A value outside
+	# the field voids it rather than being stored as data.
+	my $wire_flags = ($has_ray && defined($p->{trace_flags}) && $p->{trace_flags} =~ /^\d+$/
+		&& int($p->{trace_flags}) <= 15) ? int($p->{trace_flags}) : "NULL";
+
+	# trace_ent and trace_weapon_id are SIGNED on purpose: -1 is real data on
+	# both once a ray exists ("no edict at all", and no weapon stamped), and is
+	# the array's pre-read fill when it does not. $has_ray is what tells the two
+	# apart, which is the whole reason the presence key is a separate field.
+	my $wire_ent = $wire_ray->($p->{trace_ent});
+	my $wire_trace_weapon = $wire_ray->($p->{trace_weapon_id});
+
+	# The trace COUNT is a separate stash on the same cmd, so it has its own
+	# presence key and can survive when the ray does not. -1 is "no count"; 0
+	# would be real, and is kept.
+	my $wire_traces = (defined($p->{cmd_traces_any}) && $p->{cmd_traces_any} =~ /^\d+$/
+		&& int($p->{cmd_traces_any}) <= 4294967295) ? int($p->{cmd_traces_any}) : "NULL";
+
+	# Integer world units, the same shape and precision ksc_origin_str uses for
+	# the shot row's own position, so a ray start is directly comparable with it.
+	# An absent ray arrives as an EMPTY field and must land NULL: 0 0 0 is a legal
+	# world coordinate, so a zeroed triple would read as a measurement.
+	my @coords;
+	for my $group (qw(ray_start ray_aim ray_end)) {
+		my $raw = $p->{$group};
+		if ($has_ray && defined($raw) && $raw =~ /^(-?\d+)\s+(-?\d+)\s+(-?\d+)$/) {
+			push(@coords, int($1), int($2), int($3));
+		} else {
+			push(@coords, "NULL", "NULL", "NULL");
+		}
+	}
+
+	# Refuse a row that carries neither half. The producer does not emit one, so
+	# this is a parse failure rather than a quiet stream of empty rows.
+	return "Shot miss dropped for player=$player_id: neither a ray nor a trace count"
+		if (!$has_ray && $wire_traces eq "NULL");
+
+	my $value = "(".int($server_id).", $match_id_sql, ".int($half).
+		", ".int($player_id).", ".int($p->{weapon_id}).
+		", $wire_shot_sequence".
+		", ".$wire_traces.
+		", ".$wire_ray->($p->{trace_frac}).
+		", ".$wire_flags.
+		", ".$wire_ent.
+		", ".$wire_trace_weapon.
+		", ".join(", ", @coords).
+		", ".(($p->{game_time} // 0) + 0).
+		", ".int($p->{event_epoch} // 0).", $wire_sequence".
+		", FROM_UNIXTIME(".int($p->{event_epoch} // 0).")".")";
+	push(@g_ktpShotMissQueue, $value);
+	flushShotMissEvents() if (scalar(@g_ktpShotMissQueue) >= $g_ktp_shot_miss_queue_size);
+
+	return "Shot miss queued: player=$player_id shot_sequence=$wire_shot_sequence traces=$wire_traces";
+}
+
+sub flushShotMissEvents
+{
+	return if (scalar(@g_ktpShotMissQueue) == 0);
+	my $queued = scalar(@g_ktpShotMissQueue);
+	# ON DUPLICATE KEY UPDATE id=id, not INSERT IGNORE, for the reason
+	# flushShotEvents states: IGNORE downgrades every error -- truncation,
+	# out-of-range, bad datetime -- to a warning, while this converts only the
+	# duplicate key a retried batch produces and leaves everything else loud.
+	my $rv = &execNonQuery("
+		INSERT INTO ktp_shot_miss_events
+			(server_id, match_id, half, player_id, weapon_id,
+			 shot_sequence, cmd_traces_any, trace_frac, trace_flags,
+			 trace_ent, trace_weapon_id,
+			 ray_start_x, ray_start_y, ray_start_z,
+			 ray_aim_x, ray_aim_y, ray_aim_z,
+			 ray_end_x, ray_end_y, ray_end_z,
+			 game_time, event_epoch, producer_sequence, event_time)
+		VALUES
+			" . join(",\n\t\t\t", @g_ktpShotMissQueue) . "
+		ON DUPLICATE KEY UPDATE id=id
+	");
+	@g_ktpShotMissQueue = ();
+	# printEvent, not printAlarm: the alarm set is bounded to three conditions
+	# (selftest-alarm-audibility.pl), and this is the per-drop-report class.
+	&printEvent("SQL_ERROR",
+		"ktp_shot_miss_events batch INSERT failed -- $queued row(s) lost", 1)
+		if (!defined($rv));
+	return $rv;
+}
+# END KTP SHOT MISS STREAM
 
 # BEGIN KTP MOVE CENSUS STREAM
 # Crouch-input and footstep-emission counters, one row per player per producer
