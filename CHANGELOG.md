@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Added - migration 054: the two causal parent links a death group already observes but could not record
+
+`docs/TELEMETRY_CAUSAL_LINKS_V1.md` has described these links since it was written and nothing at
+either end implemented them, so a frag and the assists credited beside it have never been tied to the
+life-end they belong to. A consumer wanting the death group has had to infer it from timestamps,
+which is exactly what the producer already knows and was throwing away.
+
+`hlstats_Events_Frags` takes one column, `causal_parent_life_sequence`: the life-end observed in the
+same death hook as the frag. `ktp_assist_events` takes that column and a second,
+`causal_parent_frag_sequence`, for the frag queued by that same hook, plus
+`idx_assist_causal_life (match_id, half, causal_parent_life_sequence)` so the group can be read from
+the assist side.
+
+**Each column names its referent's event type, and that is load-bearing rather than verbose.**
+`producer_sequence` on these streams is per-event-type, not producer-global:
+`ksc_next_type_sequence` draws from one counter per stream and each resets at the half. So a life-end
+marker and a frag marker in the same match and half routinely carry the same integer while being
+unrelated events, and the resolving key is `(server_id, match_id, half, EVENT_TYPE,
+producer_sequence)`. Collapsing the two columns into one generic `causal_parent_sequence` reads
+tidier and makes every link unresolvable. The spec's own key omits both the event type and
+`server_id`.
+
+**A link column holds NULL for "no parent", never 0.** Zero is already taken: it is the untracked
+sentinel these streams store when a producer sequence is unavailable, and the daemon hardens a
+missing value to a stored `0` rather than a NULL. The sentinel has never fired on either table, which
+is why a 0-for-NULL mistake here would sit invisible for months instead of failing.
+
+Only `hlstats_Events_Frags` gets a single column and no index, deliberately: it is MyISAM at roughly
+two million rows, so an `ADD COLUMN` there copies the whole table under a write lock, and every
+column added is another copy.
+
+**Deploy order: the Lane B harness entry, then migration 054, then the daemon.** The harness errors on
+any migration it has no apply position for, so `KTPInfrastructure` had to learn about this file before
+the migration could pass its own corpus check (KTPInfrastructure#806). The daemon comes last because
+schema ahead of code is inert, while code ahead of schema loses data silently. The producer leg is not
+written yet; the wire property names are frozen in the migration's header so the three repos agree
+when it is: `causal_parent_life` on frag context and assist, `causal_parent_frag` on assist only.
+
 ### Added - the `shot_miss` stream and migration 052: a shot that hit nobody now records something
 
 `dodx_get_shot_miss` and `dodx_get_shot_traces` have been fielded on all 24 instances since the
