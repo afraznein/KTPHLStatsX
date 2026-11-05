@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Added - the daemon now persists the causal parent links migration 054 made room for
+
+Migration 054 added the columns; nothing wrote to them. The daemon reads two new optional producer
+properties, `causal_parent_life` and `causal_parent_frag`, and persists them to
+`hlstats_Events_Frags.causal_parent_life_sequence` and the two matching columns on
+`ktp_assist_events`.
+
+No parser change was needed. Both arrive in the existing property hash, so this is plumbing plus one
+helper, not a new line format.
+
+`ktpLinkSeqOrNull` sits beside `ktpAngleOrNull` and `ktpNonNegOrNull` because it does the same job
+for a different sentinel. A link is a `producer_sequence`, and `0` on that wire already means
+*untracked* -- so only a positive integer is a parent and everything else becomes NULL. Storing a 0
+would have been indistinguishable from a real untracked sequence, and since the untracked path is
+rare that confusion would have sat unnoticed for a long time. The pattern is anchored `/^\d+\z/`,
+not `\Z`, so a trailing newline cannot slip through as a valid sequence.
+
+Replay behaviour comes from the storage rather than from new code, which is why there is none. The
+assist insert is `INSERT IGNORE` against `uk_ktp_assist (server_id, match_id, half, assister_id,
+victim_id, game_time)` -- a key that does not include `producer_sequence` -- so a replayed marker
+dedupes on real identity and the stored links are retained rather than overwritten. The
+`frag_context` update is already bounded by `AND frag_context_recorded = 0`, so it claims a row once.
+Both are what the spec asks for: replays idempotent, original link values kept, a conflicting replay
+rejected. The duplicate-ignored log line now reports the links the replay carried, so a mismatch is
+traceable without a SELECT on every duplicate.
+
+This half is inert until the producer emits the properties. That is deliberate and it is the safe
+ordering: a daemon ahead of its producer simply writes NULL, while a producer ahead of its daemon
+would emit fields nothing reads and lose them silently.
+
+Deploy: the daemon is a single fleet-wide process, so this needs a SIGHUP after the swap, between
+halves.
+
 ### Added - migration 054: the two causal parent links a death group already observes but could not record
 
 `docs/TELEMETRY_CAUSAL_LINKS_V1.md` has described these links since it was written and nothing at

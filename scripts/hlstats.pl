@@ -3050,7 +3050,9 @@ while ($loop = &getLine()) {
 							$ev_properties_hash{"game_time"},
 							$ev_properties_hash{"assister_position"},
 							$ev_properties_hash{"victim_position"},
-							$ev_properties_hash{"sequence"});
+							$ev_properties_hash{"sequence"},
+							$ev_properties_hash{"causal_parent_life"},
+							$ev_properties_hash{"causal_parent_frag"});
 						ktpRejectCaptureMarker("assist", \%ev_properties_hash, 0,
 							$ktp_assist_status)
 							if ($ktp_assist_status =~ /(?:dropped|failed)/i);
@@ -3323,7 +3325,8 @@ while ($loop = &getLine()) {
 									v_yaw = ".ktpAngleOrNull($ev_properties_hash{'v_yaw'}).",
 									v_pitch = ".ktpAngleOrNull($ev_properties_hash{'v_pitch'}).",
 									frag_context_recorded = 1,
-									frag_context_certified = ".$fc_certified."
+									frag_context_certified = ".$fc_certified.",
+									causal_parent_life_sequence = ".ktpLinkSeqOrNull($ev_properties_hash{'causal_parent_life'})."
 									$fc_pos_sql
 									$fc_clock_sql
 								WHERE serverId = ".$g_servers{$s_addr}->{'id'}."
@@ -6192,6 +6195,13 @@ sub ktpAngleOrNull {
 	my $n = ktpNumOrNull($v);
 	return ($n eq "NULL" || $n <= -999) ? "NULL" : $n;
 }
+# Causal parent links carry a producer_sequence, where 0 already means
+# untracked -- so a stored 0 could not be told from a real untracked parent.
+# Only a positive integer is a parent; everything else is an honest absence.
+sub ktpLinkSeqOrNull {
+	my ($v) = @_;
+	return (defined($v) && $v =~ /^\d+\z/ && $v > 0) ? ($v + 0) : "NULL";
+}
 # END KTP WAVE-1 OPTIONAL FIELD HELPERS
 
 # BEGIN KTP CAPTURE MANIFEST VALIDATION
@@ -6999,7 +7009,8 @@ sub doEvent_KTPTeamMembership
 sub doEvent_KTPAssist
 {
 	my ($assister_id, $victim_id, $matchid, $producer_half, $event_epoch,
-		$game_time, $assister_position, $victim_position, $producer_sequence) = @_;
+		$game_time, $assister_position, $victim_position, $producer_sequence,
+		$causal_parent_life, $causal_parent_frag) = @_;
 
 	my $validation_error = ktpValidateProducerEventClock(
 		$matchid, $producer_half, $game_time, $event_epoch);
@@ -7033,22 +7044,28 @@ sub doEvent_KTPAssist
 
 	my $server_id = $g_servers{$s_addr}->{'id'};
 	my $normalized_game_time = sprintf("%.2f", $game_time + 0);
+	my $link_life = ktpLinkSeqOrNull($causal_parent_life);
+	my $link_frag = ktpLinkSeqOrNull($causal_parent_frag);
 	my $rv = &execNonQuery("
 		INSERT IGNORE INTO ktp_assist_events
 			(server_id, match_id, half, map_name, assister_id, victim_id,
 			 assister_pos_x, assister_pos_y, assister_pos_z,
 			 victim_pos_x, victim_pos_y, victim_pos_z,
-			 game_time, event_epoch, producer_sequence, event_time)
+			 game_time, event_epoch, producer_sequence, event_time,
+			 causal_parent_life_sequence, causal_parent_frag_sequence)
 		VALUES
 			(".int($server_id).", '".&quoteSQL($matchid)."', ".int($half).",
 			 '".&quoteSQL($map)."', ".int($assister_id).", ".int($victim_id).",
 			 $apos_x, $apos_y, $apos_z, $vpos_x, $vpos_y, $vpos_z,
 			 $normalized_game_time, $event_epoch, ".int($producer_sequence // 0).",
-			 FROM_UNIXTIME($event_epoch))
+			 FROM_UNIXTIME($event_epoch), $link_life, $link_frag)
 	");
 
 	return "Canonical assist SQL insert failed" if (!defined($rv));
-	return "Canonical assist duplicate ignored: match=$matchid half=$half assister=$assister_id victim=$victim_id"
+	# INSERT IGNORE is what rejects a conflicting replay: the stored
+	# links are retained, never overwritten. Log what the replay
+	# carried so a mismatch is traceable without a SELECT per duplicate.
+	return "Canonical assist duplicate ignored: match=$matchid half=$half assister=$assister_id victim=$victim_id life=$link_life frag=$link_frag"
 		if (($rv + 0) == 0);
 	return "Canonical assist logged: match=$matchid half=$half assister=$assister_id victim=$victim_id context=$context_source";
 }
