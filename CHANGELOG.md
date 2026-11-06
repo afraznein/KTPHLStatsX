@@ -32,8 +32,12 @@ This half is inert until the producer emits the properties. That is deliberate a
 ordering: a daemon ahead of its producer simply writes NULL, while a producer ahead of its daemon
 would emit fields nothing reads and lose them silently.
 
-Deploy: the daemon is a single fleet-wide process, so this needs a SIGHUP after the swap, between
-halves.
+Deploy: `systemctl restart hlstatsx.service`, in a match-free window, and verify `MainPID` changed.
+A SIGHUP will not load this: `HUP_handler` calls `reloadConfiguration` and nothing else, so a HUP
+re-reads the database config and keeps running the old code. That failure is silent and every
+file-based check passes through it -- new script on disk, correct md5, clean install report, unit
+active, none of the new code running. The daemon is a single fleet-wide process, so the restart
+drops ingest for every instance; between halves if play is on.
 
 ### Added - migration 054: the two causal parent links a death group already observes but could not record
 
