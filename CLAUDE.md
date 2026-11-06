@@ -538,6 +538,30 @@ sentinel/nullable columns with the `DEFAULT 0` ones — only the latter are ambi
 Related: the teamkills-union trap above and `ktp_match_stats.half = 0` in `README.md` are the same
 "a default reads as a real measurement" shape, on different tables.
 
+## `ktp_move_census.census_flags` is a RETROSPECTIVE label over a CLOSED era — 0 is era-scoped, not a verdict, and bit 1 makes a per-series total a FLOOR
+
+*(Migration 053, applied 2026-11-05; verified two-sided on production 2026-11-06.)*
+
+The exact inverse of the `DEFAULT 0` trap above, which is what makes it easy to read the
+wrong way round. Here 0 is honest about the rows it covers and says nothing whatever about the rows
+it does not: the producer never writes this column, and 053 set it once over
+`event_time < 2026-10-14 03:00:00`. So `census_flags = 0` means *outside the labelled era*, not
+*evaluated and clean*, and a defect introduced after that cutoff would never show up here.
+
+Two bits, and each changes what an aggregate means. **Bit 1** marks a producer-era series whose
+terminal partial window was never emitted, so a per-series total over those rows is a **floor, not a
+total** — sum them, call it a total, and it understates with nothing in the data to say so. **Bit 2**
+marks the series' first window by `(game_time, id)`, which includes pre-live warm-up movement and is
+therefore not comparable with the windows after it. A first-window row reads 3, every other pre-fix
+row reads 1, and every post-fix row reads 0.
+
+The pre-fix figures are written here because they cannot rot: the era is closed. All 205,443 pre-fix
+rows carry bit 1, and 5,203 of them carry bit 2 — one per `(match_id, half, player_id)` group,
+re-derived from the group key rather than read off the flag it is checking.
+
+Related: the `DEFAULT 0` entry above is the same "a default reads as a measurement" shape pulling
+the opposite way, and the column's own `COMMENT` carries the short form inside the database.
+
 ## `ktp_matches` is ONE ROW PER HALF — a "match count" off it is DOUBLE
 
 *(2026-09-14.)* There is no one-row-per-match table here. `ktp_matches` carries a row per half, so
