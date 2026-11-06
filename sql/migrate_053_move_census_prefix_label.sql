@@ -1,0 +1,110 @@
+-- ENGINE: mysql (hlstatsx on the data server -- NOT the Supabase editor)
+-- KTP HLStatsX Migration 053: ktp_move_census carries its own quality label.
+--
+-- STATUS: the column is ALREADY ON PRODUCTION, added 2026-11-05 on operator
+--   authorisation from the root operator queue's copy, not from this file. This file
+--   exists so a FRESH install and the parity harness are not born without it: a
+--   database built from sql/ answers every consumer predicate below with
+--   `Unknown column` until this migration runs.
+--
+-- ⚠️ TWO DIFFERENT NUMBERS, AND THEY ARE EASY TO CONFLATE. 053 is the REPO ordinal.
+--   The queue copy is prefixed `2_` by the QUEUE's own apply order -- a per-sitting
+--   ordering of mutually independent files that bears no relation to this number.
+--   The queue's archived copy is authoritative for what RAN:
+--   migrations-to-apply/applied/MYSQL_hlstatsx_migrate_053_move_census_prefix_label_APPLIED_20261105.sql
+--   This file is authoritative for the SCHEMA. 054 left 053 free on purpose, for it.
+--
+-- Apply once as: sudo mysql hlstatsx < migrate_053_move_census_prefix_label.sql
+-- Idempotent: the ADD COLUMN is guarded on information_schema, so a second run --
+--   or a run against production, which already has the column -- is a catalog lookup
+--   and a `DO 0` rather than ERROR 1060 aborting the batch.
+--
+-- ⛔ THE ONE-TIME LABELLING OF THE EXISTING ROWS IS DELIBERATELY NOT IN THIS FILE.
+--   The queue copy's UPDATEs are guarded on row counts measured on production and
+--   bound themselves by a primary-key range taken from that same measurement. Those
+--   guards are exactly what makes them safe there and unrunnable anywhere else: on any
+--   other database the counts do not match and the file aborts by design. A fresh
+--   install has no pre-fix rows to label, so DEFAULT 0 is already the right answer for
+--   every row it will ever hold.
+--
+-- -- WHY THE COLUMN EXISTS --------------------------------------------------
+--
+-- RULED 2026-11-02 (operator): LABEL THE PRE-FIX ROWS, DELETE NOTHING.
+--
+-- An earlier producer never emitted the terminal partial window of a series, so for
+-- every affected (match_id, half, player_id) the end of that half is unrecoverable by
+-- any post-processing. Dropping the contaminated FIRST window of each series therefore
+-- does not yield a clean population -- it yields a smaller biased one. Labelling keeps
+-- the rows auditable and hands every consumer a predicate, which is the one thing a
+-- DELETE cannot give back.
+--
+-- 🔑 TWO BITS, NOT A BOOLEAN, BECAUSE THE TWO DEFECTS HAVE DIFFERENT SCOPES.
+--   bit0 is a SERIES property: the tail is missing, so any per-series total is a floor.
+--   bit1 is a ROW property: this row's own contents carry pre-live warm-up movement.
+--   One flag collapses them, and a consumer would then have to choose between
+--   discarding the whole pre-fix population and trusting a truncated total -- the false
+--   choice the ruling rejected. Do not simplify it to a boolean later.
+--
+-- The shape follows this schema's own convention for row-level quality on an event
+-- stream rather than inventing one: ktp_shot_events.rw_flags, .trace_flags,
+-- .shooter_flags and ktp_shot_miss_events.trace_flags are all `tinyint unsigned`
+-- bitmasks whose bit meanings live in the COLUMN_COMMENT.
+--
+-- NOT NULL DEFAULT 0 is deliberate on both halves. DEFAULT 0 means the daemon, which
+-- does not write this column, keeps producing rows that correctly read as "no known
+-- defect" with no producer change and no deploy coupling. NOT NULL means there is no
+-- third NULL bucket, so labelled + unlabelled = total is a genuine two-sided identity
+-- rather than a count with a hole in it.
+--
+-- NO INDEX on census_flags, deliberately: a two-value column over a growing event
+-- stream, so an index on it is near-useless for selection. Consumers filter on
+-- event_time / match_id / player_id through the existing indexes and apply census_flags
+-- as a residual. If one ever measures a need, add it then as its own act.
+--
+-- ALGORITHM=INSTANT is named as a GUARD, not decoration: where the table already holds
+-- rows, MySQL errors instead of silently falling back to a full rebuild under a lock
+-- while the live daemon is inserting. Fail loudly in the cheap direction.
+--
+-- ROLLBACK is exact and needs no backup copy, because nothing here is destructive:
+--   ALTER TABLE ktp_move_census DROP COLUMN census_flags, ALGORITHM=INSTANT;
+
+SET @clauses := CONCAT_WS(', ',
+    IF((SELECT COUNT(*)=0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ktp_move_census' AND COLUMN_NAME='census_flags'), 'ADD COLUMN census_flags TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT ''pre-fix census bits: 0 producer-era series whose terminal partial window was never emitted (so a per-series total over these rows is a FLOOR, not a total), 1 this row is the series first window by (game_time,id) and includes pre-live warm-up movement. 0 means no known defect and is real, not unknown. Set once by migration 053 over event_time < 2026-10-14 03:00:00; the producer does not write this column.''', NULL)
+);
+SET @ddl := IF(@clauses IS NULL OR @clauses = '', 'DO 0',
+               CONCAT('ALTER TABLE ktp_move_census ', @clauses, ', ALGORITHM=INSTANT'));
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
+-- CONSUMER-FACING PREDICATES -- the entire point of labelling. These are the
+-- predicates that fail with `Unknown column` on a database that lacks this migration.
+-- Pick by what the query is asking:
+--
+--   1. Clean rows only -- the default for any new analysis:
+--        AND census_flags = 0
+--   2. Keep the pre-fix rows but drop the warm-up-contaminated first window of each
+--      series. Use when per-window distributions matter and a truncated tail does not:
+--        AND (census_flags & 2) = 0
+--   3. Series-level completeness required -- any per-series SUM, COUNT, mean, rate or
+--      per-minute figure:
+--        AND (census_flags & 1) = 0
+--   4. Audit the labelled population itself:
+--        AND census_flags <> 0
+--
+-- ⛔ THE TRAP THE LABEL EXISTS TO PREVENT: a SUM or a per-minute rate over rows with
+--    bit0 set is a FLOOR, not a value. The missing window is the end of the half, so
+--    the loss is neither random nor small, and rescaling cannot recover it -- the
+--    duration that went unrecorded is itself unrecorded. Predicate 2 is NOT a
+--    substitute for predicate 3: dropping the contaminated head leaves the truncated
+--    tail, which is the smaller-biased-population outcome the ruling rejected.
+--
+-- Verify the column exists with the shape production has:
+--
+--   SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_COMMENT
+--   FROM information_schema.COLUMNS
+--   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ktp_move_census'
+--     AND COLUMN_NAME = 'census_flags';
+--
+-- On a fresh install every row reads 0, and that is a measurement rather than an
+-- absence of one: the defect this column records belongs to a closed producer era that
+-- such a database holds no rows from.
