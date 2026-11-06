@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### Fixed - a replayed half now gets a match interval that holds its own events
+
+A half whose interval had already been closed could start again — a replay the same evening — and
+`doEvent_KTPMatchStart`'s upsert refreshed neither `start_time` nor `end_time`. The row therefore kept
+the aborted interval, and `ktpResolveProducerEventContext` found no interval containing the replay's
+event epochs, so every event-time-gated stream in that half was dropped: position, shots, life
+boundaries, player state and grenade entities. The games were played and the rows are simply absent;
+a half captured without an interval cannot be re-derived afterwards.
+
+The shape it was measured in is an eight-second interval in front of a half whose markers run
+twenty-two minutes past it. Nothing refused that, and nothing reported it either — the drop is per
+stream, inside the resolver, and the match row looks ordinary.
+
+`ktpReopenReplayedHalfInterval` runs before the upsert and clears `end_time` on a half that is
+starting again. It deliberately does **not** touch `start_time`: the half owns events from before the
+replay began, and moving the lower boundary forward would push those outside their own interval —
+the same loss by another route. It is also what keeps a duplicated log line inert, since a duplicate
+arrives while the interval is still open and so finds nothing closed to reopen.
+
+A match id reused by two genuinely distinct matches is the shape this resembles, and it must keep
+failing closed rather than have a foreign match's row relabelled onto it. Two bounds separate them,
+and both are measured properties of the collision rather than guesses: the interval's `map_name` must
+equal the map the half is starting on, and its `start_time` must be inside one session
+(`$KTP_REPLAY_REOPEN_MAX_AGE`). A reuse inherits an interval from an earlier month, so the age bound
+holds even where the maps happen to agree — and the age is read from `start_time`, not `end_time`,
+because an inherited interval left open gets closed by tonight's match end and would otherwise look
+recent.
+
+Both refusals are now logged by name. A declined reopen is the collision shape, and until now it was
+indistinguishable from a half that never had a row at all. A successful reopen logs the aborted
+interval's length, which is the only forensic this daemon holds for what closed it early; the trigger
+itself is only in the game server's own log.
+
+No schema change, so there is no apply ordering to get wrong and nothing is inert until an operator
+runs something. `scripts/selftest-replayed-half-interval.pl` lifts the shipped code and exercises
+both directions of each bound, including the two sides of the session boundary; it is enumerated in
+`corpus-regression.yml`, because a selftest that is committed and not listed there never runs.
+
+Deploy: `systemctl restart hlstatsx.service`, in a match-free window, and verify `MainPID` changed.
+A SIGHUP will not load it — `HUP_handler` re-reads the database config and keeps running the old
+code, and every file-based check passes through that.
+
 ### Added - the daemon now persists the causal parent links migration 054 made room for
 
 Migration 054 added the columns; nothing wrote to them. The daemon reads two new optional producer
