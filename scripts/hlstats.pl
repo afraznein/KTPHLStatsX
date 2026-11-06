@@ -1731,6 +1731,7 @@ our $KTP_RESEND_MAX_PER_CMD = 32;      # sequences per rcon command
 our $KTP_RESEND_MIN_INTERVAL = 2;      # seconds between rcon calls per server
 our $KTP_REJECT_REASON_MAX_DISTINCT = 12;  # per (match, half, stream); the rest fold into "other"
 our $KTP_REJECT_REASON_MAX_LEN = 120;      # one normalised reason, before the column's own budget
+our $KTP_REPLAY_REOPEN_MAX_AGE = 21600;    # seconds; an interval older than one session is a reused id, not a replay
 $g_dns_resolveip = 1;
 $g_dns_timeout = 5;
 $g_skill_maxchange = 100;
@@ -8314,6 +8315,85 @@ sub doEvent_KTPGrenadeThrow
 }
 # END KTP WAVE-2 STREAMS
 
+#
+# KTP: Reopen a closed interval for a half that is starting again.
+#
+# A replayed half re-enters with its interval already closed, and the upsert in
+# doEvent_KTPMatchStart refreshes neither boundary -- so the resolver holds no
+# interval containing the replay's own event epochs, and every event-time-gated
+# stream in that half is dropped with nothing to recover the rows from.
+#
+# A reused match_id inheriting a stale interval is the other shape and must keep
+# failing closed, so a reopen is bounded by the map and by session age. Both
+# refusals are reported: a declined reopen is the collision shape, and until now
+# it looked exactly like a half that never had a row.
+#
+sub ktpReopenReplayedHalfInterval
+{
+	my ($matchid, $map, $half_num, $server_id) = @_;
+
+	return "no server context"
+		if (!defined($server_id) || $server_id !~ /^\d+$/);
+
+	my $result = &doQuery("
+		SELECT map_name,
+		       UNIX_TIMESTAMP(start_time) AS start_epoch,
+		       UNIX_TIMESTAMP(end_time) AS end_epoch,
+		       UNIX_TIMESTAMP() AS now_epoch
+		FROM ktp_matches
+		WHERE server_id = ".int($server_id)."
+		  AND match_id = '".&quoteSQL($matchid)."'
+		  AND half = ".int($half_num)."
+		  AND end_time IS NOT NULL
+	");
+	my $row = $result->fetchrow_hashref();
+	$result->finish();
+
+	# A first start, or a duplicate log line whose interval is still open.
+	# Leaving start_time alone is what keeps that duplicate inert.
+	return "no closed interval" if (!defined($row));
+
+	return "closed interval has an unreadable clock"
+		if (!defined($row->{start_epoch}) || $row->{start_epoch} !~ /^\d+$/ ||
+			!defined($row->{end_epoch}) || $row->{end_epoch} !~ /^\d+$/ ||
+			!defined($row->{now_epoch}) || $row->{now_epoch} !~ /^\d+$/ ||
+			$row->{end_epoch} < $row->{start_epoch});
+
+	# The DB collation is case-insensitive, so compare the map in Perl.
+	if (!defined($map) || !defined($row->{map_name}) || $row->{map_name} ne $map) {
+		&printEvent("KTP", "Declined to reopen $matchid half $half_num: the closed "
+			."interval is on '".(defined($row->{map_name}) ? $row->{map_name} : "")
+			."', not the starting map '".(defined($map) ? $map : "")."'", 1);
+		return "map disagrees with closed interval";
+	}
+
+	my $age = $row->{now_epoch} - $row->{start_epoch};
+	if ($age > $KTP_REPLAY_REOPEN_MAX_AGE) {
+		&printEvent("KTP", "Declined to reopen $matchid half $half_num: the closed "
+			."interval started ${age}s ago, beyond one session", 1);
+		return "closed interval predates this session";
+	}
+
+	# Only end_time moves. Refreshing start_time would put the half's own earlier
+	# events outside their interval, which is the same loss by another route.
+	my $rv = &execNonQuery("
+		UPDATE ktp_matches
+		SET end_time = NULL
+		WHERE server_id = ".int($server_id)."
+		  AND match_id = '".&quoteSQL($matchid)."'
+		  AND half = ".int($half_num)."
+		  AND end_time IS NOT NULL
+	");
+	return "reopen failed" if (!defined($rv) || $rv < 1);
+
+	# The aborted interval's length is the only forensic this daemon holds for
+	# what closed it early; the trigger itself is only in the game server's log.
+	&printEvent("KTP", "Match interval reopened: $matchid half $half_num on $map "
+		."(replayed; the closed interval ran "
+		.($row->{end_epoch} - $row->{start_epoch})."s)", 1);
+	return "reopened";
+}
+
 sub doEvent_KTPMatchStart
 {
 	my ($matchid, $map, $half, $match_type) = @_;
@@ -8373,6 +8453,10 @@ sub doEvent_KTPMatchStart
 			AND end_time IS NULL
 		");
 	}
+
+	# The upsert below cannot reopen a closed interval, so a half that comes
+	# round again needs that done first or it resolves no interval at all.
+	&ktpReopenReplayedHalfInterval($matchid, $map, $half_num, $server_id);
 
 	# Insert match record (no-op if already exists for this half — don't overwrite start_time)
 	&execNonQuery("

@@ -80,8 +80,9 @@ our (%g_servers, %g_ktpMatchContext, %g_ktpProducerContextCache,
      $g_event_queue_size, $s_addr, $s_output, $ev_properties, %ev_properties,
      %ev_properties_hash, $ev_type, $ev_status, $ev_obj_c,
      $ktp_actor_player_id, $ktp_victim_player_id, $i, $j,
-     @sql, @logged, %ktp_matches, $now);
+     @sql, @logged, %ktp_matches, $now, $KTP_REPLAY_REOPEN_MAX_AGE);
 $s_addr = '127.0.0.1:27015';
+$KTP_REPLAY_REOPEN_MAX_AGE = 21600;
 {
     package StubServer;
     sub get_map { return $_[0]->{map}; }
@@ -147,6 +148,7 @@ sub doQuery {
     no warnings 'redefine';
     my $code = join('', map { body_of($_) } qw(
         getProperties parseHalfNumber recordEvent
+        ktpReopenReplayedHalfInterval
         doEvent_KTPMatchStart doEvent_KTPHalfEnd
         doEvent_KTPDamage doEvent_KTPFlagState
         ktpIntOrNull ktpNumOrNull
