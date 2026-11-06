@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added - selftest-frag-context.pl now pins the marker's width
+
+That file checked everything the daemon DOES with a frag_context marker and nothing about the marker
+arriving whole. The producer's ring truncates silently, a truncated line stops matching the dispatch
+regex, and the loss then reads as missing context rather than as an error -- which is how the
+life-boundary stream lost its sequence field. `selftest-move-census.pl` already carried that pin for
+its own stream; this is the same block for this one, and it lands with the causal parent property the
+producer is adding.
+
+Two things make the pin worth more than its length suggests.
+
+IT PINS 997, NOT 1,024. `KSC_BUF_LINE_LEN` is the producer's ring and it is the wrong number: the
+line leaves through `log_message()`, and ReHLDS's `Log_Printf` formats into 1,024 bytes that already
+hold a 25-byte timestamp, the newline and the terminator. Asserting the ring passes while the real
+line truncates. Both assertions are present, and a padded worst case was shown to break only the
+997 one -- so the test fails on the ceiling that binds.
+
+IT PINS THE RESERVED GEOMETRY, NOT TODAY'S. Every numeric field renders a full-width Pawn cell, both
+position variants are present, and the causal parent is at the widest sequence the producer can mint.
+Pinning what a live kill happens to carry would pass today and say nothing about the next field added
+to the format.
+
+`getProperties` and `ktpLinkSeqOrNull` are lifted out of `hlstats.pl` and executed rather than
+mirrored, same as the payload block above them: a reimplementation of the 0-is-not-a-parent rule
+would pass against a reverted daemon. The absence case is checked from both sides -- an unparented
+marker carries no property at all, and the shipped helper turns that into NULL rather than a parent.
+
 ### Fixed - a replayed half now gets a match interval that holds its own events
 
 A half whose interval had already been closed could start again — a replay the same evening — and
