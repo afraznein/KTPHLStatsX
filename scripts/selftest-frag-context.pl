@@ -439,6 +439,116 @@ my $handlers = slurp($SCRIPT_DIR . 'HLstats_EventHandlers.plib');
 like($handlers, qr/&recordEvent\(\s*"Frags".*?\);\s*&ktpNoteRecordedFrag\(\$g_servers\{\$s_addr\}->\{'id'\}, \$killer->\{playerid\},\s*\$victim->\{playerid\}, \$weapon, \$ev_remotetime, \$ev_unixtime\);/s,
     'every recorded frag is indexed with its logged second and its row second');
 
+# --- the wire line survives Log_Printf at its reserved width -----------------
+#
+# Everything above checks what the daemon DOES with the marker. This checks that
+# the marker arrives at all. The producer's ring truncates silently and a
+# truncated line stops matching the dispatch regex without failing anywhere, so
+# the loss shows up as missing context rather than as an error -- which is how
+# the life-boundary stream lost its sequence field.
+#
+# Modelled on selftest-move-census.pl, which carries the original derivation.
+
+{
+    my ($fn) = $source =~ /^(sub getProperties\s*\{.*?^\})/ms;
+    ok(defined($fn), 'getProperties was lifted out of hlstats.pl');
+    eval "no strict 'vars';\n$fn\n1;" or die "could not load getProperties: $@";
+
+    # The shipped link helper, lifted for the same reason: a reimplementation of
+    # the 0-is-not-a-parent rule would pass against a reverted daemon.
+    my ($link) = $source =~ /^(sub ktpLinkSeqOrNull\s*\{.*?^\})/ms;
+    ok(defined($link), 'ktpLinkSeqOrNull was lifted out of hlstats.pl');
+    eval "no strict 'vars';\n$link\n1;" or die "could not load ktpLinkSeqOrNull: $@";
+
+    # The daemon's own player-player-action dispatch regex, which is what a
+    # frag_context marker arrives as ("<killer>" triggered "frag_context"
+    # against "<victim>" with "<weapon>" ...).
+    my $LINE_RE = qr/^"(.+?(?:<.+?>)*?)"\s(triggered(?:\sa)?)\s"(.+?(?:<.+?>)*?)"\s[a-zA-Z]+\s"(.+?(?:<.+?>)*?)"(?:\s[a-zA-Z]+\s"(.+?)")?(.*)/;
+
+    # Mirrors KSC_BUF_LINE_LEN in KTPAMXX plugins/dod/ktp_stats_capture.inc.
+    # Cross-repo, so it cannot be derived here -- if that constant shrinks, this
+    # number has to follow it or the check stops meaning anything.
+    my $KSC_BUF_LINE_LEN = 1024;
+    # THE CEILING THAT ACTUALLY BINDS, AND IT IS NOT THE ONE ABOVE. The producer
+    # sends this line through log_message(), and ReHLDS's Log_Printf formats into a
+    # 1,024-byte buffer that already holds its "L mm/dd/yyyy - hh:mm:ss: " prefix
+    # (25 bytes), the trailing newline and the terminator -- so 997 characters of
+    # line arrive whole and the rest are cut. Pinning the plugin buffer instead
+    # passes while the real line truncates, which is a 27-byte lie in the
+    # dangerous direction.
+    my $LOG_PRINTF_BUDGET = 1024 - 25 - 2;
+
+    # THE RESERVED GEOMETRY, NOT TODAY'S. Every numeric field below is a Pawn cell
+    # rendered at full width, both position variants are present, and the causal
+    # parent is there. Measuring the values a live kill happens to carry would pass
+    # today and say nothing about the next field added to the format -- and this
+    # line has already outgrown one ceiling.
+    #
+    # ksc_player_str formats into a 96-byte buffer, so 95 characters is the hard
+    # bound on either participant; it is used rather than the engine's own
+    # narrower worst case because the buffer is what the producer cannot exceed.
+    my $pstr    = "x" x 95;
+    # xmod_get_wpnlogname writes into weapon[32].
+    my $weapon  = "w" x 31;
+    # A Pawn cell at full width, which is what every integer field can render.
+    my $number  = "-2147483648";
+    my $angle   = "$number.0";
+    my $gametime = "$number.00";
+    # ksc_next_type_sequence returns a cell, and a causal parent is positive or
+    # it is absent -- so the widest parent is the largest positive cell.
+    my $sequence = "2147483647";
+    my $position = "$number $number $number";
+    my $matchid  = "m" x 63;
+
+    my $worst = sprintf(
+        '"%s" triggered "frag_context" against "%s" with "%s"'
+      . ' (headshot "%s") (k_prone "%s") (v_prone "%s") (k_scope "%s") (v_scope "%s")'
+      . ' (k_clip "%s") (k_ammo "%s") (v_clip "%s") (v_ammo "%s")'
+      . ' (k_position "%s") (v_position "%s") (is_last_flag_defense "%s")'
+      . ' (k_yaw "%s") (k_pitch "%s") (v_yaw "%s") (v_pitch "%s")'
+      . ' (matchid "%s") (half "%d") (game_time "%s") (event_epoch "%s") (sequence "%s")'
+      . ' (causal_parent_life "%s")',
+        $pstr, $pstr, $weapon,
+        ($number) x 9,
+        $position, $position, $number,
+        ($angle) x 4,
+        $matchid, 255, $gametime, $number, $sequence,
+        $sequence);
+
+    diag("worst-case frag_context line: " . length($worst) . " chars, Log_Printf budget "
+        . $LOG_PRINTF_BUDGET);
+    cmp_ok(length($worst), '<', $KSC_BUF_LINE_LEN - 1,
+        'the worst-case line fits the producer buffer, terminator included');
+    cmp_ok(length($worst), '<=', $LOG_PRINTF_BUDGET,
+        'the worst-case line survives Log_Printf whole: 1,024 bytes less the 25-byte timestamp, newline and terminator');
+
+    my @m = ($worst =~ $LINE_RE);
+    ok(scalar(@m), 'the worst-case line matches the daemon dispatch regex');
+    is($m[2], 'frag_context', 'it dispatches as frag_context');
+    is($m[4], $weapon, 'the weapon survives at full width');
+
+    my %prop = getProperties($m[5]);
+    for my $f (qw(headshot k_prone v_prone k_scope v_scope k_clip k_ammo v_clip
+                  v_ammo k_position v_position is_last_flag_defense
+                  k_yaw k_pitch v_yaw v_pitch matchid half game_time event_epoch
+                  sequence causal_parent_life)) {
+        ok(defined($prop{$f}), "the handler's field '$f' survives getProperties");
+    }
+    is($prop{matchid}, $matchid, 'matchid survives at full column width');
+    is($prop{causal_parent_life}, $sequence,
+        'the causal parent survives at the widest sequence the producer can mint');
+    is(ktpLinkSeqOrNull($prop{causal_parent_life}), $sequence + 0,
+        'and the shipped link helper reads it back as that parent');
+
+    # The parent is OMITTED when there is none. A literal 0 would be stored as a
+    # real parent, since 0 is also a legal producer_sequence on these streams --
+    # so the absence has to survive the parse as an absence.
+    my %none = getProperties(' (sequence "7")');
+    ok(!exists($none{causal_parent_life}), 'an unparented marker carries no life link');
+    is(ktpLinkSeqOrNull($none{causal_parent_life}), 'NULL',
+        'and the shipped helper stores NULL rather than a parent');
+}
+
 # --- migration 020 -----------------------------------------------------------
 my $migration20 = slurp($MIGRATION20);
 like($migration20, qr/COLUMN_NAME = 'frag_context_certified'/,
