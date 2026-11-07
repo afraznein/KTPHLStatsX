@@ -573,6 +573,23 @@ re-derived from the group key rather than read off the flag it is checking.
 Related: the `DEFAULT 0` entry above is the same "a default reads as a measurement" shape pulling
 the opposite way, and the column's own `COMMENT` carries the short form inside the database.
 
+## Order a `ktp_move_census` window by `(game_time, id)` — `producer_sequence` is NULLABLE here and mis-orders SILENTLY
+
+`producer_sequence` is the obvious ordering key for a producer-emitted window and it is the wrong one
+on this table: the column is nullable, so an `ORDER BY` on it groups the NULL rows at one end and
+returns a confidently wrong window instead of an error. Nothing in the result says the rows came back
+in an order other than the one asked for.
+
+`(game_time, id)` is the ordering the rest of this table's tooling already assumes — the
+`census_flags` entry above identifies a series' first window by exactly that pair, so an analysis
+ordered on `producer_sequence` can disagree with the flags stored beside it. Use the pair. If a query
+genuinely needs `producer_sequence`, say what a NULL means for that question before relying on the
+sort.
+
+⚠️ **The failure passes the obvious sanity check**: a mis-ordered window still returns the right ROW
+COUNT, so checking the size proves nothing. Compare the first and last row's `game_time` against the
+window's own bounds instead, which is a test the wrong order fails.
+
 ## `ktp_matches` is ONE ROW PER HALF — a "match count" off it is DOUBLE
 
 *(2026-09-14.)* There is no one-row-per-match table here. `ktp_matches` carries a row per half, so
