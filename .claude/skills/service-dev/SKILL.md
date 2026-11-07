@@ -159,6 +159,11 @@ This daemon parses log lines it doesn't control the format of:
 Branch from and merge to `main`. `preprod` was retired 2026-10-05; its tip is the tag
 `archive/preprod-20261005`.
 
+⚠️ **A fetch cannot settle that:** a plain `git fetch` exits 0 and leaves an already-present
+`origin/preprod` resolving, and a stale checkout still carries the pre-retirement instruction. Ask
+the remote — `git ls-remote --exit-code --heads origin preprod` exits 2 — and read the branch
+guidance from `origin/main`. Detail: § Branches in `CLAUDE.md`.
+
 There's no compile step — this is interpreted Perl. Path is:
 1. Bump `VERSION`, add a `CHANGELOG.md` section, update the version line in
    `README.md`.
