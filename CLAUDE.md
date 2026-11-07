@@ -600,6 +600,69 @@ trusting any aggregate. An odd row count is itself a finding — it means a half
 ⚠️ Related and easy to conflate: `match_type = 4` (`.ktpOT`) has **zero** rows to date, so a cohort
 described as ".ktp and .ktpOT" is entirely `.ktp`. See `Filtering ktp_matches.match_type` below.
 
+## `ktp_match_reports` is NOT one row per match — "rows below the current schema" counts HISTORY, not backlog
+
+*(2026-10-24, re-derived 2026-11-07.)* The table keeps roughly one row per match per schema
+generation, so a row at an old `schema_version` is a report that was current when it was written, not
+a report waiting to be written. ⛔ **A check of the form "every row reads N" can therefore never
+become true**, and a drain projection off the count of older rows is measuring nothing. One was
+built: *"~15 hours at 80/hour"* over 1,176 older rows, where the correct answer was zero hours
+because nothing was draining.
+
+**Re-derive, never quote — these figures move every time the generator bumps:**
+
+```sql
+SET SESSION max_execution_time=10000;
+-- the grain
+SELECT COUNT(*) rows_, COUNT(DISTINCT match_id) matches,
+       MIN(schema_version) sv_min, MAX(schema_version) sv_max,
+       MIN(revision) rev_min, MAX(revision) rev_max
+FROM ktp_match_reports;
+-- the question worth asking: each match's NEWEST report
+SELECT newest_sv, COUNT(*) matches FROM
+  (SELECT match_id, MAX(schema_version) newest_sv
+   FROM ktp_match_reports GROUP BY match_id) t
+GROUP BY newest_sv ORDER BY newest_sv;
+```
+
+Measured 2026-11-07: **2,269 rows over 447 matches**, `schema_version` 9…37, `revision` only ever 1
+or 2. Of 2,259 `(match_id, schema_version)` pairs, **2,249 carry exactly one row** — so "one per
+match per generation" holds, with ten exceptions, which are the ten `revision = 2` rows. Per match,
+**437 are at 37 and 10 are at 23**. The same figures on 2026-10-24 were 1,497 / 331 and a current
+schema of 34; nothing about the shape changed, only every number in it.
+
+**And the rows that stay below the current schema are mostly OUT OF SCOPE, not behind.**
+`report_scope.DISCOVERED_MATCH_TYPES` in `KTPInfrastructure` is `(0, 4) + (2,)` — official, `.ktpOT`
+and 12-man — so **scrims (`match_type = 1`) are never discovered and can never advance**. Nine of
+those ten matches are scrims. The tenth is a 12-man, a type that is in scope and present at 37 on 348
+other matches, so it is a real one-row backlog rather than a scope exclusion — which is exactly the
+distinction a bare row count destroys.
+
+**The condition that IS checkable**, and the one a deploy row should carry:
+
+```sql
+SET SESSION max_execution_time=10000;
+SELECT COUNT(*) AS in_scope_matches_below_current_schema FROM
+  (SELECT match_id, MAX(schema_version) sv FROM ktp_match_reports GROUP BY match_id) t
+  JOIN (SELECT match_id, MIN(match_type) mtype FROM ktp_matches GROUP BY match_id) m
+       USING (match_id)
+WHERE t.sv < <match_analytics.SCHEMA_VERSION>
+  AND m.mtype IN (0, 2, 4);   -- report_scope.DISCOVERED_MATCH_TYPES
+```
+
+⚠️ **That join fans out unless `ktp_matches` is collapsed first** — it is one row per HALF, per the
+trap above, and joining reports to it raw turned 1,497 into 2,967 pairs and inflated every bucket.
+**The control is to assert the joined total equals the report match count**; it is what caught the
+fan-out, and it read 447 = 447 on the query above.
+
+⚠️ **`MIN(match_type)` is the dedupe, and it is a choice, not a fact:** a match whose halves were
+typed differently reads as the lower type. That is the same fail-safe direction
+`ktp-stats-export.py` takes deliberately, but it means a corrected mistype shows as the mistake.
+
+⚠️ **A healthy unit looks wedged under the same misreading:** `ktp-reports.service` fires every 15
+minutes, exits 0 in ~14 s and writes nothing when there is nothing to write, so a watcher on the row
+count sees a stall every quarter hour.
+
 ## Filtering `ktp_matches.match_type` — allowlist what you want, never denylist what you don't
 
 *(2026-09-05.)* `match_type` is nullable and a large share of `ktp_matches` is NULL — the pre-backfill
