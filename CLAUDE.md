@@ -47,6 +47,17 @@ merged PRs was based on it.
 against it are void — it can no longer be a base. Its CI references were removed in the
 same change, and the Lane B component refs that used to ride KTPAMXX's `preprod` now ride `main`.
 
+⚠️ **AND NEITHER OBVIOUS CHECK SETTLES IT — BOTH ANSWER WITHOUT AN ERROR.** *(Measured 2026-11-06.)*
+**A plain `git fetch origin` EXITS 0 and leaves an already-present `refs/remotes/origin/preprod` in
+place**, so `origin/preprod` goes on resolving and `git log origin/preprod` answers — which reads
+exactly like a live branch. Only `git fetch --prune` drops it. ⛔ **The loud form is not the one
+anyone runs:** `git fetch origin preprod` fails `fatal: couldn't find remote ref preprod` (exit 128).
+➡️ **Ask the remote:** `git ls-remote --exit-code --heads origin preprod` exits **2** with no output,
+against a `main` control that resolves and a nonsense-branch control that also exits 2.
+⚠️ **The stale instruction also survives in a SECOND place — this file.** A checkout sitting on a
+deleted feature branch hands you the pre-retirement § Branches verbatim, with nothing reporting it.
+➡️ **Read this guidance from `origin/main`, never from the tree you are standing in.**
+
 ## Deployment
 Deployed to `/opt/hlstatsx/` on the data server (<DATA_SERVER_IP>).
 
