@@ -251,12 +251,24 @@ the game hosts rather than in SQL:
 ```bash
 md5sum ~/dod-<port>/serverfiles/dod/addons/ktpamx/plugins/stats_logging.amxx
 
+# `dod/logs` is the right tree here and not a mistake: stats_logging.sma emits
+# through log_message (22 calls, no log_amx), because HLStatsX parses the engine
+# log. A marker emitted through log_amx lands in dod/addons/ktpamx/logs instead.
+#
+# Select the logs by MTIME. A GoldSrc log name is L<MMDD> with no year, so
+# L$(date +%m%d)*.log matches this month-day in every year the host has run --
+# on a long-lived host that is hundreds of files, and the count reads plausible
+# and is years wide.
+logs=$(find ~/dod-<port>/serverfiles/dod/logs -maxdepth 1 -name 'L*.log' -newermt '-1 day')
+echo "haystack: $(echo "$logs" | grep -c .) files"
+
 # Old build emits headshot_kill and never frag_context; new build the reverse.
-# __nonsense__ is a negative control and must return 0. A low `triggered` count
-# means the instance was idle, NOT that it emits nothing -- do not read an idle
-# instance's zeros as evidence either way.
+# __nonsense__ is a negative control and must return 0; `triggered` is the
+# known-live control, so a zero there means the probe is blind rather than that
+# the instance emits nothing. A low `triggered` count means the instance was
+# idle -- do not read an idle instance's zeros as evidence either way.
 for m in headshot_kill frag_context cap_break break_context triggered __nonsense__; do
   printf '%s: ' "$m"
-  grep -h "$m" $(ls -t ~/dod-<port>/serverfiles/dod/logs/L$(date +%m%d)*.log) 2>/dev/null | wc -l
+  grep -h "$m" $logs 2>/dev/null | wc -l
 done
 ```
