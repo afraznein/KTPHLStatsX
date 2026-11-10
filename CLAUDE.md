@@ -1663,3 +1663,30 @@ coin the un-fixed build also wins, and the other three reds are unattributed rat
 be this. ⚠️ **And read the weapon pair off that field, not by grepping the capture log
 for weapon names:** `thompson` and `garand` occur 122 times in the red run's log as ordinary
 frags, so a scan finds a plausible pair that is not the disagreement.
+
+## A newly added action code resolves WITHOUT a daemon restart — measured, because the opposite was assumed and it cost a deploy ask
+
+Adding a row to `hlstats_Actions` does **not** require restarting `hlstatsx.service` before the
+daemon will resolve that code. The belief that it does produced a deploy ask for a restart that
+was never needed.
+
+**Measured 2026-10-24 on the `voice_*` codes**, which were the ones under discussion: 122
+`voice_%` rows existed in `hlstats_Events_PlayerActions` from 2026-10-18 onward, spanning
+2026-10-22 16:00:05 to 2026-10-24 13:02:45 — and **84 of them precede** the then-latest
+`hlstatsx.service` restart (`ActiveEnterTimestamp` 2026-10-23 08:17:21 EDT). Lines were
+resolving before any restart, so *"every `voice_*` line is dropped as `Unresolved action` until
+one quiet-window restart"* cannot be true.
+
+⚠️ **Escape the underscore.** `_` is a `LIKE` wildcard, so `LIKE 'voice_%'` also matches
+`voiceX…`. Every figure above was taken with it escaped; an unescaped probe inflates the count
+and is the easiest way to get a wrong answer here.
+
+**Controls, which are what make 122 a measurement:** 27 `voice_` codes defined in
+`hlstats_Actions` against a nonsense action pattern at 0, and 749 actions total — so the probe
+could distinguish a real population from an empty one.
+
+⛔ **What this does not say:** nothing here establishes that a restart is never relevant to any
+daemon-side cache. The claim is scoped to action-code resolution, which is what the deploy ask
+was about. If a future code appears not to resolve, re-derive against the restart timestamp the
+same way — compare event rows *before* the restart against rows after — rather than assuming
+a restart is the remedy.
