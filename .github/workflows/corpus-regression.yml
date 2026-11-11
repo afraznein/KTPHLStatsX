@@ -65,6 +65,8 @@ jobs:
         run: perl scripts/selftest-shot-miss.pl
       - name: A replayed half gets an interval holding its own events, and a reused id still does not
         run: perl scripts/selftest-replayed-half-interval.pl
+      - name: A half's boundaries come from the producer's clock, and an old producer still gets NOW()
+        run: perl scripts/selftest-boundary-event-epoch.pl
 
   migration-022-mysql:
     name: Migration 022 on production-parity MySQL

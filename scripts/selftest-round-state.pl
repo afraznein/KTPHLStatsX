@@ -148,7 +148,7 @@ sub doQuery {
     no warnings 'redefine';
     my $code = join('', map { body_of($_) } qw(
         getProperties parseHalfNumber recordEvent
-        ktpReopenReplayedHalfInterval
+        ktpReopenReplayedHalfInterval ktpBoundaryTimeSql ktpBoundaryEndSql
         doEvent_KTPMatchStart doEvent_KTPHalfEnd
         doEvent_KTPDamage doEvent_KTPFlagState
         ktpIntOrNull ktpNumOrNull

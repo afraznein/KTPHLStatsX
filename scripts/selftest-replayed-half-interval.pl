@@ -91,6 +91,8 @@ sub doQuery {
 # --- the shipped code under test ------------------------------------------------
 my $lifted = body_of('HLstats.plib', 'ktpValidMapName')
     . body_of('hlstats.pl', 'parseHalfNumber')
+    . body_of('hlstats.pl', 'ktpBoundaryTimeSql')
+    . body_of('hlstats.pl', 'ktpBoundaryEndSql')
     . body_of('hlstats.pl', 'ktpReopenReplayedHalfInterval')
     . body_of('hlstats.pl', 'doEvent_KTPMatchStart')
     . body_of('hlstats.pl', 'ktpResolveProducerEventContext');
