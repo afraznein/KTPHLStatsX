@@ -708,6 +708,17 @@ FROM ktp_matches GROUP BY match_type ORDER BY match_type;
 ⚠️ `match_type = 0` is *official*, a distinct value from NULL, and `0` is falsy in most host languages —
 do not let an application-side truthiness check collapse the two.
 
+## `ktp_match_players` only lists players who scored an enemy frag
+
+*(2026-11-10.)* The roster has one writer, `ktpTrackMatchPlayer`, and its only caller is the
+recorded enemy-frag branch of `doEvent_Frag`. Damage, deaths, teamkills, suicides and team joins
+never add anyone. So a player who joins late and never frags is absent from the roster even though
+`ktp_damage_events` holds his hits, and `damage_reconciliation` fails that match's report.
+Ruled 2026-11-10: accepted, not fixed. The failing check already keeps such a report from
+publishing, and rostering from damage would add 0-kill rows to published box scores. The whole
+ledger held 12 such (match, player) pairs in 7 matches. ⛔ Do not read a missing roster row as a
+player who was not there.
+
 ## `steam_id` is stored in TWO textual forms — a join between them silently returns zero
 
 *(2026-11-03.)* `ktp_match_players.steam_id` holds only the `Y:Z` portion of a SteamID2 —
