@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed - a half's start and end come from the producer's clock, not from when the daemon read them
+
+`ktp_matches.start_time` was this daemon's `NOW()` at the moment it processed `KTP_MATCH_START`,
+while every capture event carries the producer's `event_epoch` and is proved against that interval.
+Any ingest backlog of a second or more therefore put the go-live snapshot before the half's start,
+and those rows were rejected as *found 0 event-time match intervals* -- 282 rows over 12 streams on
+one NY1 half with a 25 s backlog, none with a 0 s one.
+
+KTPMatchHandler 0.10.185 appends `(event_epoch "N")` to `KTP_MATCH_START` and `KTP_HALF_END`. Both
+handlers now write `FROM_UNIXTIME(N)` when N is within 120 s behind and 2 s ahead of this clock, held to
+`NOW()` if it is ahead at all (the resolver refuses an interval that starts after its own proof clock).
+An end is `GREATEST(start_time, ...)`, so it can never precede a start that fell back to a late
+`NOW()`. The half-2 start that closes a half 1 whose `KTP_HALF_END` was lost uses the same clock.
+
+A line with no epoch -- every producer before 0.10.185 -- writes exactly the old SQL, so this is inert
+until the plugin ships, and the plugin is harmless to a daemon without this change. An epoch that is
+malformed or out of bounds falls back to `NOW()` and raises `KTP_BOUNDARY_CLOCK` through `printAlarm`,
+at most twice a half. No grace was added to the resolver: the backlog reached 25 s, and a grace that
+wide would weaken the reused-id refusal.
+
+`ktpReopenReplayedHalfInterval` is unaffected. It runs before the upsert, reads `start_time` only for
+its session-age bound, and the upsert still never refreshes `start_time`, so a replayed half keeps its
+first start. `selftest-boundary-event-epoch.pl` runs the shipped handlers, the reopen and the resolver
+against a fake `ktp_matches` that evaluates the boundary expressions, and reproduces the 25 s rejection
+before showing it resolve.
+
 ### Added - selftest-frag-context.pl now pins the marker's width
 
 That file checked everything the daemon DOES with a frag_context marker and nothing about the marker

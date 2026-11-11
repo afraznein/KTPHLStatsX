@@ -1732,6 +1732,8 @@ our $KTP_RESEND_MIN_INTERVAL = 2;      # seconds between rcon calls per server
 our $KTP_REJECT_REASON_MAX_DISTINCT = 12;  # per (match, half, stream); the rest fold into "other"
 our $KTP_REJECT_REASON_MAX_LEN = 120;      # one normalised reason, before the column's own budget
 our $KTP_REPLAY_REOPEN_MAX_AGE = 21600;    # seconds; an interval older than one session is a reused id, not a replay
+our $KTP_BOUNDARY_EPOCH_MAX_LAG = 120;     # seconds a producer boundary may trail this clock; older is a replay, not a backlog
+our $KTP_BOUNDARY_EPOCH_MAX_LEAD = 2;      # seconds it may lead it; whole-second truncation alone gives one
 $g_dns_resolveip = 1;
 $g_dns_timeout = 5;
 $g_skill_maxchange = 100;
@@ -4466,7 +4468,7 @@ while ($loop = &getLine()) {
 			# KTP: Check for KTP_MATCH events from KTPMatchHandler plugin
 			if ($ev_obj_a =~ /^KTP_MATCH_START\s+(.*)$/) {
 				# KTP: Match start event
-				# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx") (type "0")
+				# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx") (type "0") [(event_epoch "N")]
 				$ev_properties = $1;
 				%ev_properties = &getProperties($ev_properties);
 				$ev_type = 600;  # KTP event type
@@ -4474,7 +4476,8 @@ while ($loop = &getLine()) {
 					$ev_properties{"matchid"},
 					$ev_properties{"map"},
 					$ev_properties{"half"},
-					$ev_properties{"type"}
+					$ev_properties{"type"},
+					$ev_properties{"event_epoch"}
 				);
 			} elsif ($ev_obj_a =~ /^KTP_MATCH_END\s+(.*)$/) {
 				# KTP: Match end event
@@ -4488,14 +4491,15 @@ while ($loop = &getLine()) {
 				);
 			} elsif ($ev_obj_a =~ /^KTP_HALF_END\s+(.*)$/) {
 				# KTP: Half end event
-				# Prototype: KTP_HALF_END (matchid "xxx") (map "xxx") (half "1st")
+				# Prototype: KTP_HALF_END (matchid "xxx") (map "xxx") (half "1st") [(event_epoch "N")]
 				$ev_properties = $1;
 				%ev_properties = &getProperties($ev_properties);
 				$ev_type = 602;  # KTP event type
 				$ev_status = &doEvent_KTPHalfEnd(
 					$ev_properties{"matchid"},
 					$ev_properties{"map"},
-					$ev_properties{"half"}
+					$ev_properties{"half"},
+					$ev_properties{"event_epoch"}
 				);
 			} else {
 				# Default: Treat as admin message
@@ -4550,7 +4554,7 @@ while ($loop = &getLine()) {
 			}
 		} elsif ($s_output =~ /^KTP_MATCH_START\s+(.*)$/) {
 			# KTP: Match start event from KTPMatchHandler
-			# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx") (type "0")
+			# Prototype: KTP_MATCH_START (matchid "xxx") (map "xxx") (half "xxx") (type "0") [(event_epoch "N")]
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 600;  # KTP event type
@@ -4560,7 +4564,8 @@ while ($loop = &getLine()) {
 				$ev_properties{"matchid"},
 				$ev_properties{"map"},
 				$ev_properties{"half"},
-				$ev_properties{"type"}
+				$ev_properties{"type"},
+				$ev_properties{"event_epoch"}
 			);
 		} elsif ($s_output =~ /^KTP_MATCH_END\s+(.*)$/) {
 			# KTP: Match end event from KTPMatchHandler
@@ -4577,7 +4582,7 @@ while ($loop = &getLine()) {
 		} elsif ($s_output =~ /^KTP_HALF_END\s+(.*)$/) {
 			# KTP: Half end event from KTPMatchHandler (v0.10.69+)
 			# Fires at actual gameplay end (scoreboard), BEFORE map change/warmup
-			# Prototype: KTP_HALF_END (matchid "xxx") (map "xxx") (half "1st")
+			# Prototype: KTP_HALF_END (matchid "xxx") (map "xxx") (half "1st") [(event_epoch "N")]
 			$ev_properties = $1;
 			%ev_properties = &getProperties($ev_properties);
 			$ev_type = 602;  # KTP event type
@@ -4585,7 +4590,8 @@ while ($loop = &getLine()) {
 			$ev_status = &doEvent_KTPHalfEnd(
 				$ev_properties{"matchid"},
 				$ev_properties{"map"},
-				$ev_properties{"half"}
+				$ev_properties{"half"},
+				$ev_properties{"event_epoch"}
 			);
 		} elsif ($s_output =~ /^KTP_ROUND_FREEZE\s+(.*)$/) {
 			# KTP: Round freeze event - pause match_id tagging
@@ -8315,6 +8321,37 @@ sub doEvent_KTPGrenadeThrow
 }
 # END KTP WAVE-2 STREAMS
 
+# Capture events are proved against [start_time, end_time] on the producer's clock,
+# so a boundary stamped NOW() is late by the ingest backlog and rejects the go-live
+# snapshot. No epoch (older producer) keeps NOW(); one out of bounds falls back loudly.
+sub ktpBoundaryTimeSql
+{
+	my ($event_epoch, $what, $now) = @_;
+
+	return "NOW()" if (!defined($event_epoch) || $event_epoch eq "");
+	$now = time() if (!defined($now));
+	if ($event_epoch !~ /^[1-9]\d{0,18}$/ ||
+		$event_epoch < $now - $KTP_BOUNDARY_EPOCH_MAX_LAG ||
+		$event_epoch > $now + $KTP_BOUNDARY_EPOCH_MAX_LEAD) {
+		&printAlarm("KTP_BOUNDARY_CLOCK", "$what: producer event_epoch '$event_epoch' "
+			."is outside [now-${KTP_BOUNDARY_EPOCH_MAX_LAG}s, now+${KTP_BOUNDARY_EPOCH_MAX_LEAD}s] "
+			."of $now; using NOW()");
+		return "NOW()";
+	}
+	# The resolver refuses an interval that starts after its own NOW(), so a
+	# producer a fraction of a second ahead must not put the boundary there.
+	return "NOW()" if ($event_epoch > $now);
+	return "FROM_UNIXTIME(".int($event_epoch).")";
+}
+
+# An end from the producer's clock can precede a start this daemon stamped late;
+# the resolver and the replay reopen both refuse an interval that ends first.
+sub ktpBoundaryEndSql
+{
+	my ($time_sql) = @_;
+	return ($time_sql eq "NOW()") ? "NOW()" : "GREATEST(start_time, $time_sql)";
+}
+
 #
 # KTP: Reopen a closed interval for a half that is starting again.
 #
@@ -8396,7 +8433,7 @@ sub ktpReopenReplayedHalfInterval
 
 sub doEvent_KTPMatchStart
 {
-	my ($matchid, $map, $half, $match_type) = @_;
+	my ($matchid, $map, $half, $match_type, $event_epoch) = @_;
 
 	# KTP DEBUG: Log function entry
 	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart CALLED: matchid='$matchid' map='$map' half='$half' type='$match_type' server='$s_addr'", 1);
@@ -8440,13 +8477,15 @@ sub doEvent_KTPMatchStart
 	# KTP DEBUG: Log parsed half number
 	&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: half_num=$half_num server_id=$server_id", 1);
 
+	my $start_sql = &ktpBoundaryTimeSql($event_epoch, "KTP_MATCH_START $matchid half $half_num");
+
 	# If this is half 2 or later, close out the previous half's end_time
 	if ($half_num > 1) {
 		my $prev_half = $half_num - 1;
 		&printEvent("KTP_DEBUG", "doEvent_KTPMatchStart: Closing previous half ($prev_half) for match $matchid", 1);
 		&execNonQuery("
 			UPDATE ktp_matches
-			SET end_time = NOW()
+			SET end_time = ".&ktpBoundaryEndSql($start_sql)."
 			WHERE match_id = '".quoteSQL($matchid)."'
 			AND server_id = $server_id
 			AND half = $prev_half
@@ -8461,7 +8500,7 @@ sub doEvent_KTPMatchStart
 	# Insert match record (no-op if already exists for this half — don't overwrite start_time)
 	&execNonQuery("
 		INSERT INTO ktp_matches (match_id, server_id, map_name, half, match_type, start_time)
-		VALUES ('".quoteSQL($matchid)."', $server_id, '".quoteSQL($map)."', $half_num, $match_type_sql, NOW())
+		VALUES ('".quoteSQL($matchid)."', $server_id, '".quoteSQL($map)."', $half_num, $match_type_sql, $start_sql)
 		ON DUPLICATE KEY UPDATE
 			match_type = COALESCE(match_type, VALUES(match_type))
 	");
@@ -8736,7 +8775,7 @@ sub doEvent_KTPMatchEnd
 #
 sub doEvent_KTPHalfEnd
 {
-	my ($matchid, $map, $half) = @_;
+	my ($matchid, $map, $half, $event_epoch) = @_;
 
 	return 0 if (!defined($matchid) || $matchid eq "");
 
@@ -8749,9 +8788,11 @@ sub doEvent_KTPHalfEnd
 
 	# Set end_time for this specific half
 	# This captures the actual moment gameplay ended, before warmup starts
+	my $end_sql = &ktpBoundaryEndSql(
+		&ktpBoundaryTimeSql($event_epoch, "KTP_HALF_END $matchid half $half_num"));
 	&execNonQuery("
 		UPDATE ktp_matches
-		SET end_time = NOW()
+		SET end_time = $end_sql
 		WHERE match_id = '".quoteSQL($matchid)."'
 		AND server_id = $server_id
 		AND half = $half_num

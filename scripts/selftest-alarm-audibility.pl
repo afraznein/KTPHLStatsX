@@ -138,6 +138,7 @@ my $desc = 'Stream x attempted 0 events while the half produced 9999 markers';
         'KTP_CAPTURE_STREAM_SILENT',
         'Unresolved action',
         'hlstats_Actions has NO rows',
+        'KTP_BOUNDARY_CLOCK',
     );
     for my $needle (@expected) {
         like($source, qr/printAlarm\(.{0,200}?\Q$needle\E/s,
@@ -151,8 +152,10 @@ my $desc = 'Stream x attempted 0 events while the half produced 9999 markers';
         'the silent-stream tripwire no longer uses the debug-gated path');
 
     my $alarm_calls = () = $source =~ /printAlarm\(/g;
-    is($alarm_calls, 3,
-        'the alarm set is exactly the three bounded, data-loss conditions');
+    # A boundary clock fallback fires at most twice a half, and costs that
+    # half's go-live capture rows when the backlog that caused it persists.
+    is($alarm_calls, 4,
+        'the alarm set is exactly the four bounded, data-loss conditions');
 }
 
 done_testing();
