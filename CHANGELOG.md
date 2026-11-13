@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Changed - the move census stores untracked windows, labelled, instead of refusing them
+
+Ruled 2026-11-02. A `move_census` marker carrying the producer's untracked sentinel -- `matchid "-"`,
+`half 0`, sequence 0 or absent -- is now admitted without a capture manifest and stored as
+`match_id NULL`, `half 0`, `producer_sequence NULL`. Until now dispatch authorised every move marker
+against a manifest, and `ktpCaptureContextKey` refuses half 0, so the schema's `0=no match context`
+could never be written: play outside a tracked half -- warm-up, pubs, the gap between halves -- was
+unmeasured, and for that population this table is the only duck evidence there is.
+
+This loosens "a valid manifest is the only allocator" for ROWS, and says so at the gate. It does not
+loosen it for state: the untracked path mints no context key, no manifest entry and no sequence slot,
+so the memory bound the rule protects still holds. `ktpCaptureContextKey` itself is unchanged, so no
+other stream's gate moved.
+
+Three things the admission refuses to do, each held by `selftest-move-census.pl` running the shipped
+handler: it accepts exactly the sentinel (an empty match id, `half "00"` or a non-zero sequence is a
+broken marker and is dropped as before); it never stamps an untracked window with the daemon's own
+receipt-time match context, which would label warm-up as match time; and it requires a well-formed
+`event_epoch`, the check that keeps `event_time` off `FROM_UNIXTIME(0)` when no match interval proves
+the clock.
+
+Tracked rows are byte-identical. A before/after replay of the handler lifted from `origin/main` and from
+this branch over 32 tracked fixtures (16 marker shapes, with and without a live daemon match context)
+produced the same status and the same SQL for all 32, and two seeded mutations were each caught by it.
+
+Inert until the producer emits the sentinel (`stats_logging`, a separate `KTPAMXX` change), and that
+order is load-bearing: a producer that ships first has every untracked line refused here, silently.
+
+**Readers:** a tracked figure must now say so -- `match_id IS NOT NULL`, or a join to `ktp_matches`. A
+read bounded only by time or player mixes the two populations with no error. No schema change; the
+columns already allowed this. Migration 038's note that the state is unreachable is rewritten in the
+same change, as it asked to be, and 042's pointer to it is corrected. Both DDLs are byte-identical.
+
 ### Fixed - a half's start and end come from the producer's clock, not from when the daemon read them
 
 `ktp_matches.start_time` was this daemon's `NOW()` at the moment it processed `KTP_MATCH_START`,

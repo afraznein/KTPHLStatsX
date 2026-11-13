@@ -573,6 +573,17 @@ re-derived from the group key rather than read off the flag it is checking.
 Related: the `DEFAULT 0` entry above is the same "a default reads as a measurement" shape pulling
 the opposite way, and the column's own `COMMENT` carries the short form inside the database.
 
+## `ktp_move_census` holds UNTRACKED windows too — a tracked figure must filter on `match_id`
+
+Once the daemon admits the producer's untracked sentinel, rows with `match_id NULL`, `half 0` and
+`producer_sequence NULL` are warm-up, pub and between-half play. They are labelled, never folded in,
+but only a reader that filters keeps them apart: a query bounded by time or player alone silently mixes
+the two populations. Use `match_id IS NOT NULL` or join `ktp_matches` for any tracked figure.
+
+⚠️ **An empty untracked population before the admission shipped is not quiet play** — the daemon refused
+every such marker until then, so an absent row over that span is the gate. And untracked rows have no
+dedup guard (the UNIQUE key's NULLs never collide), which is fine only because nothing resends them.
+
 ## Order a `ktp_move_census` window by `(game_time, id)` — `producer_sequence` is NULLABLE here and mis-orders SILENTLY
 
 `producer_sequence` is the obvious ordering key for a producer-emitted window and it is the wrong one
