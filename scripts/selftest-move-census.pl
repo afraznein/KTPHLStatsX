@@ -327,40 +327,155 @@ unlike($timer_comment // '', qr/;/,
 like($migration, qr/CREATE TABLE IF NOT EXISTS ktp_move_census\b/,
     '038 stays IF NOT EXISTS, so the COMMENT edit is a no-op on a database that has the table');
 
-# --- 7. the no-match-context state stays unreachable, and 038 keeps saying where --
+# --- 7. untracked windows are admitted, labelled, and kept apart ----------------
 #
-# 038 used to name the PRODUCER as the only thing refusing a no-match-context row, and
-# describe the daemon as prepared to store one. Two agents read that and nearly flipped
-# the producer alone -- which would have emitted a wide row per player per window,
-# through warm-up, on all 24 instances, into a path that drops every one of them, and
-# reported success. No symptom and no error is the worst shape a change can have.
-#
-# The refusal is HERE, at dispatch, before the handler exists as far as the marker is
-# concerned. These two assertions are the pairing 038 used to ask for in prose and
-# nothing enforced: widen the gate and the first fails; rewrite 038's block away from
-# the real mechanism and the second does.
+# Ruled 2026-11-02: an untracked window (matchid "-", half 0) is stored as match_id
+# NULL / half 0 / producer_sequence NULL, because for play outside a tracked half this
+# table is the only duck evidence there is. Three ways that goes wrong silently, each
+# pinned below by RUNNING the shipped handler rather than reading it:
+#   - a looser sentinel stores broken markers as "untracked" instead of dropping them;
+#   - the daemon's receipt-time match context stamps warm-up as match time;
+#   - the admission allocates manifest/sequence state, which the manifest gate bounds.
+# ktpCaptureContextKey must still refuse half 0: every stream shares it, so widening
+# it would have widened every gate at once.
 
 {
     my $key_body = body_of('ktpCaptureContextKey');
     has($key_body, '$p->{matchid}',
         'control: ktpCaptureContextKey was extracted and reads matchid');
     has($key_body, '$p->{half} < 1',
-        'ktpCaptureContextKey refuses half 0, so a no-match-context marker has no context key');
-    like($key_body, qr/return\s+undef\s+if/,
-        'that refusal returns undef rather than a key the manifest lookup could accept');
+        'ktpCaptureContextKey still refuses half 0 -- the admission is move-only, not a shared-key change');
 
-    my $auth_body = body_of('ktpCaptureManifestAuthorizes');
-    has($auth_body, 'ktpCaptureContextKey($p)',
-        'manifest authorisation goes through the context key, so the refusal is upstream of every handler');
-    like($source, qr/ktpCaptureManifestAuthorizes\(\\%ev_properties,\s*"move"\)/,
-        'the move dispatch is gated on that authorisation before doEvent_KTPMove is reached');
+    like($source, qr/my \$ktp_move_untracked = ktpIsUntrackedMoveCensus\(\\%ev_properties\);\s*if \(!\$ktp_move_untracked &&\s*!ktpCaptureManifestAuthorizes\(\\%ev_properties,\s*"move"\)\)/,
+        'the move dispatch skips the manifest gate ONLY for the untracked sentinel');
+    like($source, qr/doEvent_KTPMove\(\$ktp_buffered_player_id, \\%ev_properties,\s*\$ktp_move_untracked\)/,
+        'and tells the handler which path it was admitted on');
 
-    # \b, not a bare substring: without it this passes against ktpCaptureContextKeyXX,
-    # which is a different function. Measured -- the first cut of this assertion did.
-    like($migration, qr/ktpCaptureContextKey\b/,
-        '038 names the dispatch gate as the refusal point, not the producer alone');
-    like($migration, qr/unreachable code/,
-        '038 states the handler defaults are unreachable rather than "prepared"');
+    like($migration, qr/ktpIsUntrackedMoveCensus\b/,
+        '038 names the admission point');
+    like($migration, qr/match_id NULL, half 0 and producer_sequence NULL/,
+        '038 states how an untracked row is stored');
+    unlike($migration, qr/Those defaults are unreachable code/,
+        '038 no longer says the untracked state is unreachable');
+}
+
+our (%g_servers, %g_ktpAcceptedCaptureManifests, %g_ktpCaptureSequences,
+     %g_ktpMatchContext, $s_addr, @SQL, @WARN);
+
+sub quoteSQL { my ($v) = @_; $v =~ s/\\/\\\\/g; $v =~ s/'/\\'/g; return $v; }
+sub execNonQuery { push(@SQL, $_[0]); return 1; }
+sub ktpWarnProducerClock { push(@WARN, join('|', @_)); }
+# Proves a well-formed tracked clock the way the real resolver does; the resolver's
+# own logic is tested elsewhere.
+sub ktpResolveValidatedProducerEventContext {
+    my ($m, $h, $gt, $ep) = @_;
+    return (undef, undef, "invalid event_epoch", undef)
+        if (!defined($ep) || $ep !~ /^[1-9]\d{0,18}$/);
+    return (int($h), "dod_avalanche", "", "interval");
+}
+
+{
+    my $lifted = '';
+    for my $name (qw(ktpCaptureContextKey ktpHasExplicitProducerContext
+                     ktpIsUntrackedMoveCensus doEvent_KTPMove)) {
+        $lifted .= "sub $name {" . body_of($name) . "\n}\n";
+    }
+    eval "no strict 'vars';\n$lifted\n1;" or die "could not lift the move handler: $@";
+
+    $s_addr = '127.0.0.1:27015';
+    %g_servers = ($s_addr => { id => 7 });
+
+    my %base = (window_ms => 30000, buckets => 2, bucket_width => 100, taps => 3,
+        taps_ground => '1 2', taps_air => '0 0', ground_ms_standing => '100 0',
+        ground_ms_ducked => '0 50', air_ms_ducked => '0 0', stam_tap_sum => 90,
+        stam_tap_min => 30, steps_ground => 12, steps_ladder => 0, sounds_water => 0,
+        pmove_sounds => 14, step_timer_fires => 20, map => 'dod_avalanche',
+        matchid => 'KTP-1-abc', half => '1', game_time => '12.50',
+        event_epoch => '1762900000', sequence => '9');
+    my %untracked = (%base, matchid => '-', half => '0', sequence => '0');
+
+    my $values = sub {
+        my ($sql) = @_;
+        my ($v) = (($sql // '') =~ /VALUES\s*\((.*)\)\s*$/s);
+        return [ split(/,\s*/, $v // '') ];
+    };
+    my $run = sub {
+        my ($p, $flag) = @_;
+        @SQL = ();
+        my $status = doEvent_KTPMove(4242, { %$p }, $flag);
+        return ($status, $SQL[0]);
+    };
+    my $reset = sub {
+        %g_ktpAcceptedCaptureManifests = (
+            join("\x1e", $s_addr, 'KTP-1-abc', 1) => { schema => 26, move => 1 });
+        %g_ktpCaptureSequences = ();
+        %g_ktpMatchContext = ();
+    };
+
+    # The sentinel, exactly.
+    ok(ktpIsUntrackedMoveCensus(\%untracked), 'the producer sentinel is recognised');
+    ok(!ktpIsUntrackedMoveCensus({ %untracked, matchid => '' }),
+        'an empty match id is NOT untracked -- it is broken');
+    ok(!ktpIsUntrackedMoveCensus({ %untracked, half => '00' }), 'half "00" is not the sentinel');
+    ok(!ktpIsUntrackedMoveCensus({ %untracked, half => '1' }),
+        'a "-" match id with a real half is not the sentinel');
+    ok(!ktpIsUntrackedMoveCensus({ %untracked, sequence => '5' }),
+        'a non-zero sequence is not the sentinel -- an untracked line never takes a tracked sequence');
+    ok(!ktpIsUntrackedMoveCensus({ %base }), 'control: a tracked marker is not untracked');
+    my %no_seq = %untracked;
+    delete $no_seq{sequence};
+    ok(ktpIsUntrackedMoveCensus(\%no_seq), 'a sentinel with no sequence at all is still untracked');
+
+    # Stored, labelled, and nothing allocated.
+    $reset->();
+    my %manifests_before = %g_ktpAcceptedCaptureManifests;
+    my ($st, $sql) = $run->(\%untracked, 1);
+    unlike($st // '', qr/dropped|failed/i, 'an untracked window is stored, not dropped');
+    my $v = $values->($sql);
+    is($v->[1], 'NULL', 'untracked: match_id is NULL');
+    is($v->[2], '0', 'untracked: half is 0');
+    is($v->[-2], 'NULL', 'untracked: producer_sequence is NULL');
+    is($v->[-1], 'FROM_UNIXTIME(1762900000)', 'untracked: event_time comes from the producer epoch');
+    is_deeply(\%g_ktpAcceptedCaptureManifests, \%manifests_before, 'untracked admission adds no manifest');
+    is(scalar(keys %g_ktpCaptureSequences), 0, 'untracked admission allocates no sequence state');
+
+    # Never stamped with the daemon's own view of the match.
+    $reset->();
+    %g_ktpMatchContext = ($s_addr => { match_id => 'KTP-1-abc', half_num => 1, round_live => 1 });
+    ($st, $sql) = $run->(\%untracked, 1);
+    $v = $values->($sql);
+    is($v->[1], 'NULL', 'a live daemon match context does not stamp an untracked window');
+    is($v->[2], '0', 'nor give it a half');
+
+    # The one check that keeps an untracked event_time off FROM_UNIXTIME(0).
+    for my $bad ('0', '', 'abc', undef) {
+        $reset->();
+        my %p = %untracked;
+        if (defined($bad)) { $p{event_epoch} = $bad; } else { delete $p{event_epoch}; }
+        ($st, $sql) = $run->(\%p, 1);
+        my $label = defined($bad) ? "\"$bad\"" : 'absent';
+        like($st // '', qr/dropped/, "untracked with event_epoch $label is dropped");
+        ok(!defined($sql), "... and writes nothing ($label)");
+    }
+
+    # The flag alone is not enough: a non-sentinel marker takes the tracked path.
+    $reset->();
+    ($st, $sql) = $run->({ %base, matchid => 'KTP-unknown' }, 1);
+    like($st // '', qr/no accepted manifest/,
+        'the untracked flag on a non-sentinel marker does not bypass the manifest');
+
+    # Tracked rows are unchanged.
+    $reset->();
+    ($st, $sql) = $run->(\%base, 0);
+    unlike($st // '', qr/dropped|failed/i, 'control: a tracked window with a manifest is stored');
+    $v = $values->($sql);
+    is($v->[1], "'KTP-1-abc'", 'tracked: match_id is the producer match id');
+    is($v->[2], '1', 'tracked: half is the validated half');
+    is($v->[-2], '9', 'tracked: producer_sequence is kept');
+    $reset->();
+    %g_ktpAcceptedCaptureManifests = ();
+    ($st, $sql) = $run->(\%base, 0);
+    like($st // '', qr/no accepted manifest/, 'control: a tracked window without a manifest is still refused');
 }
 
 done_testing();

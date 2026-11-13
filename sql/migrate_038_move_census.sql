@@ -164,53 +164,33 @@
 -- no in-range value that can mean "absent".
 --
 -- ============================================================================
--- 🔻 THE NO-MATCH-CONTEXT STATE IS UNREACHABLE, AND TWO PLACES REFUSE IT
+-- THE NO-MATCH-CONTEXT STATE: match_id NULL, half 0, producer_sequence NULL
 -- ============================================================================
--- match_id is nullable and half's COMMENT offers `0=no match context`. No row has
--- ever carried either, and no row can.
+-- An untracked window -- warm-up, pubs, the gap between halves -- is stored with
+-- match_id NULL, half 0 and producer_sequence NULL. Ruled 2026-11-02: for play
+-- outside a tracked half this table is the only duck evidence there is, so it is
+-- kept, labelled, and never folded into a tracked figure.
 --
--- 🔻 CORRECTED 2026-10-06. This block read "The daemon is fully prepared to store
--- both: doEvent_KTPMove starts at `$match_id_sql = "NULL"` with `$half = 0`", and
--- named the PRODUCER as the only refusal. THAT IS FALSE AND IT IS THE DANGEROUS
--- DIRECTION. The handler's defaults are real, but the handler never runs without a
--- context: dispatch authorises first. In hlstats.pl,
---   ktpCaptureManifestAuthorizes() -> ktpCaptureContextKey(), which returns undef
---   unless matchid matches ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ AND half is an
---   integer in 1..255.
--- An absent matchid or half 0 therefore has no context key, no accepted manifest,
--- and the marker is rejected by ktpRejectCaptureMarker("move", ...) BEFORE
--- doEvent_KTPMove is called. Those defaults are unreachable code.
+-- Until that ruling NO row could carry this state: dispatch authorised every move
+-- marker against an accepted capture manifest, and ktpCaptureContextKey mints a key
+-- only for an alphanumeric match id and a half in 1..255, so the producer's sentinel
+-- (matchid "-", half 0) was refused before doEvent_KTPMove ran. Rows stored before
+-- the daemon change that admits it are therefore ALL tracked; an empty untracked
+-- population over that span is the gate, not quiet play.
 --
--- ⛔ WHY THAT MATTERS MORE THAN A WORDING FIX: acting on the old text -- flipping
--- the producer alone to emit untracked windows -- would have emitted a wide row per
--- player per window, through warm-up, on all 24 production instances, into a path
--- that drops 100% of it, AND REPORTED SUCCESS. No symptom, no error, and a task that
--- reads as done. The dispatch gate is where the decision lives, so making this state
--- reachable is an authorisation change in THIS repo, not producer scoping.
+-- How it is admitted, in scripts/hlstats.pl: ktpIsUntrackedMoveCensus accepts
+-- exactly the sentinel (matchid "-", half "0", sequence "0" or absent) and nothing
+-- looser, ahead of the manifest check. Such a row allocates no capture state, is
+-- never stamped with the daemon's own match context, and must carry a valid
+-- event_epoch. ktpCaptureContextKey is unchanged and still refuses half 0, so no
+-- other stream's gate moved.
 --
--- The producer refuses it too, which is belt and braces rather than the reason:
--- ksc_move_flush_task tests `if (!tracked)` FIRST and resets the player's counters
--- without emitting.
+-- ⛔ READING THIS TABLE: a tracked figure must say so -- `match_id IS NOT NULL`, or
+-- a join to ktp_matches. A read bounded only by time or player now mixes the two
+-- populations with no error. The UNIQUE key gives untracked rows no dedup guard
+-- (NULL never collides), which is acceptable because they are never resent.
 --
--- What is wrong is that the column COMMENT reads as a description of data, so the
--- next reader queries `WHERE match_id IS NULL`, gets 0 rows, and concludes the
--- untracked play is quiet rather than absent. It is absent.
---
--- The gate has a real reason, which is why this is a note and not a patch: a
--- window spanning the start of a match must not carry warmup movement into it.
--- The producer has the other option already -- ksc_optional_event_context,
--- used by five other streams -- so making the state reachable is a scoping
--- decision about the boundary, plus a producer version bump and a wave -- AND an
--- authorisation change here, without which the wave is a silent no-op.
---
--- ⛔ UNTIL THAT HAPPENS, READ THIS COMMENT AS A CONTRACT, NOT AS A POPULATION.
--- ➡️ And do not reverse it quietly: if the dispatch gate is ever changed to admit
--- an untracked window, delete this block in the same change. A stale "never occurs"
--- is worse than none, because it argues against believing real rows.
--- ✅ That pairing is now ENFORCED, where before it was only asked for:
--- scripts/selftest-move-census.pl asserts that ktpCaptureContextKey still rejects
--- half < 1 and that this file still names it as the refusal point, so widening the
--- gate fails CI until this block is rewritten with it.
+-- scripts/selftest-move-census.pl holds the daemon side of this to the words above.
 --
 -- The other choice, for a stream whose producer gates the same way, is NOT NULL
 -- on both columns: it advertises only what the producer contract can reach, and

@@ -4050,11 +4050,17 @@ while ($loop = &getLine()) {
 						# instead of guessed at.
 						$ev_type = 620;  # KTP move-census marker
 
-						if (!ktpCaptureManifestAuthorizes(\%ev_properties, "move")) {
+						# The one capture marker admitted WITHOUT a manifest: an untracked
+						# window. This loosens "a valid manifest is the only allocator" for
+						# rows, not for state -- see ktpIsUntrackedMoveCensus.
+						my $ktp_move_untracked = ktpIsUntrackedMoveCensus(\%ev_properties);
+						if (!$ktp_move_untracked &&
+							!ktpCaptureManifestAuthorizes(\%ev_properties, "move")) {
 							$ev_status = "Move census dropped: manifest does not carry the move capability";
 							ktpRejectCaptureMarker("move", \%ev_properties, 0, $ev_status);
 						} elsif ($ktp_buffered_player_id) {
-							$ev_status = &doEvent_KTPMove($ktp_buffered_player_id, \%ev_properties);
+							$ev_status = &doEvent_KTPMove($ktp_buffered_player_id, \%ev_properties,
+								$ktp_move_untracked);
 							ktpRejectCaptureMarker("move", \%ev_properties, 0, $ev_status)
 								if (!defined($ev_status) || $ev_status =~ /(?:dropped|failed)/i);
 						}
@@ -5856,7 +5862,8 @@ sub ktpAuthorizeCaptureManifest
 
 	# A valid manifest is the only allocator. Keep authorization and sequence
 	# state bounded together so even valid-but-hostile context churn cannot grow
-	# process-lifetime memory without limit.
+	# process-lifetime memory without limit. (Untracked move_census rows are written
+	# without a manifest but allocate nothing; see ktpIsUntrackedMoveCensus.)
 	if (scalar(keys %g_ktpAcceptedCaptureManifests) >= 512 &&
 		!defined($g_ktpAcceptedCaptureManifests{$key})) {
 		%g_ktpAcceptedCaptureManifests = ();
@@ -7639,20 +7646,45 @@ sub flushShotMissEvents
 # player per window, so the ceiling is about one row a second on a full server --
 # two orders of magnitude under the rate that made shot worth batching, and a
 # per-row INSERT keeps the dedup guard simple.
+#
+# UNTRACKED WINDOWS ARE STORED as match_id NULL / half 0 / producer_sequence NULL.
+# A tracked figure must filter on match_id or join ktp_matches; a time-range read
+# without one mixes both populations.
+#
+# Exactly the producer's sentinel: a malformed match id is a broken marker, not an
+# untracked one. Nothing is allocated here, so the memory bound behind "a valid
+# manifest is the only allocator" holds; a manifest behind every row no longer does.
+sub ktpIsUntrackedMoveCensus
+{
+	my ($p) = @_;
+	return (defined($p) && ref($p) eq "HASH" &&
+		defined($p->{matchid}) && $p->{matchid} eq "-" &&
+		defined($p->{half}) && $p->{half} eq "0" &&
+		(!defined($p->{sequence}) || $p->{sequence} eq "0")) ? 1 : 0;
+}
+
 sub doEvent_KTPMove
 {
-	my ($player_id, $p) = @_;
+	my ($player_id, $p, $untracked) = @_;
 	return 0 if (!defined($player_id));
+	$untracked = ($untracked && ktpIsUntrackedMoveCensus($p)) ? 1 : 0;
 
-	my $manifest_key = ktpCaptureContextKey({
-		matchid => $p->{matchid}, half => $p->{half},
-	});
-	my $manifest = defined($manifest_key)
-		? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
-	# Gated on the capability bit, not on a schema ordinal. 23 is the floor the
-	# authorizer itself uses; the bit is what says this producer ships the stream.
-	return "Move census dropped: no accepted manifest carrying the move capability"
-		if (!defined($manifest) || $manifest->{schema} < 23 || !$manifest->{move});
+	if ($untracked) {
+		# No match interval proves this clock, so this check alone keeps event_time off
+		# FROM_UNIXTIME(0) -- the tracked path gets that from ktpValidateProducerEventClock.
+		return "Move census dropped: untracked window with invalid event_epoch"
+			if (!defined($p->{event_epoch}) || $p->{event_epoch} !~ /^[1-9]\d{0,18}$/);
+	} else {
+		my $manifest_key = ktpCaptureContextKey({
+			matchid => $p->{matchid}, half => $p->{half},
+		});
+		my $manifest = defined($manifest_key)
+			? $g_ktpAcceptedCaptureManifests{$manifest_key} : undef;
+		# Gated on the capability bit, not on a schema ordinal. 23 is the floor the
+		# authorizer itself uses; the bit is what says this producer ships the stream.
+		return "Move census dropped: no accepted manifest carrying the move capability"
+			if (!defined($manifest) || $manifest->{schema} < 23 || !$manifest->{move});
+	}
 
 	# The histogram geometry travels with the row. Without it a later producer
 	# change to the bucket width would silently reinterpret every row already
@@ -7732,7 +7764,9 @@ sub doEvent_KTPMove
 		}
 		$match_id_sql = "'".quoteSQL($p->{matchid})."'";
 		$half = $validated_half;
-	} elsif (defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+	} elsif (!$untracked && defined($g_ktpMatchContext{$s_addr}) && $g_ktpMatchContext{$s_addr}{match_id} ne "") {
+		# Never for an untracked window: the producer said it belongs to no half, and
+		# the daemon's receipt-time view would stamp warm-up as match time.
 		if (!defined($g_ktpMatchContext{$s_addr}{round_live}) || $g_ktpMatchContext{$s_addr}{round_live}) {
 			$match_id_sql = "'".quoteSQL($g_ktpMatchContext{$s_addr}{match_id})."'";
 			$half = $g_ktpMatchContext{$s_addr}{half_num} || 0;

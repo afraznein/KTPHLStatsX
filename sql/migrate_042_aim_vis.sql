@@ -94,11 +94,11 @@
 -- ============================================================================
 -- match_id and half are NOT NULL and there is no no-match-context sentinel.
 -- ktp_move_census took the other choice: its match_id is nullable and its half
--- COMMENT documents a 0 that means "no match context" -- and its producer gates
--- on tracked context and therefore cannot emit either one. The schema there
--- advertises a state that has never occurred, and the next reader believes the
--- data exists. Do not repeat it: if untracked aim samples are ever wanted, the
--- producer change and the column change land together, in that order.
+-- COMMENT documents a 0 that means "no match context". For weeks that advertised
+-- a state no row could carry, because the daemon refused it; it is reachable only
+-- since the daemon was changed to admit it (see migration 038). Do not repeat the
+-- gap: if untracked aim samples are ever wanted, the daemon admission, the producer
+-- change and the column change land together, in that order.
 
 CREATE TABLE IF NOT EXISTS ktp_aim_vis (
     id BIGINT UNSIGNED AUTO_INCREMENT,

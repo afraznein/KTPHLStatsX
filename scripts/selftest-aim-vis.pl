@@ -337,8 +337,8 @@ has($body, 'Aim vis dropped: window reported with no answered samples',
         'the table is created IF NOT EXISTS, so a comment correction is a no-op on a database that has it');
 
     # Tracked-only, stated in the schema rather than in a reader head. The
-    # sibling ktp_move_census advertises a nullable match_id and a half of 0 that
-    # its producer cannot emit, and the next reader believes that data exists.
+    # sibling ktp_move_census advertised a nullable match_id and a half of 0 for
+    # weeks before anything could write them, and readers believed the data existed.
     like($migration, qr/^\s*match_id VARCHAR\(64\) NOT NULL\b/m,
         'match_id is NOT NULL -- no state is advertised that the producer cannot reach');
     like($migration, qr/^\s*half TINYINT NOT NULL\b/m,
