@@ -175,6 +175,13 @@ verbatim rebuilds the table once per column. **Combine every column and index
 change for the same table into a single `ALTER` when you apply it**, and apply it
 in an idle window — the same live-match check a restart calls for.
 
+⚠️ **`information_schema.TABLES.UPDATE_TIME` cannot tell you a table is idle.** MySQL 8 caches it
+for `information_schema_stats_expiry` seconds, which is 86400 on the data server (measured
+2026-11-14), so it can show a table untouched for hours while it takes frags every minute. To see
+whether a table is being written, read `MAX(id)` twice, 20 s apart. An unfiltered `COUNT(*)` on a
+MyISAM table is free, because MyISAM stores the row count. A `COUNT(*)` over a time window has to
+scan rows, and on the big event tables the 10 s `max_execution_time` guard kills it.
+
 ⚠️ **CI reads migration files from the branch's tree, never from the database.**
 The corpus-regression gate runs the `sql/` file out of the checkout, so a
 migration applied to production but merged only to a side branch keeps `main`'s CI
@@ -310,6 +317,18 @@ matched population, never grow it.
 📌 The KTPAntiCheat repo already carries this on its own side (`sql/analysis/` headers, and
 `KTPAntiCheat.Api/Endpoints/MatchEndpoints.cs` names a *"4h intra-row mismatch"*). It is repeated here
 because someone querying from the stats side never opens that repo.
+
+⚠️ **A game host whose clock runs AHEAD of the data server loses the last rows of each half.**
+`ktpResolveProducerEventContext` looks up the interval holding an event's host-clock `event_epoch`
+(whole seconds). `ktpBoundaryTimeSql` stamps a half's start and end from the producer epoch, but if
+that epoch is ahead of the daemon's own clock it uses `NOW()` instead. A host one second fast
+therefore gets an `end_time` one second earlier than its final events, which then match no interval
+and drop with `found 0 event-time match intervals`. That leaves only a rate-limited `KTP_*_DROP`
+journal line and raises no alarm. An open interval refuses ahead-skew loudly, but a closed one does
+not. A host clock that runs BEHIND is safe, because its boundaries come from the same clock as its
+events. The operator ruled on 2026-11-09 that this needs no alarm, so revisit it only if a missing
+terminal row turns up. `KTPInfrastructure`'s `ktp-timezone-drift.py` will not catch it: its
+tolerance is whole seconds over SSH.
 
 ## `ktp_shot_events.weapon_id` IS A PLUGIN ENUM, NOT A FOREIGN KEY INTO `hlstats_Weapons` — and the join SUCCEEDS
 
@@ -1004,25 +1023,22 @@ or do not publish it.**
 `(match_id, player_id)` — so if your counts do not reconcile here, suspect one of the four above
 before you suspect a join.
 
-## Adding a Lane-B migration is six edits, not two
+## Adding a Lane-B migration: register it in KTPInfrastructure, and that PR merges first
 
-*(Moved 2026-08-30 from the KTP board's `TODO.md`.)* A new `sql/migrate_0NN_*.sql` file in this repo is
-invisible to Lane B until three other places in `KTPInfrastructure` name it too (its own
-`tests/unit/test_lane_b_schema_list_drift.py` documents this as the reason it exists):
+A new `sql/migrate_0NN_*.sql` here needs one registration in `KTPInfrastructure`
+`tests/e2e_stats/artifacts.py`. Add it to `DEFAULT_SCHEMA_FILES` in apply order, or to
+`NOT_APPLIED_MIGRATIONS` with the reason it is not applied. If the tail pin
+`test_default_schema_sequence_includes_retention_through_shot_events` in
+`tests/e2e_stats/test_artifacts.py` covers that position, update it too. The workflow schema blocks
+no longer name migrations: both read the generated `schema-migrations.txt`, so `DEFAULT_SCHEMA_FILES`
+is the only list.
 
-1. `tests/e2e_stats/artifacts.py`'s `DEFAULT_SCHEMA_FILES` tuple (which files get extracted into
-   `artifacts/sql/` from the daemon commit under test)
-2. `.github/workflows/lane-b-stats-e2e.yml`'s **full**-lane `--schema` block
-3. the same workflow's **corpus**-lane `--schema` block
-
-...plus two test pins in `tests/e2e_stats/test_artifacts.py` that hard-code the tuple's tail and will
-fail — correctly — until updated: `test_default_schema_sequence_includes_retention_through_telemetry22`'s
-`DEFAULT_SCHEMA_FILES[-9:] == (...)` literal, and a hard-coded `assert len(arts.schema_sql) == 19`
-elsewhere in the same file. So: the `sql/` file itself, plus those five, is six edits for one migration.
-`test_lane_b_schema_list_drift.py` catches (1)-(3) drifting from each other, but it cannot see a
-migration that exists in this repo and nowhere in `KTPInfrastructure` — that half of the change still
-has to be done by hand, and `cap_break` has zero production rows, so the corpus lane is the *only*
-place that code path is exercised at all if the list quietly trails.
+⛔ **An unregistered migration is no longer invisible. It makes Lane B fail on every PR.**
+`plan_schema_files` raises `BuildError` (*"daemon ref carries … which Lane B has no apply
+position for"*) for any `sql/migrate_*` in the daemon commit that neither list names.
+`corpus-regression.yml` checks the harness out from infra `main` (`infrastructure_ref: main`), so
+**the KTPInfrastructure registration PR has to MERGE before this repo's migration PR can go green**.
+Opening both at once leaves this one red until the other merges.
 
 ## `migrate_020` is not the headshot migration — and migration numbers are not stable across branches either
 
@@ -1712,3 +1728,13 @@ daemon-side cache. The claim is scoped to action-code resolution, which is what 
 was about. If a future code appears not to resolve, re-derive against the restart timestamp the
 same way — compare event rows *before* the restart against rows after — rather than assuming
 a restart is the remedy.
+
+## A hand-signal press with a NULL `match_id` is stored, and the migration-048 verify query cannot see it
+
+`signal_*` presses (migration 048) are written to `hlstats_Events_PlayerActions` even when the
+daemon could not tag them with a match. The verify query in `sql/migrate_048_hand_signal_actions.sql`
+filters `pa.match_id IS NOT NULL`, so those presses are missing from its result, and a 0 there can mean
+"pressed, but untagged". Count `match_id IS NULL` separately before reading it. The nightly
+voice-taunt report in `KTPInfrastructure` (`scripts/voice_taunts.py`) does count them, by attaching an
+untagged press to the half running on its server at that time. Its comment puts them at about 9% of
+in-half presses. Presses outside every half are not in that report either.
