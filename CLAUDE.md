@@ -792,6 +792,38 @@ JOIN ktp_ac_sessions s
 The footgun lives in the *consumer's* query, not in this repo's code, so no change here can prevent
 it — which is why it is written down rather than fixed.
 
+## A `CONVERT(… USING utf8mb4)` literal is not a plain literal, and `_bin` tables need a COLLATE too
+
+*(Measured read-only on production 2026-11-14, found while pairing `BINARY` match-id tests with
+index-usable twins in `afraznein/KTPInfrastructure`#885.)* The `match_id` columns do not share a
+collation: `ktp_matches` and `ktp_match_players` are `utf8mb4_unicode_ci`, `ktp_ac_sessions` is
+`utf8mb4_0900_ai_ci`, and `ktp_match_reports`, `ktp_team_score_ingest_manifests` and the
+`team_score_telemetry` stage tables are `utf8mb4_bin`. Two traps follow.
+
+**1. `CONVERT(0x… USING utf8mb4)` raises `ERROR 1267` against `ktp_matches.match_id`.** Scripts hex-encode
+ids that way to dodge quoting. The result takes the connection's default, `utf8mb4_0900_ai_ci`, and its
+coercibility is IMPLICIT (2), the same as a column's, so neither side yields. A quoted `'…'` literal or an
+introducer (`_utf8mb4 0x…`) is COERCIBLE (4), gives way to the column, and works bare. That makes the
+failure look like it depends on the value.
+
+**2. A plain twin of a `BINARY` equality against a `_bin` column compares in `_bin`.** `BINARY a = BINARY b`
+can never use an index on a `_ci` column, so the fix is a plain `a = b` in front of it. But when the other
+side is `utf8mb4_bin`, the plain twin is resolved in `_bin` too, and `ktp_matches`' `uk_match_id_half`
+gets no `ref` lookup: `EXPLAIN` shows it scanned in full instead (or *Range checked for each record*). It returns
+the right rows, only slowly, so nothing flags it.
+
+**The rule:** whenever `ktp_matches` is the side whose index you need, put
+`COLLATE utf8mb4_unicode_ci` on the twin, and keep the `BINARY` test after it for exact matching:
+
+```sql
+WHERE m.match_id = r.match_id COLLATE utf8mb4_unicode_ci
+  AND BINARY m.match_id = BINARY r.match_id
+```
+
+⚠️ The reverse case stays bare. When a `_bin` table such as `ktp_match_reports` is the inner side, its own
+index wants `_bin`, and a COLLATE there costs it. Read `EXPLAIN` for the table you care about and look
+for `ref` on its key.
+
 ## "stats for X matches" is ambiguous between CAPTURE and DISPLAY — name which one, every time
 
 Operator ruling, 2026-09-10, stated precisely because the loose wording had already been
