@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed - CHANGELOG.md had two `[Unreleased]` headings, and four stats traps had no home
+
+The second `## [Unreleased]`, sitting between 0.3.4 and 0.3.3, held migrations 003-010 that shipped
+without a version cut. It is now `## [Unversioned]`, so only the heading at the top of the file matches
+`[Unreleased]` and a first-match insert can no longer land in the wrong block.
+
+`CLAUDE.md` now records four traps that lived only on the board: `information_schema.TABLES.UPDATE_TIME`
+is cached for a day, so it cannot show whether a table is idle; a game host whose clock runs ahead
+of the data server loses the last rows of each half; the migration-048 verify query cannot see hand
+signals with a NULL `match_id`; and the Lane-B migration section described a workflow that no
+longer exists.
+
 ### Changed - the move census stores untracked windows, labelled, instead of refusing them
 
 Ruled 2026-11-02. A `move_census` marker carrying the producer's untracked sentinel -- `matchid "-"`,
@@ -1639,7 +1651,10 @@ Documentation only; no Perl, no SQL and no schema changes.
 
 ---
 
-## [Unreleased]
+## [Unversioned] - 2026-03 to 2026-08
+
+Work from between 0.3.3 and 0.3.4 that shipped without a version cut. This heading read
+`[Unreleased]` until 2026-11-14, which gave the file two `[Unreleased]` headings.
 
 ### Added
 - **Per-player flag-capture completions** (`sql/migrate_010_flag_captures.sql`,
