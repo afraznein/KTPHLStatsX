@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed - the CONVERT-literal and `_bin` collation traps had no home
+
+`CLAUDE.md` now records two `match_id` collation traps found while making BINARY match-id tests
+index-usable in KTPInfrastructure: a `CONVERT(… USING utf8mb4)` literal is `utf8mb4_0900_ai_ci` with
+IMPLICIT coercibility, so comparing it to `ktp_matches.match_id` raises ERROR 1267, and a plain twin
+against a `utf8mb4_bin` column compares in `_bin` and misses `ktp_matches`' index unless it carries
+`COLLATE utf8mb4_unicode_ci`.
+
 ### Fixed - CHANGELOG.md had two `[Unreleased]` headings, and four stats traps had no home
 
 The second `## [Unreleased]`, sitting between 0.3.4 and 0.3.3, held migrations 003-010 that shipped
