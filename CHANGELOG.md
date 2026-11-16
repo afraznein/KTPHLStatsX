@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed - three stats traps had no home
+
+`CLAUDE.md` now records: drops on the daemon's UDP socket with a full-size buffer mean a stalled reader
+(usually a MyISAM read lock), not a small buffer, so `rmem_max` is not the fix; a `tgt_shift` figure
+pooled across the estimator A/B must be split on `rw_flags` bit 5 before it is cited; and the
+`weaponstats` score is a cross-check only, not a source for the scoreboard or the stats export.
+
 ### Fixed - the CONVERT-literal and `_bin` collation traps had no home
 
 `CLAUDE.md` now records two `match_id` collation traps found while making BINARY match-id tests

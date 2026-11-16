@@ -117,6 +117,16 @@ getting 2MB — the raised ceiling looked like a fix for two days. The request n
 matches the ceiling (`51200KB` reported, no warning). If that warning line ever
 appears, `rmem_max` is the lever; if it does not, the request is.
 
+🔑 **Drops on this socket with a full-size buffer mean the reader stalled, not that the buffer is
+small.** Read drops per socket from `/proc/net/udp`, not the system `RcvbufErrors` total, which
+includes the HLTV ports. If port 27500 shows drops while the socket reports `rb` at about 52 MB (the
+kernel doubles the granted 25 MB), raising `rmem_max` does nothing. The single-threaded daemon stopped
+reading, and the usual cause is a long read on a MyISAM `hlstats_Events_*` table: it holds a table read
+lock, the daemon's next write waits behind it, and no datagrams are read until it returns (see
+§ *NEVER RUN A CORRELATED SUBQUERY* below). Find the lock in the slow log: the daemon's `UPDATE` shows a
+`Lock_time` that ends in the same second as a long report or ad-hoc query. A full report regeneration
+runs those queries back to back, so do not start one on a match evening.
+
 ⚠️ **A restart drops UDP for the whole fleet** — this one daemon tags every
 instance's events. Check for a live match before restarting: an open
 `ktp_matches` row with a NULL `end_time`, or recent `hlstats_Events_Frags`.
@@ -1770,3 +1780,24 @@ filters `pa.match_id IS NOT NULL`, so those presses are missing from its result,
 voice-taunt report in `KTPInfrastructure` (`scripts/voice_taunts.py`) does count them, by attaching an
 untagged press to the half running on its server at that time. Its comment puts them at about 9% of
 in-half presses. Presses outside every half are not in that report either.
+
+## A `tgt_shift` figure pooled across the estimator A/B is a mixture — split it on `rw_flags` bit 5
+
+`ktp_shot_events.tgt_shift` (migration 050) is how far the shooter's rewind moved the victim. While the
+`sv_unlag_estimator` A/B runs, some instances rewind with the estimator on and some with it off, so any
+`tgt_shift` statistic over a window that spans both arms blends two treatments. Split by arm per shot with
+`rw_flags & 32` (bit 5, estimator on; NULL `rw_flags` means no rewind record), never by an instance list,
+because the arms move between periods. The external "Result 6" analysis in the coordination repo
+(`research/netcode-player-settings/`: a shift of 0.11 units per ms of shooter ping, and 28% of hits from
+shooters over 130 ms shifting at least a body width) pools both arms. Its query selects `server_id` and
+`rw_flags` but its analysis script reads neither, so split it by arm before citing either figure.
+
+## `weaponstats` score is a cross-check, not a source
+
+The per-player score that `weaponstats` lines carry (accumulated into `ktp_match_stats.score` at match end)
+used to miss objective points scored while holding a weapon the player had not fired, because dodx
+returned no weapon row without shots. `afraznein/KTPAMXX`#188 fixed that, fielded at the 2026-11-09
+nightly. Matches before then are short on roughly one player-half in twelve, and a small over-count
+remains in both periods with no known cause. Ruled: `scoreboard_reconcile.py` and `ktp-stats-export.py`
+keep deriving objective points themselves and do not read the stored `score`. Use it only to cross-check
+against the last `KTP_SCORE_EVENT` total.
