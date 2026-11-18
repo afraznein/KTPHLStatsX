@@ -362,6 +362,17 @@ competitive DoD match, the mapping is right; if a knife or a mortar tops the lis
 ⚠️ `hlstats_Weapons.kills` is not a usable cross-check for this (see the restricted-weapon section
 below: the dictionary counter is daemon-maintained and promoted rows were inserted underneath it).
 
+## `tgt_dead = 1` is a hit on a player who was ALREADY dead, not a kill — count it apart from live hits
+
+dodx stamps `tgt_dead` from the target's `deadflag` at trace time (KTPAMXX `modules/dod/dodx/moduleconfig.cpp`),
+so a `1` row is a bullet landing on a dying or dead body: no damage follows, and it is a large share of all
+rows that carry a target. Any hit, accuracy or registration figure built on `tgt_dead IS NOT NULL` or
+`tgt_player_id IS NOT NULL` alone is inflated; use migration 036's clean-hit filter (`tgt_dead = 0`,
+`tgt_team <> shooter_team`, `(trace_flags & 15) = 0`) and keep dead-target rows in their own column, as
+`ktp_hitreg_quality.dead_target_hits` does. `tgt_dead IS NOT NULL` is still the right *presence* key for the
+target group. *(Audited 2026-11-18: the hitreg monitor, the Lane B assertions and the root-queue rewind check
+already filter; migration 031's verify comment does not.)*
+
 ## `ktp_flag_captures` holds TWO populations — and no reader filters on `provenance`
 *(2026-10-04, after `scripts/backfill-flag-captures-inferred.py` wrote 225,019 rows.)*
 `provenance = 'recorded'` rows are the daemon's (from 2026-08-15 16:25:31). `'inferred'` rows were
@@ -612,6 +623,16 @@ the two populations. Use `match_id IS NOT NULL` or join `ktp_matches` for any tr
 ⚠️ **An empty untracked population before the admission shipped is not quiet play** — the daemon refused
 every such marker until then, so an absent row over that span is the gate. And untracked rows have no
 dedup guard (the UNIQUE key's NULLs never collide), which is fine only because nothing resends them.
+
+## Untracked damage, frag, assist and break rows STOP after a server's first match — an absent one is the gate, not quiet play
+
+In KTPAMXX `plugins/dod/ktp_stats_capture.inc`, `g_kscAllowUntrackedEvents` starts `true` when the plugin loads,
+goes `false` at context close (`ksc_close_producer_context`) and at confirmation (`ksc_activate_producer_context`),
+and goes `true` again only at a match-start candidate (`ksc_on_match_start`). Extension mode never reloads the
+plugin on a map change, so after a server's first match its untracked damage, frag-context, assist and break rows
+stay off until the nightly restart. `ktp_move_census` does not consult the flag, so census rows continue.
+*(A board pass over 2026-11-05..17 found no untracked damage rows after each server's first match, against
+thousands before it.)* Scope any untracked-play figure to before the first match of the server-day, or read it as a floor.
 
 ## Order a `ktp_move_census` window by `(game_time, id)` — `producer_sequence` is NULLABLE here and mis-orders SILENTLY
 
