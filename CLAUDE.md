@@ -624,15 +624,28 @@ the two populations. Use `match_id IS NOT NULL` or join `ktp_matches` for any tr
 every such marker until then, so an absent row over that span is the gate. And untracked rows have no
 dedup guard (the UNIQUE key's NULLs never collide), which is fine only because nothing resends them.
 
-## Untracked damage, frag, assist and break rows STOP after a server's first match — an absent one is the gate, not quiet play
+## Before 2026-11-20, untracked damage, frag, assist and break rows STOP after a server's first match — an absent one there is the gate, not quiet play
 
-In KTPAMXX `plugins/dod/ktp_stats_capture.inc`, `g_kscAllowUntrackedEvents` starts `true` when the plugin loads,
-goes `false` at context close (`ksc_close_producer_context`) and at confirmation (`ksc_activate_producer_context`),
-and goes `true` again only at a match-start candidate (`ksc_on_match_start`). Extension mode never reloads the
-plugin on a map change, so after a server's first match its untracked damage, frag-context, assist and break rows
-stay off until the nightly restart. `ktp_move_census` does not consult the flag, so census rows continue.
+**This describes data produced before the 2026-11-20 fleet wave (`stats_logging` before 1.39.1).** From that
+wave on, the gate reopens at a clean match end, so the rows resume; see the last paragraph.
+
+In KTPAMXX `plugins/dod/ktp_stats_capture.inc`, `g_kscAllowUntrackedEvents` starts `true` when the plugin loads
+and goes `false` at context close (`ksc_close_producer_context`) and at confirmation
+(`ksc_activate_producer_context`). Before 1.39.1 it went `true` again only at a match-start candidate
+(`ksc_on_match_start`). Extension mode never reloads the plugin on a map change, so in that data, after a
+server's first match its untracked damage, frag-context, assist and break rows stay off until the nightly
+restart. `ktp_move_census` does not consult the flag, so census rows continue.
 *(A board pass over 2026-11-05..17 found no untracked damage rows after each server's first match, against
-thousands before it.)* Scope any untracked-play figure to before the first match of the server-day, or read it as a floor.
+thousands before it.)* For data before 2026-11-20, scope any untracked-play figure to before the first match of
+the server-day, or read it as a floor.
+
+**Since 1.39.1 the gate also reopens in `ksc_on_match_end`**, when `ktp_match_end` reports a clean end: the
+forward names the map currently being played (`ksc_match_end_is_clean`) and no producer context is held once
+that match's own has closed. Untracked rows then resume without a restart. It still stays closed after a half
+end (`ktp_half_end` does not reach the reopen), after an abandoned match (that forward fires from the next map
+with the old map's name, so it is not clean) and after `.forcereset` or `.cancel` (neither fires the forward),
+each until the next match start. So in current data an absent untracked row after one of those is still the gate. An untracked-play figure that spans
+2026-11-20 mixes the two behaviours; split it at that date.
 
 ## Order a `ktp_move_census` window by `(game_time, id)` — `producer_sequence` is NULLABLE here and mis-orders SILENTLY
 
