@@ -6138,7 +6138,9 @@ sub ktpFlushResendRequests
 			next if (!@seqs);
 			my @batch = splice(@seqs, 0, $KTP_RESEND_MAX_PER_CMD);
 			delete @{$queue->{seqs}}{@batch};
-			$server->dorcon("ktp_capture_resend $marker " . join(",", @batch));
+			# Quoted: the engine tokenizer (COM_Parse) makes ',' its own token, so an
+			# unquoted list reaches the handler's read_argv(2) as its first sequence only.
+			$server->dorcon("ktp_capture_resend $marker \"" . join(",", @batch) . "\"");
 			delete $streams->{$marker} if (!scalar(keys %{$queue->{seqs}}));
 		}
 		$g_ktpResendLastSent{$addr} = $now;

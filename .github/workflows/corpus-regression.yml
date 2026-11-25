@@ -51,6 +51,8 @@ jobs:
         run: perl scripts/selftest-round-state.pl
       - name: Capture gap repair queues and closes resend requests
         run: perl scripts/selftest-capture-gap-repair.pl
+      - name: A resend request reaches the producer whole through the engine tokenizer
+        run: perl scripts/selftest-capture-resend-tokenizer.pl
       - name: Nothing assigns at file scope after the daemon main loop
         run: perl scripts/selftest-no-code-after-main-loop.pl
       - name: Schema 26 shot hitgroup and rewind group, and older rows still land NULL

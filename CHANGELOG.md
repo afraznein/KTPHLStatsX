@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed - capture gap repair resent only the first sequence of every request
+
+`ktpFlushResendRequests` sent `ktp_capture_resend <stream> 192,193,...` unquoted. The engine tokenizer
+(`COM_Parse`) makes `,` a token of its own, so the producer's `read_argv(2)` saw only `192` and every
+later sequence in the request stayed missing. Measured 2026-11-24 on one half: 19 requests asked for 58
+sequences and 19 lines came back. The list is now sent quoted, which the tokenizer keeps as one argument
+and the producer's existing comma loop already splits; no plugin change is needed. New
+`selftest-capture-resend-tokenizer.pl` runs the real request through replicas of `SV_Rcon`,
+`Cmd_TokenizeString`/`COM_Parse` and `ksc_cmd_resend`. Needs a daemon restart to take effect.
+
 ### Fixed - three stats traps had no home
 
 `CLAUDE.md` now records: drops on the daemon's UDP socket with a full-size buffer mean a stalled reader

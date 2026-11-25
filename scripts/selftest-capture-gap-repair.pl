@@ -72,7 +72,7 @@ is_deeply([sort { $a <=> $b } keys %{$slot->()->{missing}}], [3, 4], 'both seque
 
 ktpFlushResendRequests();
 is(scalar(@rcon), 1, 'one rcon per server per flush, not one per gap');
-is($rcon[0], 'ktp_capture_resend position 3,4', 'request names the stream and the missing sequences, coalesced');
+is($rcon[0], 'ktp_capture_resend position "3,4"', 'request names the stream and the missing sequences, coalesced');
 ktpFlushResendRequests();
 is(scalar(@rcon), 1, 'nothing queued means no rcon');
 
@@ -107,7 +107,7 @@ ktpFlushResendRequests();
 is(scalar(@rcon), 1, 'a flush inside the per-server interval is deferred');
 $g_ktpResendLastSent{$s_addr} = 0;
 ktpFlushResendRequests();
-is($rcon[-1], 'ktp_capture_resend position 6,7,8', 'deferred request goes out on the next eligible flush');
+is($rcon[-1], 'ktp_capture_resend position "6,7,8"', 'deferred request goes out on the next eligible flush');
 
 # A hole wider than the cap is an outage, not loss: counted, never requested.
 observe('position', 700);
